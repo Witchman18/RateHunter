@@ -1,0 +1,54 @@
+import os
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from pybit.unified_trading import HTTP
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
+BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
+
+session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [["📊 Топ 5 funding-пар"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Привет! Выбери действие:", reply_markup=reply_markup)
+
+async def top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        response = session.get_tickers(category="linear")
+        tickers = response["result"]["list"]
+
+        funding_data = []
+        for t in tickers:
+            symbol = t["symbol"]
+            raw_rate = t.get("fundingRate")
+            try:
+                rate = float(raw_rate)
+                funding_data.append((symbol, rate))
+            except:
+                continue
+
+        funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
+        top_5 = funding_data[:5]
+
+        msg = "📊 Топ 5 funding-пар:
+
+"
+        for symbol, rate in top_5:
+            direction = "📈 LONG" if rate < 0 else "📉 SHORT"
+            msg += f"{symbol} — {rate * 100:.4f}% → {direction}
+"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при получении данных: {e}")
+
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("top", top_funding))
+    app.run_polling()
