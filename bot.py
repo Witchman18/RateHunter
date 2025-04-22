@@ -45,7 +45,11 @@ async def top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Ошибка при получении данных: {e}")
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("top", top_funding))
-    app.run_polling()
+    try:
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("top", top_funding))
+        app.run_polling()
+    except Exception as e:
+        print(f"❌ Бот не запущен. Возможная причина: уже активен другой инстанс.\nОшибка: {e}")
+
