@@ -23,11 +23,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    if query.data == "top":
-        await top_funding(query)
-    elif query.data == "soon":
-        await upcoming_funding(query)
+    try:
+        await query.answer()
+        if query.data == "top":
+            await top_funding(query)
+        elif query.data == "soon":
+            await upcoming_funding(query)
+    except Exception as e:
+        print(f"Ошибка в handle_buttons: {e}")
+        await query.message.reply_text("❌ Произошла ошибка при обработке кнопки.")
 
 async def top_funding(query):
     try:
@@ -47,48 +51,43 @@ async def top_funding(query):
         funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
         top_5 = funding_data[:5]
 
-        msg = "📊 Топ 5 funding-пар:\n"
+        msg = "📊 Топ 5 funding-пар:\n\n"
         for symbol, rate in top_5:
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
             msg += f"{symbol} — {rate * 100:.4f}% → {direction}\n"
 
-        await query.edit_message_text(msg)
+        try:
+            await query.edit_message_text(msg)
+        except Exception as e:
+            print(f"Ошибка при отправке топа: {e}")
+            await query.message.reply_text(msg)
     except Exception as e:
-        await query.edit_message_text(f"Ошибка при получении топа: {e}")
+        print(f"Ошибка при получении топа: {e}")
+        await query.message.reply_text(f"❌ Ошибка при получении funding-ставок: {e}")
 
 async def upcoming_funding(query):
     try:
         now = datetime.utcnow()
         now_plus_10 = now + timedelta(minutes=10)
-
-        # 🔧 Ручной список активных символов
-        symbols = ["BTCUSDT", "ETHUSDT", "LPTUSDT", "MAGICUSDT", "ZBCUSDT", "AUDIOUSDT", "ENJUSDT"]
+        response = session.get_funding_rate_history(category="linear", limit=100)
+        result = response["result"]["list"]
 
         upcoming = []
-        fallback = []
 
-        for symbol in symbols:
-            try:
-                response = session.get_funding_rate_history(category="linear", symbol=symbol, limit=1)
-                result = response["result"]["list"]
-                if not result:
-                    continue
-
-                item = result[0]
-                ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
-                rate = float(item["fundingRate"])
-
-                if now <= ts <= now_plus_10:
-                    upcoming.append((symbol, rate, ts))
-                else:
-                    fallback.append((symbol, rate, ts))
-            except Exception as e:
-                print(f"⚠️ Ошибка по {symbol}: {e}")
+        for item in result:
+            symbol = item["symbol"]
+            ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
+            rate = float(item["fundingRate"])
+            if now <= ts <= now_plus_10:
+                upcoming.append((symbol, rate, ts))
 
         if not upcoming:
-            fallback.sort(key=lambda x: x[2])
+            result_sorted = sorted(result, key=lambda x: x["fundingRateTimestamp"])[:5]
             msg = "⚠️ Нет выплат в течение 10 минут.\n\n🕓 Ближайшие выплаты:\n\n"
-            for symbol, rate, ts in fallback[:5]:
+            for item in result_sorted:
+                symbol = item["symbol"]
+                rate = float(item["fundingRate"])
+                ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
                 minutes_left = int((ts - now).total_seconds() / 60)
                 msg += f"{symbol} — {rate * 100:.4f}% через {minutes_left} мин\n"
         else:
@@ -96,10 +95,14 @@ async def upcoming_funding(query):
             for symbol, rate, ts in upcoming:
                 msg += f"{symbol} — {rate * 100:.4f}% в {ts.strftime('%H:%M:%S')} UTC\n"
 
-        await query.edit_message_text(msg)
-
+        try:
+            await query.edit_message_text(msg)
+        except Exception as e:
+            print(f"Ошибка при отправке выплат: {e}")
+            await query.message.reply_text(msg)
     except Exception as e:
-        await query.edit_message_text(f"Ошибка при получении выплат: {e}")
+        print(f"Ошибка при получении выплат: {e}")
+        await query.message.reply_text(f"❌ Ошибка при получении выплат: {e}")
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
