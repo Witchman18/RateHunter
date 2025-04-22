@@ -60,25 +60,35 @@ async def upcoming_funding(query):
     try:
         now = datetime.utcnow()
         now_plus_10 = now + timedelta(minutes=10)
-        response = session.get_funding_rate_history(category="linear", limit=100)
-        result = response["result"]["list"]
+
+        # 🔧 Ручной список активных символов
+        symbols = ["BTCUSDT", "ETHUSDT", "LPTUSDT", "MAGICUSDT", "ZBCUSDT", "AUDIOUSDT", "ENJUSDT"]
 
         upcoming = []
+        fallback = []
 
-        for item in result:
-            symbol = item["symbol"]
-            ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
-            rate = float(item["fundingRate"])
-            if now <= ts <= now_plus_10:
-                upcoming.append((symbol, rate, ts))
+        for symbol in symbols:
+            try:
+                response = session.get_funding_rate_history(category="linear", symbol=symbol, limit=1)
+                result = response["result"]["list"]
+                if not result:
+                    continue
+
+                item = result[0]
+                ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
+                rate = float(item["fundingRate"])
+
+                if now <= ts <= now_plus_10:
+                    upcoming.append((symbol, rate, ts))
+                else:
+                    fallback.append((symbol, rate, ts))
+            except Exception as e:
+                print(f"⚠️ Ошибка по {symbol}: {e}")
 
         if not upcoming:
-            result_sorted = sorted(result, key=lambda x: x["fundingRateTimestamp"])[:5]
+            fallback.sort(key=lambda x: x[2])
             msg = "⚠️ Нет выплат в течение 10 минут.\n\n🕓 Ближайшие выплаты:\n\n"
-            for item in result_sorted:
-                symbol = item["symbol"]
-                rate = float(item["fundingRate"])
-                ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
+            for symbol, rate, ts in fallback[:5]:
                 minutes_left = int((ts - now).total_seconds() / 60)
                 msg += f"{symbol} — {rate * 100:.4f}% через {minutes_left} мин\n"
         else:
@@ -87,6 +97,7 @@ async def upcoming_funding(query):
                 msg += f"{symbol} — {rate * 100:.4f}% в {ts.strftime('%H:%M:%S')} UTC\n"
 
         await query.edit_message_text(msg)
+
     except Exception as e:
         await query.edit_message_text(f"Ошибка при получении выплат: {e}")
 
