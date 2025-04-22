@@ -47,9 +47,7 @@ async def top_funding(query):
         funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
         top_5 = funding_data[:5]
 
-        msg = "📊 Топ 5 funding-пар:
-
-"
+        msg = "📊 Топ 5 funding-пар:"
         for symbol, rate in top_5:
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
             msg += f"{symbol} — {rate * 100:.4f}% → {direction}
