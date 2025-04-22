@@ -1,10 +1,9 @@
 import os
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 from pybit.unified_trading import HTTP
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -14,24 +13,33 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 
-# Стартовая команда
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["📊 Топ 5 funding-пар"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    keyboard = [
+        [InlineKeyboardButton("📊 Топ 5 funding-пар", callback_data='top')],
+        [InlineKeyboardButton("⏰ Через 10 минут выплата", callback_data='soon')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Привет! Выбери действие:", reply_markup=reply_markup)
 
-# Обработка нажатия на кнопку
-async def top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "top":
+        await top_funding(query)
+    elif query.data == "soon":
+        await upcoming_funding(query)
+
+async def top_funding(query):
     try:
         response = session.get_tickers(category="linear")
         tickers = response["result"]["list"]
-
         funding_data = []
+
         for t in tickers:
             symbol = t["symbol"]
-            raw_rate = t.get("fundingRate")
+            rate = t.get("fundingRate")
             try:
-                rate = float(raw_rate)
+                rate = float(rate)
                 funding_data.append((symbol, rate))
             except:
                 continue
@@ -44,19 +52,45 @@ async def top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
             msg += f"{symbol} — {rate * 100:.4f}% → {direction}\n"
 
-        await update.message.reply_text(msg)
+        await query.edit_message_text(msg)
     except Exception as e:
-        await update.message.reply_text(f"Ошибка при получении данных: {e}")
+        await query.edit_message_text(f"Ошибка при получении топа: {e}")
 
-# Запуск бота
-if __name__ == "__main__":
+async def upcoming_funding(query):
     try:
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
+        now = datetime.utcnow()
+        now_plus_10 = now + timedelta(minutes=10)
+        response = session.get_funding_rate_history(category="linear", limit=100)
+        result = response["result"]["list"]
 
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("top", top_funding))
-        app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^📊 Топ 5 funding-пар$"), top_funding))
+        upcoming = []
 
-        app.run_polling()
+        for item in result:
+            symbol = item["symbol"]
+            ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
+            rate = float(item["fundingRate"])
+            if now <= ts <= now_plus_10:
+                upcoming.append((symbol, rate, ts))
+
+        if not upcoming:
+            nearest = sorted(result, key=lambda x: x["fundingRateTimestamp"])[:5]
+            msg = "🕓 Ближайшие выплаты:\n\n"
+            for item in nearest:
+                symbol = item["symbol"]
+                rate = float(item["fundingRate"])
+                ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
+                msg += f"{symbol} — {rate * 100:.4f}% в {ts.strftime('%H:%M:%S')} UTC\n"
+        else:
+            msg = "⏰ Выплаты через 10 минут:\n\n"
+            for symbol, rate, ts in upcoming:
+                msg += f"{symbol} — {rate * 100:.4f}% в {ts.strftime('%H:%M:%S')} UTC\n"
+
+        await query.edit_message_text(msg)
     except Exception as e:
-        print(f"❌ Бот не запущен. Возможная причина: уже активен другой инстанс.\nОшибка: {e}")
+        await query.edit_message_text(f"Ошибка при получении выплат: {e}")
+
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(handle_buttons))
+    app.run_polling()
