@@ -47,10 +47,13 @@ async def top_funding(query):
         funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
         top_5 = funding_data[:5]
 
-        msg = "📊 Топ 5 funding-пар:\n\n"
+        msg = "📊 Топ 5 funding-пар:
+
+"
         for symbol, rate in top_5:
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
-            msg += f"{symbol} — {rate * 100:.4f}% → {direction}\n"
+            msg += f"{symbol} — {rate * 100:.4f}% → {direction}
+"
 
         await query.edit_message_text(msg)
     except Exception as e:
@@ -73,17 +76,26 @@ async def upcoming_funding(query):
                 upcoming.append((symbol, rate, ts))
 
         if not upcoming:
-            nearest = sorted(result, key=lambda x: x["fundingRateTimestamp"])[:5]
-            msg = "🕓 Ближайшие выплаты:\n\n"
-            for item in nearest:
+            result_sorted = sorted(result, key=lambda x: x["fundingRateTimestamp"])[:5]
+            msg = "⚠️ Нет выплат в течение 10 минут.
+
+🕓 Ближайшие выплаты:
+
+"
+            for item in result_sorted:
                 symbol = item["symbol"]
                 rate = float(item["fundingRate"])
                 ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
-                msg += f"{symbol} — {rate * 100:.4f}% в {ts.strftime('%H:%M:%S')} UTC\n"
+                minutes_left = int((ts - now).total_seconds() / 60)
+                msg += f"{symbol} — {rate * 100:.4f}% через {minutes_left} мин
+"
         else:
-            msg = "⏰ Выплаты через 10 минут:\n\n"
+            msg = "⏰ Выплаты через 10 минут:
+
+"
             for symbol, rate, ts in upcoming:
-                msg += f"{symbol} — {rate * 100:.4f}% в {ts.strftime('%H:%M:%S')} UTC\n"
+                msg += f"{symbol} — {rate * 100:.4f}% в {ts.strftime('%H:%M:%S')} UTC
+"
 
         await query.edit_message_text(msg)
     except Exception as e:
