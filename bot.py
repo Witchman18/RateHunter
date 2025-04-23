@@ -62,7 +62,7 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Ошибка при получении топа: {e}")
 
-# === РАСЧЁТ ПРИБЫЛИ ===
+# ==== РАСЧЁТ ПРИБЫЛИ ====
 async def start_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Введите сумму маржи (в USDT):")
     return MARJA
@@ -84,10 +84,14 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
         marja = user_state[chat_id]["marja"]
         position = marja * plecho
 
+        if not latest_top_pairs:
+            await update.message.reply_text("Сначала нажмите 📊 Топ 5 funding-пар, чтобы получить актуальные данные.")
+            return ConversationHandler.END
+
         msg = f"📈 Расчёт прибыли по топ 5 парам\nМаржа: {marja} USDT | Плечо: {plecho}x\n\n"
         for symbol, rate, _ in latest_top_pairs:
             gross = position * abs(rate)
-            fees = position * 0.0006
+            fees = position * 0.0006  # вход+выход
             spread = position * 0.0002
             net = gross - fees - spread
             roi = (net / marja) * 100
@@ -107,10 +111,6 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Ошибка при вводе плеча. Попробуйте снова.")
         return PLECHO
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Расчёт отменён.")
-    return ConversationHandler.END
 
 # === СИГНАЛЫ ===
 async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
