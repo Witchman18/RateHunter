@@ -88,7 +88,7 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = f"📈 Расчёт прибыли по топ 5 парам\nМаржа: {marja} USDT | Плечо: {plecho}x\n\n"
 
         for symbol, rate, _ in latest_top_pairs:
-            gross = position * rate
+            gross = position * abs(rate)
             fees = position * 0.0006  # вход+выход
             spread = position * 0.0002
             net = gross - fees - spread
