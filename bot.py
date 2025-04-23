@@ -193,14 +193,17 @@ if __name__ == "__main__":
         states={
             MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_marja)],
             PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_plecho)],
-                app.add_handler(CommandHandler("sniper_on", sniper_on))
-    app.add_handler(CommandHandler("sniper_off", sniper_off))
-
-    app.create_task(funding_sniper_loop(app))
-
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     app.add_handler(conv_handler)
+
+    # 🟢 Добавляем команды сигналов отдельно, НЕ ВНУТРИ ConversationHandler
+    app.add_handler(CommandHandler("sniper_on", sniper_on))
+    app.add_handler(CommandHandler("sniper_off", sniper_off))
+
+    # 🔁 Запуск фона
+    app.create_task(funding_sniper_loop(app))
+
     app.run_polling()
