@@ -1,3 +1,53 @@
+import os
+import asyncio
+from datetime import datetime
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes,
+    ConversationHandler, CallbackQueryHandler, filters
+)
+from pybit.unified_trading import HTTP
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
+BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
+
+session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
+
+keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли"], ["📡 Сигналы"], ["🔧 Установить маржу"]]
+latest_top_pairs = []
+user_state = {}
+sniper_active = {}
+MARJA, PLECHO, SET_MARJA = range(3)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Привет! Выбери действие:", reply_markup=reply_markup)
+
+async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Введите сумму маржи (в USDT), которую вы хотите использовать для автоматических сделок:")
+    return SET_MARJA
+
+async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        marja = float(update.message.text)
+        chat_id = update.effective_chat.id
+        if chat_id not in user_state:
+            user_state[chat_id] = {}
+        user_state[chat_id]['real_marja'] = marja
+        await update.message.reply_text(f"✅ Маржа установлена: {marja} USDT")
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("Некорректный ввод. Введите сумму в числовом формате.")
+        return SET_MARJA
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Расчёт отменён.")
+    return ConversationHandler.END
+
 async def funding_sniper_loop(app):
     await asyncio.sleep(5)
     while True:
@@ -14,11 +64,9 @@ async def funding_sniper_loop(app):
                 marja = user.get("real_marja", 0)
                 leverage = 5
                 if marja <= 0:
-                    continue  # пользователь не установил маржу — пропускаем
+                    continue
 
                 position = marja * leverage
-                if not active:
-                    continue
 
                 for t in tickers:
                     symbol = t["symbol"]
@@ -49,22 +97,21 @@ async def funding_sniper_loop(app):
             print(f"[Sniper Error] {e}")
         await asyncio.sleep(60)
 
-# === MAIN ===
-async def main():
+if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
-    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
-    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
+    app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), start))
+    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start))
+    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), start))
     app.add_handler(MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja))
-    app.add_handler(CallbackQueryHandler(signal_callback))
+    app.add_handler(CallbackQueryHandler(start))
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc)],
+        entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start)],
         states={
-            MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_marja)],
-            PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_plecho)],
+            MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, start)],
+            PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, start)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
@@ -83,7 +130,4 @@ async def main():
         asyncio.create_task(funding_sniper_loop(app))
 
     app.post_init = on_startup
-    await app.run_polling()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    app.run_polling()
