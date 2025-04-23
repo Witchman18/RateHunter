@@ -27,6 +27,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Привет! Выбери действие:", reply_markup=reply_markup)
 
+async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        response = session.get_tickers(category="linear")
+        tickers = response["result"]["list"]
+        funding_data = []
+
+        for t in tickers:
+            symbol = t["symbol"]
+            rate = t.get("fundingRate")
+            next_time = t.get("nextFundingTime")
+            try:
+                rate = float(rate)
+                funding_data.append((symbol, rate, int(next_time)))
+            except:
+                continue
+
+        funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
+        global latest_top_pairs
+        latest_top_pairs = funding_data[:5]
+
+        msg = "📊 Топ 5 funding-пар:\n\n"
+        now_ts = datetime.utcnow().timestamp()
+        for symbol, rate, ts in latest_top_pairs:
+            delta_sec = int(ts / 1000 - now_ts)
+            h, m = divmod(delta_sec // 60, 60)
+            time_left = f"{h}ч {m}м"
+            direction = "📈 LONG" if rate < 0 else "📉 SHORT"
+            msg += f"{symbol} — {rate * 100:.4f}% → {direction} ⏱ через {time_left}\n"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при получении топа: {e}")
+
 async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Введите сумму маржи (в USDT), которую вы хотите использовать для автоматических сделок:")
     return SET_MARJA
@@ -102,16 +135,16 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
-    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
-    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
+    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start))
+    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), start))
     app.add_handler(MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja))
     app.add_handler(CallbackQueryHandler(start))
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc)],
+        entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start)],
         states={
-            MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_marja)],
-            PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_plecho)],
+            MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, start)],
+            PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, start)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
