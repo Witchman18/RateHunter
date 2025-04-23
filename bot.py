@@ -177,13 +177,18 @@ async def funding_sniper_loop(app):
             print(f"[Sniper Error] {e}")
         await asyncio.sleep(60)
 
-# MAIN
-if __name__ == "__main__":
+import asyncio
+
+# ==== MAIN ====
+
+async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Команды и кнопки
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
 
+    # Расчёт прибыли через диалог
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc)],
         states={
@@ -194,11 +199,17 @@ if __name__ == "__main__":
     )
     app.add_handler(conv_handler)
 
+    # Меню сигналов
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
 
-    async def on_startup(app):
-        app.loop.create_task(funding_sniper_loop(app))
+    # 🔄 Запуск снайпера
+    asyncio.create_task(funding_sniper_loop(app))
 
-    app.on_startup.append(on_startup)
-    app.run_polling()
+    # 🔁 Запуск бота
+    await app.run_polling()
+
+# Запуск через асинхронный event loop
+if __name__ == "__main__":
+    asyncio.run(main())
+
