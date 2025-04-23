@@ -1,6 +1,6 @@
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from pybit.unified_trading import HTTP
 from dotenv import load_dotenv
 
@@ -12,51 +12,48 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("📊 Топ 5 funding-пар", callback_data='top')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    keyboard = [["📊 Топ 5 funding-пар"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Привет! Выбери действие:", reply_markup=reply_markup)
 
-async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+# Ответ на кнопку
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "📊 Топ 5 funding-пар":
+        try:
+            response = session.get_tickers(category="linear")
+            tickers = response["result"]["list"]
 
-    if query.data == "top":
-        await send_top_funding(query.message.chat_id, context)
+            funding_data = []
+            for t in tickers:
+                symbol = t["symbol"]
+                raw_rate = t.get("fundingRate")
+                try:
+                    rate = float(raw_rate)
+                    funding_data.append((symbol, rate))
+                except:
+                    continue
 
-async def send_top_funding(chat_id, context):
-    try:
-        response = session.get_tickers(category="linear")
-        tickers = response["result"]["list"]
+            funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
+            top_5 = funding_data[:5]
 
-        funding_data = []
-        for t in tickers:
-            symbol = t["symbol"]
-            rate = t.get("fundingRate")
-            try:
-                rate = float(rate)
-                funding_data.append((symbol, rate))
-            except:
-                continue
+            msg = "📊 Топ 5 funding-пар:\n\n"
+            for symbol, rate in top_5:
+                direction = "📈 LONG" if rate < 0 else "📉 SHORT"
+                msg += f"{symbol} — {rate * 100:.4f}% → {direction}\n"
 
-        funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
-        top_5 = funding_data[:5]
+            await update.message.reply_text(msg)
 
-        msg = "📊 Топ 5 funding-пар:\n\n"
-        for symbol, rate in top_5:
-            direction = "📈 LONG" if rate < 0 else "📉 SHORT"
-            msg += f"{symbol} — {rate * 100:.4f}% → {direction}\n"
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка при получении данных: {e}")
+    else:
+        await update.message.reply_text("Пожалуйста, выбери действие с помощью кнопки 👇")
 
-        keyboard = [[InlineKeyboardButton("📊 Топ 5 funding-пар", callback_data='top')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=reply_markup)
-
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка при получении данных: {e}")
-
+# Запуск
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
