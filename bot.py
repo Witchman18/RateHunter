@@ -163,11 +163,16 @@ async def funding_sniper_loop(application):
             print(f"[Sniper Error] {e}")
         await asyncio.sleep(60)
 
-# ==== MAIN ====
+# === MAIN ===
+
+import asyncio
+
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
+    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
 
@@ -181,7 +186,9 @@ async def main():
     )
     app.add_handler(conv_handler)
 
+    # Запуск снайпера в фоне
     asyncio.create_task(funding_sniper_loop(app))
+
     await app.run_polling()
 
 if __name__ == "__main__":
