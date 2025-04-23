@@ -136,25 +136,36 @@ async def funding_sniper_loop(app):
     await asyncio.sleep(5)
     while True:
         try:
-            now = datetime.utcnow()
-            response = session.get_funding_rate_history(category="linear", limit=200)
-            result = response["result"]["list"]
+            now_ts = datetime.utcnow().timestamp()
+            response = session.get_tickers(category="linear")
+            tickers = response["result"]["list"]
 
             for chat_id, active in sniper_active.items():
                 if not active:
                     continue
 
-                for item in result:
-                    symbol = item["symbol"]
-                    ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
-                    minutes_left = int((ts - now).total_seconds() / 60)
+                for t in tickers:
+                    symbol = t["symbol"]
+                    rate = t.get("fundingRate")
+                    next_time = t.get("nextFundingTime")
+
+                    if not rate or not next_time:
+                        continue
+
+                    try:
+                        rate = float(rate)
+                        next_ts = int(next_time) / 1000
+                        minutes_left = int((next_ts - now_ts) / 60)
+                    except:
+                        continue
+
                     if 0 <= minutes_left <= 1:
-                        rate = float(item["fundingRate"])
                         position = 100 * 5
                         gross = position * abs(rate)
                         fees = position * 0.0006
                         spread = position * 0.0002
                         net = gross - fees - spread
+
                         if net > 0:
                             await app.bot.send_message(chat_id, f"📡 СИГНАЛ\n{symbol} — фандинг {rate * 100:.4f}%\nОжидаемая чистая прибыль: {net:.2f} USDT")
                             await asyncio.sleep(60)
