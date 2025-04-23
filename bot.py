@@ -17,16 +17,34 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 
-keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли"], ["📡 Сигналы"]]
+keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли"], ["📡 Сигналы"], ["🔧 Установить маржу"]]
 latest_top_pairs = []
 user_state = {}
 sniper_active = {}
-MARJA, PLECHO = range(2)
+MARJA, PLECHO, SET_MARJA = range(3)
 
 # START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Привет! Выбери действие:", reply_markup=reply_markup)
+
+# УСТАНОВКА МАРЖИ
+async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Введите сумму маржи (в USDT), которую вы хотите использовать для автоматических сделок:")
+    return SET_MARJA
+
+async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        marja = float(update.message.text)
+        chat_id = update.effective_chat.id
+        if chat_id not in user_state:
+            user_state[chat_id] = {}
+        user_state[chat_id]['real_marja'] = marja
+        await update.message.reply_text(f"✅ Маржа установлена: {marja} USDT")
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("Некорректный ввод. Введите сумму в числовом формате.")
+        return SET_MARJA
 
 # TOP FUNDING
 async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -90,7 +108,7 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = f"📈 Расчёт прибыли по топ 5 парам\nМаржа: {marja} USDT | Плечо: {plecho}x\n\n"
         for symbol, rate, _ in latest_top_pairs:
-            gross = position * rate  # Исправлено: без abs(rate)
+            gross = position * rate
             fees = position * 0.0006
             spread = position * 0.0002
             net = gross - fees - spread
@@ -179,12 +197,7 @@ async def funding_sniper_loop(app):
         except Exception as e:
             print(f"[Sniper Error] {e}")
         await asyncio.sleep(60)
-        
-# === CANCEL ===
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Расчёт отменён.")
-    return ConversationHandler.END
-        
+
 # === MAIN ===
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -193,6 +206,7 @@ async def main():
     app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
+    app.add_handler(MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja))
     app.add_handler(CallbackQueryHandler(signal_callback))
 
     conv_handler = ConversationHandler(
@@ -204,6 +218,15 @@ async def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     app.add_handler(conv_handler)
+
+    conv_marja = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja)],
+        states={
+            SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_marja)
 
     async def on_startup(app):
         asyncio.create_task(funding_sniper_loop(app))
@@ -212,26 +235,4 @@ async def main():
     await app.run_polling()
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
-    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
-    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
-    app.add_handler(CallbackQueryHandler(signal_callback))
-
-    conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc)],
-        states={
-            MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_marja)],
-            PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_plecho)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    app.add_handler(conv_handler)
-
-    async def on_startup(app):
-        asyncio.create_task(funding_sniper_loop(app))
-
-    app.post_init = on_startup
-    app.run_polling()
+    asyncio.run(main())
