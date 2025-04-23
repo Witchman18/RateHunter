@@ -179,7 +179,12 @@ async def funding_sniper_loop(app):
         except Exception as e:
             print(f"[Sniper Error] {e}")
         await asyncio.sleep(60)
-
+        
+# === CANCEL ===
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Расчёт отменён.")
+    return ConversationHandler.END
+        
 # === MAIN ===
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
