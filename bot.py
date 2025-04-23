@@ -73,8 +73,8 @@ async def set_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[update.effective_chat.id] = {"marja": marja}
         await update.message.reply_text("Теперь введите плечо (например, 5):")
         return PLECHO
-    except:
-        await update.message.reply_text("Некорректная сумма. Попробуйте снова.")
+    except Exception as e:
+        await update.message.reply_text(f"Некорректная сумма. Попробуйте снова.")
         return MARJA
 
 async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -90,8 +90,8 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = f"📈 Расчёт прибыли по топ 5 парам\nМаржа: {marja} USDT | Плечо: {plecho}x\n\n"
         for symbol, rate, _ in latest_top_pairs:
-            gross = position * abs(rate)
-            fees = position * 0.0006  # вход+выход
+            gross = position * rate  # Исправлено: без abs(rate)
+            fees = position * 0.0006
             spread = position * 0.0002
             net = gross - fees - spread
             roi = (net / marja) * 100
@@ -108,9 +108,13 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         await update.message.reply_text(msg)
         return ConversationHandler.END
-    except:
+    except Exception as e:
         await update.message.reply_text("Ошибка при вводе плеча. Попробуйте снова.")
         return PLECHO
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Расчёт отменён.")
+    return ConversationHandler.END
 
 # === СИГНАЛЫ ===
 async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -133,7 +137,7 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sniper_active[chat_id] = False
         await query.edit_message_text("🔴 Сигналы выключены.")
 
-# === Funder
+# === FUNDING SNIPER LOOP ===
 async def funding_sniper_loop(app):
     await asyncio.sleep(5)
     while True:
@@ -203,26 +207,4 @@ async def main():
     await app.run_polling()
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
-    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
-    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
-    app.add_handler(CallbackQueryHandler(signal_callback))
-
-    conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc)],
-        states={
-            MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_marja)],
-            PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_plecho)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    app.add_handler(conv_handler)
-
-    async def on_startup(app):
-        asyncio.create_task(funding_sniper_loop(app))
-
-    app.post_init = on_startup
-    app.run_polling()
+    asyncio.run(main())
