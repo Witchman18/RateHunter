@@ -3,6 +3,7 @@ from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from pybit.unified_trading import HTTP
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -18,20 +19,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Привет! Выбери действие:", reply_markup=reply_markup)
 
-# Ответ на кнопку
+# Обработка кнопки
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "📊 Топ 5 funding-пар":
         try:
-            response = session.get_tickers(category="linear")
-            tickers = response["result"]["list"]
-
+            tickers = session.get_tickers(category="linear")["result"]["list"]
             funding_data = []
+
             for t in tickers:
                 symbol = t["symbol"]
-                raw_rate = t.get("fundingRate")
+                rate = t.get("fundingRate")
                 try:
-                    rate = float(raw_rate)
+                    rate = float(rate)
                     funding_data.append((symbol, rate))
                 except:
                     continue
@@ -39,10 +39,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
             top_5 = funding_data[:5]
 
+            # Получаем время выплат
             msg = "📊 Топ 5 funding-пар:\n\n"
             for symbol, rate in top_5:
+                try:
+                    funding_info = session.get_funding_rate_history(
+                        category="linear", symbol=symbol, limit=1
+                    )["result"]["list"][0]
+                    timestamp = int(funding_info["fundingRateTimestamp"]) / 1000
+                    payout_time = datetime.utcfromtimestamp(timestamp)
+                    now = datetime.utcnow()
+                    delta = payout_time - now
+
+                    hours, remainder = divmod(int(delta.total_seconds()), 3600)
+                    minutes = remainder // 60
+
+                    time_str = f"⏱ через {hours}ч {minutes}м" if hours else f"⏱ через {minutes}м"
+                except:
+                    time_str = "⏱ время неизвестно"
+
                 direction = "📈 LONG" if rate < 0 else "📉 SHORT"
-                msg += f"{symbol} — {rate * 100:.4f}% → {direction}\n"
+                msg += f"{symbol} — {rate * 100:.4f}% → {direction} {time_str}\n"
 
             await update.message.reply_text(msg)
 
