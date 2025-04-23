@@ -186,9 +186,7 @@ async def main():
     )
     app.add_handler(conv_handler)
 
-    # Запуск снайпера в фоне
     asyncio.create_task(funding_sniper_loop(app))
-
     await app.run_polling()
 
 if __name__ == "__main__":
