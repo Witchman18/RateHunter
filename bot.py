@@ -171,8 +171,8 @@ async def funding_sniper_loop(app):
                             )
                             await app.bot.send_message(chat_id=chat_id, text=msg)
                             await asyncio.sleep(60)
-                            await app.bot.send_message(chat_id=chat_id, text=f"✅ Сделка завершена по {symbol}
-Симуляция: {net:.2f} USDT прибыли")
+                            await app.bot.send_message(chat_id=chat_id, text=f"✅ Сделка завершена по {symbol}\nСимуляция: {net:.2f} USDT прибыли")
+
         except Exception as e:
             print(f"[Sniper Error] {e}")
         await asyncio.sleep(60)
