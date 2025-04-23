@@ -213,7 +213,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
-    app.add_handler(MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja))
     app.add_handler(CallbackQueryHandler(signal_callback))
 
     conv_handler = ConversationHandler(
