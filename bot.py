@@ -101,17 +101,17 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), start))
-    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start))
-    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), start))
+    app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
+    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
+    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja))
     app.add_handler(CallbackQueryHandler(start))
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start)],
+        entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc)],
         states={
-            MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, start)],
-            PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, start)],
+            MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_marja)],
+            PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_plecho)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
