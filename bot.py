@@ -85,12 +85,12 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
         marja = user_state[chat_id]["marja"]
         position = marja * plecho
 
-        msg = f"📈 Расчёт прибыли по топ 5 парам
-Маржа: {marja} USDT | Плечо: {plecho}x"
+        # Готовим расчёты
+        msg = f"📈 Расчёт прибыли по топ 5 парам\nМаржа: {marja} USDT | Плечо: {plecho}x\n\n"
 
         for symbol, rate, _ in latest_top_pairs:
             gross = position * abs(rate)
-            fees = position * 0.0006
+            fees = position * 0.0006  # вход+выход
             spread = position * 0.0002
             net = gross - fees - spread
             roi = (net / marja) * 100
@@ -98,13 +98,13 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
             warn = "⚠️ Нерентабельно" if net < 0 else ""
             msg += (
-                f"{symbol} → {direction}"
-                f"  📊 Фандинг: {rate * 100:.4f}%"
-                f"  💰 Грязная прибыль: {gross:.2f} USDT"
-                f"  💸 Комиссии: {fees:.2f} USDT"
-                f"  📉 Спред: {spread:.2f} USDT"
-                f"  ✅ Чистая прибыль: {net:.2f} USDT"
-                f"  📈 ROI: {roi:.2f}% {warn}"
+                f"{symbol} → {direction}\n"
+                f"  📊 Фандинг: {rate * 100:.4f}%\n"
+                f"  💰 Грязная прибыль: {gross:.2f} USDT\n"
+                f"  💸 Комиссии: {fees:.2f} USDT\n"
+                f"  📉 Спред: {spread:.2f} USDT\n"
+                f"  ✅ Чистая прибыль: {net:.2f} USDT\n"
+                f"  📈 ROI: {roi:.2f}% {warn}\n\n"
             )
 
         await update.message.reply_text(msg)
