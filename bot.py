@@ -48,7 +48,7 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         global latest_top_pairs
         latest_top_pairs = funding_data[:5]
 
-        msg = "📊 Топ 5 funding-нап:\n\n"
+        msg = "📊 Топ 5 funding-пар:\n\n"
         now_ts = datetime.utcnow().timestamp()
         for symbol, rate, ts in latest_top_pairs:
             delta_sec = int(ts / 1000 - now_ts)
@@ -132,7 +132,7 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sniper_active[chat_id] = False
         await query.edit_message_text("🔴 Сигналы выключены.")
 
-async def funding_sniper_loop(application):
+async def funding_sniper_loop(app):
     await asyncio.sleep(5)
     while True:
         try:
@@ -156,16 +156,14 @@ async def funding_sniper_loop(application):
                         spread = position * 0.0002
                         net = gross - fees - spread
                         if net > 0:
-                            await application.bot.send_message(chat_id, f"📡 СИГНАЛ\n{symbol} — фандинг {rate * 100:.4f}%\nОжидаемая чистая прибыль: {net:.2f} USDT")
+                            await app.bot.send_message(chat_id, f"📡 СИГНАЛ\n{symbol} — фандинг {rate * 100:.4f}%\nОжидаемая чистая прибыль: {net:.2f} USDT")
                             await asyncio.sleep(60)
-                            await application.bot.send_message(chat_id, f"✅ Сделка завершена по {symbol}\nСимуляция: {net:.2f} USDT прибыли")
+                            await app.bot.send_message(chat_id, f"✅ Сделка завершена по {symbol}\nСимуляция: {net:.2f} USDT прибыли")
         except Exception as e:
             print(f"[Sniper Error] {e}")
         await asyncio.sleep(60)
 
 # === MAIN ===
-
-import asyncio
 
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -186,10 +184,7 @@ async def main():
     )
     app.add_handler(conv_handler)
 
-    async def on_startup(app):
-        asyncio.create_task(funding_sniper_loop(app))
-
-    app.post_init = on_startup
+    asyncio.create_task(funding_sniper_loop(app))
     await app.run_polling()
 
 if __name__ == "__main__":
