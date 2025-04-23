@@ -1,8 +1,10 @@
+
 import os
-from telegram import Update, ReplyKeyboardMarkup
+import asyncio
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes,
-    ConversationHandler, filters
+    ConversationHandler, CallbackQueryHandler, filters
 )
 from pybit.unified_trading import HTTP
 from dotenv import load_dotenv
@@ -16,12 +18,12 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 
-keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли"]]
+keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли"], ["📡 Сигналы"]]
 
 latest_top_pairs = []
 user_state = {}
+sniper_active = {}
 
-# Conversation steps
 MARJA, PLECHO = range(2)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -48,21 +50,23 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         global latest_top_pairs
         latest_top_pairs = funding_data[:5]
 
-        msg = "📊 Топ 5 funding-пар:\n\n"
+        msg = "📊 Топ 5 funding-пар:
+
+"
         now_ts = datetime.utcnow().timestamp()
         for symbol, rate, ts in latest_top_pairs:
             delta_sec = int(ts / 1000 - now_ts)
             h, m = divmod(delta_sec // 60, 60)
             time_left = f"{h}ч {m}м"
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
-            msg += f"{symbol} — {rate * 100:.4f}% → {direction} ⏱ через {time_left}\n"
+            msg += f"{symbol} — {rate * 100:.4f}% → {direction} ⏱ через {time_left}
+"
 
         await update.message.reply_text(msg)
     except Exception as e:
         await update.message.reply_text(f"Ошибка при получении топа: {e}")
 
-# ==== РАСЧЁТ ПРИБЫЛИ ====
-
+# Расчёт прибыли
 async def start_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Введите сумму маржи (в USDT):")
     return MARJA
@@ -84,12 +88,14 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
         marja = user_state[chat_id]["marja"]
         position = marja * plecho
 
-        # Готовим расчёты
-        msg = f"📈 Расчёт прибыли по топ 5 парам\nМаржа: {marja} USDT | Плечо: {plecho}x\n\n"
+        msg = f"📈 Расчёт прибыли по топ 5 парам
+Маржа: {marja} USDT | Плечо: {plecho}x
+
+"
 
         for symbol, rate, _ in latest_top_pairs:
             gross = position * abs(rate)
-            fees = position * 0.0006  # вход+выход
+            fees = position * 0.0006
             spread = position * 0.0002
             net = gross - fees - spread
             roi = (net / marja) * 100
@@ -97,13 +103,21 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
             warn = "⚠️ Нерентабельно" if net < 0 else ""
             msg += (
-                f"{symbol} → {direction}\n"
-                f"  📊 Фандинг: {rate * 100:.4f}%\n"
-                f"  💰 Грязная прибыль: {gross:.2f} USDT\n"
-                f"  💸 Комиссии: {fees:.2f} USDT\n"
-                f"  📉 Спред: {spread:.2f} USDT\n"
-                f"  ✅ Чистая прибыль: {net:.2f} USDT\n"
-                f"  📈 ROI: {roi:.2f}% {warn}\n\n"
+                f"{symbol} → {direction}
+"
+                f"  📊 Фандинг: {rate * 100:.4f}%
+"
+                f"  💰 Грязная прибыль: {gross:.2f} USDT
+"
+                f"  💸 Комиссии: {fees:.2f} USDT
+"
+                f"  📉 Спред: {spread:.2f} USDT
+"
+                f"  ✅ Чистая прибыль: {net:.2f} USDT
+"
+                f"  📈 ROI: {roi:.2f}% {warn}
+
+"
             )
 
         await update.message.reply_text(msg)
@@ -115,37 +129,40 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Расчёт отменён.")
     return ConversationHandler.END
-# Хранилище состояния снайпера
-sniper_active = {}
 
-# Команда включения снайпера
-async def sniper_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    sniper_active[chat_id] = True
-    await update.message.reply_text("🟢 Режим сигналов включён!")
+# Сигналы: меню
+async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🔔 Включить сигналы", callback_data="sniper_on")],
+        [InlineKeyboardButton("🔕 Выключить сигналы", callback_data="sniper_off")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Управление сигналами:", reply_markup=reply_markup)
 
-# Команда выключения снайпера
-async def sniper_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    sniper_active[chat_id] = False
-    await update.message.reply_text("🔴 Режим сигналов отключён!")
+async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
 
-# Фоновый цикл сигналов
+    if query.data == "sniper_on":
+        sniper_active[chat_id] = True
+        await query.edit_message_text("🟢 Сигналы включены.")
+    elif query.data == "sniper_off":
+        sniper_active[chat_id] = False
+        await query.edit_message_text("🔴 Сигналы выключены.")
+
+# Фоновый цикл
 async def funding_sniper_loop(app):
     await asyncio.sleep(5)
-
     while True:
         try:
-            from datetime import datetime
             now = datetime.utcnow()
-
             response = session.get_funding_rate_history(category="linear", limit=200)
             result = response["result"]["list"]
 
             for chat_id, active in sniper_active.items():
                 if not active:
                     continue
-
                 for item in result:
                     symbol = item["symbol"]
                     ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
@@ -153,7 +170,7 @@ async def funding_sniper_loop(app):
 
                     if 0 <= minutes_left <= 1:
                         rate = float(item["fundingRate"])
-                        position = 100 * 5  # default margin * leverage
+                        position = 100 * 5
                         gross = position * abs(rate)
                         fees = position * 0.0006
                         spread = position * 0.0002
@@ -161,27 +178,21 @@ async def funding_sniper_loop(app):
 
                         if net > 0:
                             msg = (
-                                f"📣 СИГНАЛ\n"
-                                f"{symbol} — фандинг {rate * 100:.4f}%\n"
+                                f"📣 СИГНАЛ
+"
+                                f"{symbol} — фандинг {rate * 100:.4f}%
+"
                                 f"Ожидаемая чистая прибыль: {net:.2f} USDT"
                             )
                             await app.bot.send_message(chat_id=chat_id, text=msg)
-
                             await asyncio.sleep(60)
-
-                            msg_done = (
-                                f"✅ Сделка завершена по {symbol}\n"
-                                f"Симуляция: {net:.2f} USDT прибыли"
-                            )
-                            await app.bot.send_message(chat_id=chat_id, text=msg_done)
-
+                            await app.bot.send_message(chat_id=chat_id, text=f"✅ Сделка завершена по {symbol}
+Симуляция: {net:.2f} USDT прибыли")
         except Exception as e:
             print(f"[Sniper Error] {e}")
-
         await asyncio.sleep(60)
 
-# ==== MAIN ====
-
+# MAIN
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -196,14 +207,11 @@ if __name__ == "__main__":
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
-
     app.add_handler(conv_handler)
 
-    # 🟢 Добавляем команды сигналов отдельно, НЕ ВНУТРИ ConversationHandler
-    app.add_handler(CommandHandler("sniper_on", sniper_on))
-    app.add_handler(CommandHandler("sniper_off", sniper_off))
+    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
+    app.add_handler(CallbackQueryHandler(signal_callback))
 
-    # 🔁 Запуск фона
     app.create_task(funding_sniper_loop(app))
 
     app.run_polling()
