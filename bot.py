@@ -68,67 +68,21 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         marja = float(update.message.text)
         chat_id = update.effective_chat.id
+
+        balance = session.get_wallet_balance(accountType="UNIFIED")
+        usdt_balance = float(balance["result"]["list"][0]["totalEquity"])
+        if marja > usdt_balance:
+            await update.message.reply_text("❌ Недостаточно средств. Пополните баланс.")
+            return ConversationHandler.END
+
         if chat_id not in user_state:
             user_state[chat_id] = {}
         user_state[chat_id]['real_marja'] = marja
         await update.message.reply_text(f"✅ Маржа установлена: {marja} USDT")
         return ConversationHandler.END
-    except:
-        await update.message.reply_text("Некорректный ввод. Введите сумму в числовом формате.")
+    except Exception as e:
+        await update.message.reply_text("Ошибка. Убедитесь, что ввели число.")
         return SET_MARJA
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Расчёт отменён.")
-    return ConversationHandler.END
-
-async def funding_sniper_loop(app):
-    await asyncio.sleep(5)
-    while True:
-        try:
-            now_ts = datetime.utcnow().timestamp()
-            response = session.get_tickers(category="linear")
-            tickers = response["result"]["list"]
-
-            for chat_id, active in sniper_active.items():
-                if not active:
-                    continue
-
-                user = user_state.get(chat_id, {})
-                marja = user.get("real_marja", 0)
-                leverage = 5
-                if marja <= 0:
-                    continue
-
-                position = marja * leverage
-
-                for t in tickers:
-                    symbol = t["symbol"]
-                    rate = t.get("fundingRate")
-                    next_time = t.get("nextFundingTime")
-
-                    if not rate or not next_time:
-                        continue
-
-                    try:
-                        rate = float(rate)
-                        next_ts = int(next_time) / 1000
-                        minutes_left = int((next_ts - now_ts) / 60)
-                    except:
-                        continue
-
-                    if 0 <= minutes_left <= 1:
-                        gross = position * abs(rate)
-                        fees = position * 0.0006
-                        spread = position * 0.0002
-                        net = gross - fees - spread
-
-                        if net > 0:
-                            await app.bot.send_message(chat_id, f"📡 СИГНАЛ\n{symbol} — фандинг {rate * 100:.4f}%\nОжидаемая чистая прибыль: {net:.2f} USDT")
-                            await asyncio.sleep(60)
-                            await app.bot.send_message(chat_id, f"✅ Сделка завершена по {symbol}\nСимуляция: {net:.2f} USDT прибыли")
-        except Exception as e:
-            print(f"[Sniper Error] {e}")
-        await asyncio.sleep(60)
 
 async def start_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Введите сумму маржи (в USDT):")
@@ -187,6 +141,71 @@ async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("📡 Режим сигналов:", reply_markup=reply_markup)
 
+async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+
+    if query.data == "sniper_on":
+        sniper_active[chat_id] = True
+        await query.edit_message_text("🟢 Сигналы включены.")
+    elif query.data == "sniper_off":
+        sniper_active[chat_id] = False
+        await query.edit_message_text("🔴 Сигналы выключены.")
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Расчёт отменён.")
+    return ConversationHandler.END
+
+async def funding_sniper_loop(app):
+    await asyncio.sleep(5)
+    while True:
+        try:
+            now_ts = datetime.utcnow().timestamp()
+            response = session.get_tickers(category="linear")
+            tickers = response["result"]["list"]
+
+            for chat_id, active in sniper_active.items():
+                if not active:
+                    continue
+
+                user = user_state.get(chat_id, {})
+                marja = user.get("real_marja", 0)
+                leverage = 5
+                if marja <= 0:
+                    continue
+
+                position = marja * leverage
+
+                for t in tickers:
+                    symbol = t["symbol"]
+                    rate = t.get("fundingRate")
+                    next_time = t.get("nextFundingTime")
+
+                    if not rate or not next_time:
+                        continue
+
+                    try:
+                        rate = float(rate)
+                        next_ts = int(next_time) / 1000
+                        minutes_left = int((next_ts - now_ts) / 60)
+                    except:
+                        continue
+
+                    if 0 <= minutes_left <= 1:
+                        gross = position * abs(rate)
+                        fees = position * 0.0006
+                        spread = position * 0.0002
+                        net = gross - fees - spread
+
+                        if net > 0:
+                            await app.bot.send_message(chat_id, f"📡 СИГНАЛ\n{symbol} — фандинг {rate * 100:.4f}%\nОжидаемая чистая прибыль: {net:.2f} USDT")
+                            await asyncio.sleep(60)
+                            await app.bot.send_message(chat_id, f"✅ Сделка завершена по {symbol}\nСимуляция: {net:.2f} USDT прибыли")
+        except Exception as e:
+            print(f"[Sniper Error] {e}")
+        await asyncio.sleep(60)
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -195,7 +214,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja))
-    app.add_handler(CallbackQueryHandler(start))  # пока ты не реализовал отдельную функцию
+    app.add_handler(CallbackQueryHandler(signal_callback))
 
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc)],
