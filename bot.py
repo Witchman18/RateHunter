@@ -18,16 +18,17 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 
 keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли"], ["📡 Сигналы"]]
-
 latest_top_pairs = []
 user_state = {}
 sniper_active = {}
 MARJA, PLECHO = range(2)
 
+# START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Привет! Выбери действие:", reply_markup=reply_markup)
 
+# TOP FUNDING
 async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = session.get_tickers(category="linear")
@@ -61,7 +62,7 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Ошибка при получении топа: {e}")
 
-# ==== РАСЧЁТ ПРИБЫЛИ ====
+# === РАСЧЁТ ПРИБЫЛИ ===
 async def start_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Введите сумму маржи (в USDT):")
     return MARJA
@@ -111,7 +112,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Расчёт отменён.")
     return ConversationHandler.END
 
-# ==== СИГНАЛЫ ====
+# === СИГНАЛЫ ===
 async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔔 Включить сигналы", callback_data="sniper_on")],
@@ -132,6 +133,7 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sniper_active[chat_id] = False
         await query.edit_message_text("🔴 Сигналы выключены.")
 
+# === Funder
 async def funding_sniper_loop(app):
     await asyncio.sleep(5)
     while True:
@@ -175,7 +177,6 @@ async def funding_sniper_loop(app):
         await asyncio.sleep(60)
 
 # === MAIN ===
-
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -195,11 +196,11 @@ async def main():
     )
     app.add_handler(conv_handler)
 
-    asyncio.create_task(funding_sniper_loop(app))
+    async def on_startup(app):
+        asyncio.create_task(funding_sniper_loop(app))
+
+    app.post_init = on_startup
     await app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    loop.run_forever()
+    asyncio.run(main())
