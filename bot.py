@@ -115,6 +115,70 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Расчёт отменён.")
     return ConversationHandler.END
+# Хранилище состояния снайпера
+sniper_active = {}
+
+# Команда включения снайпера
+async def sniper_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    sniper_active[chat_id] = True
+    await update.message.reply_text("🟢 Режим сигналов включён!")
+
+# Команда выключения снайпера
+async def sniper_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    sniper_active[chat_id] = False
+    await update.message.reply_text("🔴 Режим сигналов отключён!")
+
+# Фоновый цикл сигналов
+async def funding_sniper_loop(app):
+    await asyncio.sleep(5)
+
+    while True:
+        try:
+            from datetime import datetime
+            now = datetime.utcnow()
+
+            response = session.get_funding_rate_history(category="linear", limit=200)
+            result = response["result"]["list"]
+
+            for chat_id, active in sniper_active.items():
+                if not active:
+                    continue
+
+                for item in result:
+                    symbol = item["symbol"]
+                    ts = datetime.utcfromtimestamp(int(item["fundingRateTimestamp"]) / 1000)
+                    minutes_left = int((ts - now).total_seconds() / 60)
+
+                    if 0 <= minutes_left <= 1:
+                        rate = float(item["fundingRate"])
+                        position = 100 * 5  # default margin * leverage
+                        gross = position * abs(rate)
+                        fees = position * 0.0006
+                        spread = position * 0.0002
+                        net = gross - fees - spread
+
+                        if net > 0:
+                            msg = (
+                                f"📣 СИГНАЛ\n"
+                                f"{symbol} — фандинг {rate * 100:.4f}%\n"
+                                f"Ожидаемая чистая прибыль: {net:.2f} USDT"
+                            )
+                            await app.bot.send_message(chat_id=chat_id, text=msg)
+
+                            await asyncio.sleep(60)
+
+                            msg_done = (
+                                f"✅ Сделка завершена по {symbol}\n"
+                                f"Симуляция: {net:.2f} USDT прибыли"
+                            )
+                            await app.bot.send_message(chat_id=chat_id, text=msg_done)
+
+        except Exception as e:
+            print(f"[Sniper Error] {e}")
+
+        await asyncio.sleep(60)
 
 # ==== MAIN ====
 
@@ -129,6 +193,11 @@ if __name__ == "__main__":
         states={
             MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_marja)],
             PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_plecho)],
+                app.add_handler(CommandHandler("sniper_on", sniper_on))
+    app.add_handler(CommandHandler("sniper_off", sniper_off))
+
+    app.create_task(funding_sniper_loop(app))
+
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
