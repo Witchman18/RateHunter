@@ -50,17 +50,14 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         global latest_top_pairs
         latest_top_pairs = funding_data[:5]
 
-        msg = "📊 Топ 5 funding-пар:
-
-"
+        msg = "📊 Топ 5 funding-пар:"
         now_ts = datetime.utcnow().timestamp()
         for symbol, rate, ts in latest_top_pairs:
             delta_sec = int(ts / 1000 - now_ts)
             h, m = divmod(delta_sec // 60, 60)
             time_left = f"{h}ч {m}м"
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
-            msg += f"{symbol} — {rate * 100:.4f}% → {direction} ⏱ через {time_left}
-"
+            msg += f"{symbol} — {rate * 100:.4f}% → {direction} ⏱ через {time_left}"
 
         await update.message.reply_text(msg)
     except Exception as e:
@@ -89,9 +86,7 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
         position = marja * plecho
 
         msg = f"📈 Расчёт прибыли по топ 5 парам
-Маржа: {marja} USDT | Плечо: {plecho}x
-
-"
+Маржа: {marja} USDT | Плечо: {plecho}x"
 
         for symbol, rate, _ in latest_top_pairs:
             gross = position * abs(rate)
@@ -103,21 +98,13 @@ async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
             warn = "⚠️ Нерентабельно" if net < 0 else ""
             msg += (
-                f"{symbol} → {direction}
-"
-                f"  📊 Фандинг: {rate * 100:.4f}%
-"
-                f"  💰 Грязная прибыль: {gross:.2f} USDT
-"
-                f"  💸 Комиссии: {fees:.2f} USDT
-"
-                f"  📉 Спред: {spread:.2f} USDT
-"
-                f"  ✅ Чистая прибыль: {net:.2f} USDT
-"
-                f"  📈 ROI: {roi:.2f}% {warn}
-
-"
+                f"{symbol} → {direction}"
+                f"  📊 Фандинг: {rate * 100:.4f}%"
+                f"  💰 Грязная прибыль: {gross:.2f} USDT"
+                f"  💸 Комиссии: {fees:.2f} USDT"
+                f"  📉 Спред: {spread:.2f} USDT"
+                f"  ✅ Чистая прибыль: {net:.2f} USDT"
+                f"  📈 ROI: {roi:.2f}% {warn}"
             )
 
         await update.message.reply_text(msg)
@@ -178,10 +165,8 @@ async def funding_sniper_loop(app):
 
                         if net > 0:
                             msg = (
-                                f"📣 СИГНАЛ
-"
-                                f"{symbol} — фандинг {rate * 100:.4f}%
-"
+                                f"📣 СИГНАЛ"
+                                f"{symbol} — фандинг {rate * 100:.4f}%"
                                 f"Ожидаемая чистая прибыль: {net:.2f} USDT"
                             )
                             await app.bot.send_message(chat_id=chat_id, text=msg)
