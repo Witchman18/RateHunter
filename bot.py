@@ -130,6 +130,63 @@ async def funding_sniper_loop(app):
             print(f"[Sniper Error] {e}")
         await asyncio.sleep(60)
 
+async def start_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Введите сумму маржи (в USDT):")
+    return MARJA
+
+async def set_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        marja = float(update.message.text)
+        user_state[update.effective_chat.id] = {"marja": marja}
+        await update.message.reply_text("Теперь введите плечо (например, 5):")
+        return PLECHO
+    except:
+        await update.message.reply_text("Некорректная сумма. Попробуйте снова.")
+        return MARJA
+
+async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        plecho = float(update.message.text)
+        chat_id = update.effective_chat.id
+        marja = user_state[chat_id]["marja"]
+        position = marja * plecho
+
+        if not latest_top_pairs:
+            await update.message.reply_text("Сначала нажмите 📊 Топ 5 funding-пар, чтобы получить актуальные данные.")
+            return ConversationHandler.END
+
+        msg = f"📈 Расчёт прибыли по топ 5 парам\nМаржа: {marja} USDT | Плечо: {plecho}x\n\n"
+        for symbol, rate, _ in latest_top_pairs:
+            gross = position * abs(rate)
+            fees = position * 0.0006
+            spread = position * 0.0002
+            net = gross - fees - spread
+            roi = (net / marja) * 100
+            direction = "📈 LONG" if rate < 0 else "📉 SHORT"
+            warn = "⚠️ Нерентабельно" if net < 0 else ""
+            msg += (
+                f"{symbol} → {direction}\n"
+                f"  📊 Фандинг: {rate * 100:.4f}%\n"
+                f"  💰 Грязная прибыль: {gross:.2f} USDT\n"
+                f"  💸 Комиссии: {fees:.2f} USDT\n"
+                f"  📉 Спред: {spread:.2f} USDT\n"
+                f"  ✅ Чистая прибыль: {net:.2f} USDT\n"
+                f"  📈 ROI: {roi:.2f}% {warn}\n\n"
+            )
+        await update.message.reply_text(msg)
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("Ошибка при вводе плеча. Попробуйте снова.")
+        return PLECHO
+
+async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🔔 Включить сигналы", callback_data="sniper_on")],
+        [InlineKeyboardButton("🔕 Выключить сигналы", callback_data="sniper_off")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("📡 Режим сигналов:", reply_markup=reply_markup)
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
