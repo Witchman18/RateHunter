@@ -197,6 +197,8 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
 
-    app.create_task(funding_sniper_loop(app))
+    async def on_startup(app):
+        app.loop.create_task(funding_sniper_loop(app))
 
+    app.on_startup.append(on_startup)
     app.run_polling()
