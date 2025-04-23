@@ -186,31 +186,11 @@ async def main():
     )
     app.add_handler(conv_handler)
 
-    asyncio.create_task(funding_sniper_loop(app))
-    await app.run_polling()
-
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
-    app.add_handler(MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc))
-    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
-    app.add_handler(CallbackQueryHandler(signal_callback))
-
-    conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("📈 Расчёт прибыли"), start_calc)],
-        states={
-            MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_marja)],
-            PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_plecho)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    app.add_handler(conv_handler)
-
-    # ✅ Создание фоновой задачи правильно через on_startup
     async def on_startup(app):
         asyncio.create_task(funding_sniper_loop(app))
 
     app.post_init = on_startup
-    app.run_polling()
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
