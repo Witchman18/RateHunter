@@ -18,7 +18,11 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 
 # Инициализация
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
-keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли"], ["📡 Сигналы"], ["🔧 Установить маржу"], ["📐 Установить плечо"]]
+keyboard = [
+    ["📊 Топ-пары", "📐 Калькулятор прибыли"],
+    ["💰 Маржа", "📏 Плечо"],
+    ["📡 Сигналы"]
+]
 latest_top_pairs = []
 sniper_active = {}
 
@@ -130,11 +134,13 @@ async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================== СИГНАЛЫ =====================
 
 async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню управления сигналами"""
     buttons = [
-        [InlineKeyboardButton("🔔 Включить", callback_data="sniper_on")],
-        [InlineKeyboardButton("🔕 Выключить", callback_data="sniper_off")]
+        [InlineKeyboardButton("🔔 Вкл", callback_data="sniper_on")],
+        [InlineKeyboardButton("🔕 Выкл", callback_data="sniper_off")]
     ]
-    await update.message.reply_text("📡 Управление сигналами:", reply_markup=InlineKeyboardMarkup(buttons))
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text("📡 Управление сигналами:", reply_markup=reply_markup)
 
 async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
