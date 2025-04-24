@@ -153,81 +153,93 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================== ФОНОВАЯ ЗАДАЧА =====================
 
 async def funding_sniper_loop(app):
-    """Фоновая проверка funding rate и автоматическое открытие позиции"""
+    """Фоновая проверка funding rate и автоматическое открытие позиции по самой прибыльной паре"""
     while True:
         try:
             now_ts = datetime.utcnow().timestamp()
+
+            # Получаем funding-рейты
             response = session.get_tickers(category="linear")
             tickers = response["result"]["list"]
 
-            for chat_id, data in sniper_active.items():
-                if not data.get('active', False):
+            # Обновляем топ 5 пар по фандингу
+            funding_data = []
+            for t in tickers:
+                symbol = t["symbol"]
+                rate = t.get("fundingRate")
+                next_time = t.get("nextFundingTime")
+                try:
+                    rate = float(rate)
+                    funding_data.append((symbol, rate, int(next_time)))
+                except:
                     continue
 
-                marja = data.get('real_marja')
-                plecho = data.get('real_plecho')
+            # Сортируем по абсолютной величине funding rate и берем топ-5
+            funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
+            global latest_top_pairs
+            latest_top_pairs = funding_data[:5]
 
-                if not marja or not plecho:
-                    continue
+            # Берем только самую первую — самую прибыльную пару
+            if not latest_top_pairs:
+                await asyncio.sleep(30)
+                continue
 
-                position_size = marja * plecho
+            top_symbol, rate, next_ts = latest_top_pairs[0]
+            minutes_left = int((next_ts / 1000 - now_ts) / 60)
 
-                # Берем только первую подходящую пару
-                for t in tickers:
-                    symbol = t["symbol"]
-                    rate = t.get("fundingRate")
-                    next_time = t.get("nextFundingTime")
+            # Проверка — если выплата через 1 минуту, то можно заходить
+            if 0 <= minutes_left <= 1:
+                direction = "LONG" if rate < 0 else "SHORT"
 
-                    if not rate or not next_time:
+                # Проверяем по всем активным пользователям
+                for chat_id, data in sniper_active.items():
+                    if not data.get('active'):
                         continue
 
+                    marja = data.get('real_marja')
+                    plecho = data.get('real_plecho')
+                    if not marja or not plecho:
+                        continue
+
+                    position_size = marja * plecho
+                    gross = position_size * abs(rate)
+                    fees = position_size * 0.0006
+                    spread = position_size * 0.0002
+                    net = gross - fees - spread
+
+                    # 📡 Уведомление о предстоящей сделке
+                    await app.bot.send_message(
+                        chat_id,
+                        f"🪶 СИГНАЛ: вход через 1 минуту\n"
+                        f"{top_symbol} ({direction}) — {rate*100:.4f}%\n"
+                        f"Ожидаемая прибыль: {net:.2f} USDT"
+                    )
+
+                    # 🔥 Попытка открыть реальную сделку
                     try:
-                        rate = float(rate)
-                        next_ts = int(next_time) / 1000
-                        minutes_left = int((next_ts - now_ts) / 60)
-                    except:
-                        continue
-
-                    if 0 <= minutes_left <= 1:
-                        direction = "LONG" if rate < 0 else "SHORT"
-                        gross = position_size * abs(rate)
-                        fees = position_size * 0.0006
-                        spread = position_size * 0.0002
-                        net = gross - fees - spread
-
-                        # ✅ Отправка уведомления
+                        side = "Buy" if direction == "LONG" else "Sell"
+                        session.place_order(
+                            category="linear",
+                            symbol=top_symbol,
+                            side=side,
+                            order_type="Market",
+                            qty=round(position_size, 2),
+                            time_in_force="FillOrKill"
+                        )
+                        await asyncio.sleep(60)
                         await app.bot.send_message(
                             chat_id,
-                            f"🪶 СИГНАЛ: вход через 1 минуту\n"
-                            f"{symbol} ({direction}) — {rate*100:.4f}%\n"
-                            f"Ожидаемая прибыль: {net:.2f} USDT"
+                            f"✅ Сделка завершена по {top_symbol}, прибыль: {net:.2f} USDT"
                         )
-
-                        # ✅ Реальное открытие позиции
-                        try:
-                            side = "Buy" if direction == "LONG" else "Sell"
-                            session.place_order(
-                                category="linear",
-                                symbol=symbol,
-                                side=side,
-                                order_type="Market",
-                                qty=round(position_size, 2),
-                                time_in_force="FillOrKill"
-                            )
-                            await asyncio.sleep(60)  # Ждем, чтобы "прошел" фандинг
-                            await app.bot.send_message(
-                                chat_id,
-                                f"✅ Сделка завершена по {symbol}, прибыль: {net:.2f} USDT"
-                            )
-                        except Exception as e:
-                            await app.bot.send_message(
-                                chat_id,
-                                f"❌ Ошибка при открытии сделки по {symbol}:\n{str(e)}"
-                            )
-                        break  # 💡 Только одна сделка на цикл
+                    except Exception as e:
+                        await app.bot.send_message(
+                            chat_id,
+                            f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
+                        )
 
         except Exception as e:
             print(f"[Sniper Error] {e}")
+
         await asyncio.sleep(30)
 
 # ===================== MAIN =====================
