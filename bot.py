@@ -215,11 +215,12 @@ async def funding_sniper_loop(app):
 
                     # 📡 Уведомление о предстоящей сделке
                     await app.bot.send_message(
-                        chat_id,
-                        f"🪶 СИГНАЛ: вход через 1 минуту\n"
-                        f"{top_symbol} ({direction}) — {rate*100:.4f}%\n"
-                        f"Ожидаемая прибыль: {net:.2f} USDT"
-                    )
+    chat_id,
+    f"📡 Сигнал обнаружен: {symbol}\n"
+    f"{'📈 LONG' if direction == 'LONG' else '📉 SHORT'} | 📊 {rate * 100:.4f}%\n"
+    f"💼 {marja} USDT x{plecho}  |  💰 Доход: {net:.2f} USDT\n"
+    f"⏱ Вход через 1 минуту"
+)
 
                     # 🔥 Попытка открыть реальную сделку
                     try:
@@ -232,11 +233,12 @@ async def funding_sniper_loop(app):
                             qty=round(position_size, 2),
                             time_in_force="FillOrKill"
                         )
-                        await asyncio.sleep(60)
                         await app.bot.send_message(
-                            chat_id,
-                            f"✅ Сделка завершена по {top_symbol}, прибыль: {net:.2f} USDT"
-                        )
+    chat_id,
+    f"✅ Сделка завершена: {symbol} ({direction})\n"
+    f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
+)
+
                     except Exception as e:
                         await app.bot.send_message(
                             chat_id,
