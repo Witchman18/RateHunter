@@ -18,12 +18,15 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 
 # Инициализация
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
-keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли"], ["📡 Сигналы"], ["🔧 Установить маржу"]]
+keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли"], ["📡 Сигналы"], ["🔧 Установить маржу"], ["📐 Установить плечо"]]
 latest_top_pairs = []
 sniper_active = {}
 
 # Состояния
-SET_MARJA = 0  # Для установки реальной маржи
+SET_MARJA = 0
+SET_PLECHO = 1
+
+# Для установки реальной маржи
 
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
 
@@ -101,6 +104,28 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
         return ConversationHandler.END
+        
+# ===================== УСТАНОВКА ПЛЕЧА =====================
+
+async def set_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📐 Введите плечо (например: 5):")
+    return SET_PLECHO
+
+async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        plecho = float(update.message.text)
+        chat_id = update.effective_chat.id
+
+        if chat_id not in sniper_active:
+            sniper_active[chat_id] = {}
+
+        sniper_active[chat_id]['real_plecho'] = plecho
+        await update.message.reply_text(f"✅ Плечо установлено: {plecho}x")
+        return ConversationHandler.END
+
+    except ValueError:
+        await update.message.reply_text("❌ Ошибка. Введите число (например: 5)")
+        return SET_PLECHO
 
 # ===================== СИГНАЛЫ =====================
 
@@ -216,18 +241,36 @@ async def funding_sniper_loop(app):
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Обработчики команд и кнопок
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
 
+    # Установка маржи
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja)],
-        states={SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)]},
-        fallbacks=[CommandHandler("cancel", cancel)]
+        states={
+            SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
     )
     app.add_handler(conv_marja)
 
-    async def on_startup(app): asyncio.create_task(funding_sniper_loop(app))
+    # Установка плеча
+    conv_plecho = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("📐 Установить плечо"), set_real_plecho)],
+        states={
+            SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_plecho)
+
+    # Запуск фоновой задачи (фандинг-бот)
+    async def on_startup(app):
+        asyncio.create_task(funding_sniper_loop(app))
+
     app.post_init = on_startup
     app.run_polling()
