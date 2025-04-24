@@ -90,7 +90,7 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
         marja = float(update.message.text)
         chat_id = update.effective_chat.id
         balance = session.get_wallet_balance(accountType="UNIFIED")
-        usdt_balance = float(balance["result"]["list"][0]["totalEquity"])
+        usdt_balance = float(balance["result"]["list"][0]["coin"][0]["availableToWithdraw"])
 
         if marja > usdt_balance:
             await update.message.reply_text("❌ Недостаточно средств.")
