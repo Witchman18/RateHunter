@@ -219,7 +219,7 @@ async def funding_sniper_loop(app):
                     )
 
                     # 🔥 Попытка открыть реальную сделку
-                    try:
+    try:    
     info = session.get_instruments_info(category="linear", symbol=top_symbol)
     filters = info["result"]["list"][0]["lotSizeFilter"]
     min_qty = float(filters["minOrderQty"])
