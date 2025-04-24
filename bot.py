@@ -150,8 +150,7 @@ async def funding_sniper_loop(app):
                         direction = "LONG" if rate < 0 else "SHORT"
                         await app.bot.send_message(
                             chat_id,
-                            f"📡 СИГНАЛ: вход через 1 минуту
-{symbol} ({direction}) — {rate*100:.4f}%"
+                            f"📡 СИГНАЛ: вход через 1 минуту {symbol} ({direction}) — {rate*100:.4f}%"
                             f"Ожидаемая прибыль: {net:.2f} USDT"
                         )
                         await asyncio.sleep(60)
