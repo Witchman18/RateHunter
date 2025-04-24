@@ -279,7 +279,7 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Сначала установите маржу и плечо.")
         return
 
-    symbol = "BTCUSDT"  # Можешь изменить на любую пару
+    symbol = "SOLUSDT"  # Можешь изменить на любую пару
     direction = "LONG"
     position_size = marja * plecho
 
