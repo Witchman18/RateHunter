@@ -125,46 +125,91 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🔴 Сигналы выключены")
 
 # ===================== СНАИПЕР =====================
+# ===================== ФОНОВАЯ ЗАДАЧА =====================
 
 async def funding_sniper_loop(app):
+    """Фоновая проверка фандинг рейтов и отправка сигналов"""
+    last_signal_time = {}  # Хранилище последних сигналов по паре и чату
+
     while True:
         try:
+            now_ts = datetime.utcnow().timestamp()
             response = session.get_tickers(category="linear")
             tickers = response["result"]["list"]
-            now_ts = datetime.utcnow().timestamp()
 
-            top_pair = sorted(
-                [(t["symbol"], float(t["fundingRate"]), int(t["nextFundingTime"]))
-                 for t in tickers if t.get("fundingRate") and t.get("nextFundingTime")],
-                key=lambda x: abs(x[1]), reverse=True
-            )[0]  # Берем только 1 самую прибыльную
+            for chat_id, data in sniper_active.items():
+                if not data.get('active', False):
+                    continue
 
-            symbol, rate, next_time = top_pair
-            minutes_left = int((next_time / 1000 - now_ts) / 60)
+                marja = data.get('real_marja', 0)
+                if marja <= 0:
+                    continue
 
-            if 0 <= minutes_left <= 1:
-                for chat_id, data in sniper_active.items():
-                    if not data.get("active") or "real_marja" not in data:
+                leverage = 5
+                position = marja * leverage
+
+                # Получаем топ 1 по фандингу
+                funding_data = []
+                for t in tickers:
+                    symbol = t["symbol"]
+                    rate = t.get("fundingRate")
+                    next_time = t.get("nextFundingTime")
+
+                    if not rate or not next_time:
                         continue
 
-                    marja = data["real_marja"]
-                    position = marja * 5
+                    try:
+                        rate = float(rate)
+                        next_ts = int(next_time) / 1000
+                        minutes_left = int((next_ts - now_ts) / 60)
+                        funding_data.append((symbol, rate, next_ts, minutes_left))
+                    except:
+                        continue
+
+                # Сортируем по доходности
+                funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
+
+                if not funding_data:
+                    continue
+
+                # Берём только 1 топовую
+                top_symbol, rate, next_ts, minutes_left = funding_data[0]
+                direction = "LONG" if rate < 0 else "SHORT"
+
+                if 0 <= minutes_left <= 1:
+                    key = f"{chat_id}_{top_symbol}"
+                    now_min = int(now_ts // 60)
+
+                    if last_signal_time.get(key) == now_min:
+                        continue  # Уже отправляли в эту минуту
+
+                    last_signal_time[key] = now_min
+
+                    # Расчёт прибыли
                     gross = position * abs(rate)
                     fees = position * 0.0006
                     spread = position * 0.0002
                     net = gross - fees - spread
 
-                    if net > 0:
-                        direction = "LONG" if rate < 0 else "SHORT"
-                        await app.bot.send_message(
-                            chat_id,
-                            f"📡 СИГНАЛ: вход через 1 минуту {symbol} ({direction}) — {rate*100:.4f}%"
-                            f"Ожидаемая прибыль: {net:.2f} USDT"
-                        )
-                        await asyncio.sleep(60)
-                        await app.bot.send_message(chat_id, f"✅ Сделка завершена по {symbol}, прибыль: {net:.2f} USDT")
+                    # Отправляем сигнал
+                    await app.bot.send_message(
+                        chat_id,
+                        f"📡 СИГНАЛ: вход через 1 минуту\n"
+                        f"{top_symbol} ({direction}) — {rate * 100:.4f}%\n"
+                        f"Ожидаемая прибыль: {net:.2f} USDT"
+                    )
+
+                    # Симуляция закрытия через 60 сек
+                    await asyncio.sleep(60)
+                    await app.bot.send_message(
+                        chat_id,
+                        f"✅ Сделка завершена по {top_symbol}, прибыль: {net:.2f} USDT"
+                    )
+
         except Exception as e:
             print(f"[Sniper Error] {e}")
+            await asyncio.sleep(10)
+
         await asyncio.sleep(30)
 
 # ===================== MAIN =====================
