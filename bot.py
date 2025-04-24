@@ -302,10 +302,10 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         continue
 
-    # Округляем вниз до допустимого по шагу
+    # Округляем вниз до ближайшего допустимого количества
     adjusted_qty = raw_qty - (raw_qty % step)
 
-    # Открываем сделку
+    # Открытие рыночного ордера
     session.place_order(
         category="linear",
         symbol=top_symbol,
@@ -327,7 +327,6 @@ except Exception as e:
         chat_id,
         f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
     )
-
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
