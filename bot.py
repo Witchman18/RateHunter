@@ -74,8 +74,6 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Ошибка при получении топа: {e}")
 
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Что делаем?", reply_markup=reply_markup)
@@ -284,47 +282,48 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     position_size = marja * plecho
 
     try:
-    # Получаем параметры торгов для символа
-    info = session.get_instruments_info(category="linear", symbol=top_symbol)
-    filters = info["result"]["list"][0]["lotSizeFilter"]
-    min_qty = float(filters["minOrderQty"])
-    step = float(filters["qtyStep"])
+        # Получаем параметры торгов для символа
+        info = session.get_instruments_info(category="linear", symbol=top_symbol)
+        filters = info["result"]["list"][0]["lotSizeFilter"]
+        min_qty = float(filters["minOrderQty"])
+        step = float(filters["qtyStep"])
 
-    raw_qty = position_size
+        raw_qty = position_size
 
-    # Проверка: если меньше минимального — не открываем
-    if raw_qty < min_qty:
+        # Проверка: если меньше минимального — не открываем
+        if raw_qty < min_qty:
+            await app.bot.send_message(
+                chat_id,
+                f"⚠️ Сделка по {top_symbol} не открыта: объём {raw_qty:.4f} меньше минимального ({min_qty})"
+            )
+            continue
+
+        # Округляем вниз до ближайшего допустимого количества
+        adjusted_qty = raw_qty - (raw_qty % step)
+
+        # Открытие рыночного ордера
+        session.place_order(
+            category="linear",
+            symbol=top_symbol,
+            side="Buy" if direction == "LONG" else "Sell",
+            order_type="Market",
+            qty=adjusted_qty,
+            time_in_force="FillOrKill"
+        )
+
+        await asyncio.sleep(60)
         await app.bot.send_message(
             chat_id,
-            f"⚠️ Сделка по {top_symbol} не открыта: объём {raw_qty:.4f} меньше минимального ({min_qty})"
+            f"✅ Сделка завершена: {top_symbol} ({direction})\n"
+            f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
         )
-        continue
 
-    # Округляем вниз до ближайшего допустимого количества
-    adjusted_qty = raw_qty - (raw_qty % step)
+    except Exception as e:
+        await app.bot.send_message(
+            chat_id,
+            f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
+        )
 
-    # Открытие рыночного ордера
-    session.place_order(
-        category="linear",
-        symbol=top_symbol,
-        side="Buy" if direction == "LONG" else "Sell",
-        order_type="Market",
-        qty=adjusted_qty,
-        time_in_force="FillOrKill"
-    )
-
-    await asyncio.sleep(60)
-    await app.bot.send_message(
-        chat_id,
-        f"✅ Сделка завершена: {top_symbol} ({direction})\n"
-        f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
-    )
-
-except Exception as e:
-    await app.bot.send_message(
-        chat_id,
-        f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
-    )
 # ===================== MAIN =====================
 
 if __name__ == "__main__":
@@ -336,7 +335,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
     app.add_handler(CommandHandler("test_trade", test_trade))
-
 
     # Установка маржи
     conv_marja = ConversationHandler(
