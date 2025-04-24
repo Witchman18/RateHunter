@@ -264,22 +264,23 @@ if __name__ == "__main__":
 
     # Установка маржи
     conv_marja = ConversationHandler(
-    entry_points=[MessageHandler(filters.Regex("💰 Маржа"), set_real_marja)],
-    states={
-        SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel)],
-)
-app.add_handler(conv_marja)
+        entry_points=[MessageHandler(filters.Regex("💰 Маржа"), set_real_marja)],
+        states={
+            SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_marja)
 
-conv_plecho = ConversationHandler(
-    entry_points=[MessageHandler(filters.Regex("⚖ Плечо"), set_real_plecho)],
-    states={
-        SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel)],
-)
-app.add_handler(conv_plecho)
+    # Установка плеча
+    conv_plecho = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("⚖ Плечо"), set_real_plecho)],
+        states={
+            SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_plecho)
 
     # Запуск фоновой задачи (фандинг-бот)
     async def on_startup(app):
