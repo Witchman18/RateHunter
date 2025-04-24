@@ -33,7 +33,7 @@ SET_PLECHO = 1
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
 
 async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает топ-5 пар по funding rate с улучшенным оформлением"""
+    """Показывает топ-5 пар по funding rate"""
     try:
         response = session.get_tickers(category="linear")
         tickers = response["result"]["list"]
@@ -80,7 +80,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Действие отменено.")
     return ConversationHandler.END
 
-# ===================== УСТАНОВКА МАРЖИ =====================
+# ===================== УСТАНОВКА МАРЖИ И ПЛЕЧА =====================
 
 async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("💰 Введите сумму РЕАЛЬНОЙ маржи (в USDT):")
@@ -91,7 +91,7 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
         marja = float(update.message.text)
         chat_id = update.effective_chat.id
         balance = session.get_wallet_balance(accountType="UNIFIED")
-        usdt_balance = float(balance["result"]["list"][0]["totalEquity"])
+        usdt_balance = float(balance["result"]["list"][0]["availableBalance"])
 
         if marja > usdt_balance:
             await update.message.reply_text("❌ Недостаточно средств.")
@@ -105,8 +105,6 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
         return ConversationHandler.END
-        
-# ===================== УСТАНОВКА ПЛЕЧА =====================
 
 async def set_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📐 Введите плечо (например: 5):")
@@ -123,7 +121,6 @@ async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sniper_active[chat_id]['real_plecho'] = plecho
         await update.message.reply_text(f"✅ Плечо установлено: {plecho}x")
         return ConversationHandler.END
-
     except ValueError:
         await update.message.reply_text("❌ Ошибка. Введите число (например: 5)")
         return SET_PLECHO
@@ -131,7 +128,6 @@ async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================== СИГНАЛЫ =====================
 
 async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Меню управления сигналами"""
     buttons = [
         [InlineKeyboardButton("🔔 Вкл", callback_data="sniper_on")],
         [InlineKeyboardButton("🔕 Выкл", callback_data="sniper_off")]
@@ -152,19 +148,120 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sniper_active[chat_id]["active"] = False
         await query.edit_message_text("🔴 Сигналы выключены")
 
-# ===================== ФОНОВАЯ ЗАДАЧА =====================
+# ===================== ОСНОВНАЯ ЛОГИКА ТОРГОВЛИ =====================
+
+async def open_position(symbol: str, direction: str, marja: float, plecho: float, chat_id: int, rate: float):
+    try:
+        # Получаем параметры символа
+        symbol_info = session.get_instruments_info(category="linear", symbol=symbol)
+        if not symbol_info["result"]["list"]:
+            await app.bot.send_message(chat_id, f"❌ Не удалось получить данные по {symbol}")
+            return None
+
+        filters = symbol_info["result"]["list"][0]["lotSizeFilter"]
+        min_qty = float(filters["minOrderQty"])
+        qty_step = float(filters["qtyStep"])
+
+        # Рассчитываем объем позиции
+        position_size = marja * plecho
+        gross_profit = position_size * abs(rate)
+        fees = position_size * 0.0006
+        spread = position_size * 0.0002
+        expected_net = gross_profit - fees - spread
+        expected_roi = (expected_net / marja) * 100
+
+        # 🔔 Уведомление о планируемой сделке
+        await app.bot.send_message(
+            chat_id,
+            f"🔍 Анализ сделки:\n"
+            f"• Пара: {symbol}\n"
+            f"• Направление: {'LONG' if direction == 'LONG' else 'SHORT'}\n"
+            f"• Маржа: {marja} USDT x{plecho}\n"
+            f"• Объем: {position_size:.2f} USDT\n"
+            f"• Ожидаемая прибыль: {expected_net:.2f} USDT\n"
+            f"• ROI: {expected_roi:.2f}%"
+        )
+
+        # Проверка минимального объема
+        if position_size < min_qty:
+            await app.bot.send_message(
+                chat_id,
+                f"⚠️ Торговля невозможна:\n"
+                f"Минимальный объем: {min_qty} USDT\n"
+                f"Ваш объем: {position_size:.2f} USDT"
+            )
+            return None
+
+        # Округление объема
+        adjusted_qty = round(position_size / qty_step) * qty_step
+        if adjusted_qty < min_qty:
+            adjusted_qty = min_qty
+
+        # Проверка баланса
+        balance = session.get_wallet_balance(accountType="UNIFIED")
+        available_balance = float(balance["result"]["list"][0]["availableBalance"])
+        
+        if adjusted_qty > available_balance:
+            await app.bot.send_message(
+                chat_id,
+                f"❌ Недостаточно средств:\n"
+                f"Доступно: {available_balance:.2f} USDT\n"
+                f"Требуется: {adjusted_qty:.2f} USDT"
+            )
+            return None
+
+        # 📢 Уведомление о начале открытия позиции
+        await app.bot.send_message(
+            chat_id,
+            f"🔄 Открываю позицию:\n"
+            f"• {symbol} {direction}\n"
+            f"• Объем: {adjusted_qty:.2f} USDT"
+        )
+
+        # Открытие позиции
+        order = session.place_order(
+            category="linear",
+            symbol=symbol,
+            side="Buy" if direction == "LONG" else "Sell",
+            order_type="Market",
+            qty=adjusted_qty,
+            time_in_force="FillOrKill",
+            position_idx=0
+        )
+
+        # 💰 Уведомление об успешном открытии
+        await app.bot.send_message(
+            chat_id,
+            f"✅ Позиция открыта:\n"
+            f"• ID ордера: {order['result']['orderId']}\n"
+            f"• Исполнено: {order['result']['cumExecQty']} USDT\n"
+            f"• Средняя цена: {order['result']['avgPrice']}"
+        )
+
+        return {
+            "symbol": symbol,
+            "qty": adjusted_qty,
+            "entry_price": float(order["result"]["avgPrice"]),
+            "direction": direction,
+            "expected_profit": expected_net
+        }
+
+    except Exception as e:
+        await app.bot.send_message(
+            chat_id,
+            f"⛔ Ошибка открытия позиции:\n{str(e)}"
+        )
+        return None
 
 async def funding_sniper_loop(app):
-    """Фоновая проверка funding rate и автоматическое открытие позиции"""
+    """Основной цикл торговли"""
     while True:
         try:
             now_ts = datetime.utcnow().timestamp()
-
-            # Получаем funding-рейты
             response = session.get_tickers(category="linear")
             tickers = response["result"]["list"]
 
-            # Обновляем топ 5 пар по фандингу
+            # Обновляем топ пар
             funding_data = []
             for t in tickers:
                 symbol = t["symbol"]
@@ -199,147 +296,71 @@ async def funding_sniper_loop(app):
                     if not marja or not plecho:
                         continue
 
-                    position_size = marja * plecho
-                    gross = position_size * abs(rate)
-                    fees = position_size * 0.0006
-                    spread = position_size * 0.0002
-                    net = gross - fees - spread
-                    roi = (net / marja) * 100
-
-                    # Уведомление о сигнале
-                    await app.bot.send_message(
-                        chat_id,
-                        f"📡 Сигнал обнаружен: {top_symbol}\n"
-                        f"{'📈 LONG' if direction == 'LONG' else '📉 SHORT'} | 📊 {rate * 100:.4f}%\n"
-                        f"💼 {marja} USDT x{plecho}  |  💰 Доход: {net:.2f} USDT\n"
-                        f"⏱ Вход через 1 минуту"
+                    # Открываем позицию
+                    position = await open_position(
+                        symbol=top_symbol,
+                        direction=direction,
+                        marja=marja,
+                        plecho=plecho,
+                        chat_id=chat_id,
+                        rate=rate
                     )
 
-                    # Открытие сделки
-                    try:
-                        info = session.get_instruments_info(category="linear", symbol=top_symbol)
-                        filters = info["result"]["list"][0]["lotSizeFilter"]
-                        min_qty = float(filters["minOrderQty"])
-                        step = float(filters["qtyStep"])
-
-                        raw_qty = position_size
-                        adjusted_qty = max(min_qty, (raw_qty // step) * step)
-
-                        if adjusted_qty < min_qty:
-                            await app.bot.send_message(
-                                chat_id,
-                                f"⚠️ Сделка по {top_symbol} не открыта: недостаточный объём для входа.\n"
-                                f"(Минимум: {min_qty}, попытка: {raw_qty})"
-                            )
-                            continue
-
-                        session.place_order(
-                            category="linear",
-                            symbol=top_symbol,
-                            side="Buy" if direction == "LONG" else "Sell",
-                            order_type="Market",
-                            qty=adjusted_qty,
-                            time_in_force="FillOrKill"
-                        )
-
+                    if position:
+                        # Ждем 1 минуту (до выплаты фандинга)
                         await asyncio.sleep(60)
-                        await app.bot.send_message(
-                            chat_id,
-                            f"✅ Сделка завершена: {top_symbol} ({direction})\n"
-                            f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
+                        
+                        # Получаем фактическую прибыль
+                        pnl = session.get_closed_pnl(
+                            category="linear",
+                            symbol=top_symbol
                         )
-
-                    except Exception as e:
+                        
+                        # 📈 Уведомление о результате
                         await app.bot.send_message(
                             chat_id,
-                            f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
+                            f"📊 Итог сделки:\n"
+                            f"• Пара: {top_symbol}\n"
+                            f"• Ожидалось: {position['expected_profit']:.2f} USDT\n"
+                            f"• Фактический PnL: {pnl['result']['list'][0]['closedPnl']} USDT\n"
+                            f"• ROI: {float(pnl['result']['list'][0]['closedPnl']) / marja * 100:.2f}%"
                         )
 
         except Exception as e:
-            print(f"[Sniper Error] {e}")
+            print(f"Ошибка в основном цикле: {e}")
+        finally:
+            await asyncio.sleep(30)
 
-        await asyncio.sleep(30)
-
-async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-
-    # Проверяем активность и параметры
-    if chat_id not in sniper_active:
-        await update.message.reply_text("❌ Сначала установите маржу и плечо.")
-        return
-
-    marja = sniper_active[chat_id].get("real_marja")
-    plecho = sniper_active[chat_id].get("real_plecho")
-    if not marja or not plecho:
-        await update.message.reply_text("❌ Сначала установите маржу и плечо.")
-        return
-
-    symbol = "BTCUSDT"  # Тестовая пара
-    direction = "LONG"
-    position_size = marja * plecho
-
-    try:
-        # Получаем параметры торгов для символа
-        info = session.get_instruments_info(category="linear", symbol=symbol)
-        filters = info["result"]["list"][0]["lotSizeFilter"]
-        min_qty = float(filters["minOrderQty"])
-        step = float(filters["qtyStep"])
-
-        raw_qty = position_size
-
-        # Проверка минимального количества
-        if raw_qty < min_qty:
-            await update.message.reply_text(
-                f"⚠️ Сделка по {symbol} не открыта: объём {raw_qty:.4f} меньше минимального ({min_qty})"
-            )
-            return
-
-        # Округляем количество
-        adjusted_qty = raw_qty - (raw_qty % step)
-
-        # Открытие рыночного ордера
-        session.place_order(
-            category="linear",
-            symbol=symbol,
-            side="Buy" if direction == "LONG" else "Sell",
-            order_type="Market",
-            qty=adjusted_qty,
-            time_in_force="FillOrKill"
-        )
-
-        await update.message.reply_text(f"✅ Тестовая сделка по {symbol} открыта")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при открытии сделки:\n{str(e)}")
-
-# ===================== MAIN =====================
+# ===================== ЗАПУСК БОТА =====================
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Обработчики команд и кнопок
+    # Установка одностороннего режима
+    try:
+        session.set_position_mode(category="linear", mode=0)
+        print("✅ Режим позиции: Односторонний")
+    except Exception as e:
+        print(f"❌ Ошибка настройки режима: {e}")
+
+    # Обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("📊 Топ-пары"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
-    app.add_handler(CommandHandler("test_trade", test_trade))
 
-    # Установка маржи
+    # Установка маржи и плеча
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("💰 Маржа"), set_real_marja)],
-        states={
-            SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        states={SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)]},
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
     app.add_handler(conv_marja)
 
-    # Установка плеча
     conv_plecho = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("⚖ Плечо"), set_real_plecho)],
-        states={
-            SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        states={SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)]},
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
     app.add_handler(conv_plecho)
 
