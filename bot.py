@@ -267,6 +267,60 @@ async def funding_sniper_loop(app):
 
 # ===================== MAIN =====================
 
+async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    # Проверяем активность и параметры
+    if chat_id not in sniper_active:
+        await update.message.reply_text("❌ Сначала установите маржу и плечо.")
+        return
+
+    marja = sniper_active[chat_id].get("real_marja")
+    plecho = sniper_active[chat_id].get("real_plecho")
+    if not marja or not plecho:
+        await update.message.reply_text("❌ Сначала установите маржу и плечо.")
+        return
+
+    symbol = "BTCUSDT"  # Можешь изменить на любую пару
+    direction = "LONG"
+    position_size = marja * plecho
+
+    try:
+        # Получаем лимиты по инструменту
+        info = session.get_instruments_info(category="linear", symbol=symbol)
+        filters = info["result"]["list"][0]["lotSizeFilter"]
+        min_qty = float(filters["minOrderQty"])
+        step = float(filters["qtyStep"])
+
+        raw_qty = position_size
+        adjusted_qty = max(min_qty, (raw_qty // step) * step)
+
+        if adjusted_qty < min_qty:
+            await update.message.reply_text(
+                f"⚠️ Недостаточный объём для входа:\n"
+                f"Минимум: {min_qty}, у тебя: {raw_qty}"
+            )
+            return
+
+        # Отправка ордера
+        side = "Buy" if direction == "LONG" else "Sell"
+        session.place_order(
+            category="linear",
+            symbol=symbol,
+            side=side,
+            order_type="Market",
+            qty=adjusted_qty,
+            time_in_force="FillOrKill"
+        )
+
+        await update.message.reply_text(
+            f"✅ Успешно открыта тестовая позиция:\n"
+            f"{symbol} — {direction}, Объём: {adjusted_qty}"
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при открытии тестовой сделки:\n{str(e)}")
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -275,6 +329,8 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("📊 Топ-пары"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
+    app.add_handler(CommandHandler("test_trade", test_trade))
+
 
     # Установка маржи
     conv_marja = ConversationHandler(
