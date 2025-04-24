@@ -22,6 +22,9 @@ keyboard = [["📊 Топ 5 funding-пар"], ["📈 Расчёт прибыли
 latest_top_pairs = []
 sniper_active = {}
 
+# Состояния
+SET_MARJA = 0  # Для установки реальной маржи
+
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
 
 async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,6 +66,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Привет! Выбери действие:", reply_markup=reply_markup)
 
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена текущего действия"""
+    await update.message.reply_text("Действие отменено.")
+    return ConversationHandler.END
+
+# ===================== УСТАНОВКА МАРЖИ =====================
+
+async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало диалога установки маржи"""
+    await update.message.reply_text(
+        "💰 Введите сумму РЕАЛЬНОЙ маржи (в USDT) для автоматических сделок:\n"
+        "(Будет проверен баланс на Bybit)"
+    )
+    return SET_MARJA
+
+async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранение маржи после проверки баланса"""
+    try:
+        marja = float(update.message.text)
+        chat_id = update.effective_chat.id
+
+        # Проверка баланса
+        balance = session.get_wallet_balance(accountType="UNIFIED")
+        usdt_balance = float(balance["result"]["list"][0]["totalEquity"])
+        
+        if marja > usdt_balance:
+            await update.message.reply_text("❌ Недостаточно средств. Пополните баланс.")
+            return ConversationHandler.END
+
+        # Сохраняем маржу
+        if chat_id not in sniper_active:
+            sniper_active[chat_id] = {'active': False}
+        
+        sniper_active[chat_id]['real_marja'] = marja
+        await update.message.reply_text(f"✅ РЕАЛЬНАЯ маржа установлена: {marja} USDT")
+        return ConversationHandler.END
+        
+    except ValueError:
+        await update.message.reply_text("❌ Ошибка. Введите число (например: 100.50)")
+        return SET_MARJA
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
+        return ConversationHandler.END
+
 # ===================== СИГНАЛЫ =====================
 
 async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,16 +130,20 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
 
     if query.data == "sniper_on":
-        sniper_active[chat_id] = {'active': True}
+        if chat_id not in sniper_active:
+            sniper_active[chat_id] = {}
+        sniper_active[chat_id]['active'] = True
         await query.edit_message_text("🟢 Сигналы включены")
     else:
-        sniper_active[chat_id] = {'active': False}
+        if chat_id not in sniper_active:
+            sniper_active[chat_id] = {}
+        sniper_active[chat_id]['active'] = False
         await query.edit_message_text("🔴 Сигналы выключены")
 
 # ===================== ФОНОВАЯ ЗАДАЧА =====================
 
 async def funding_sniper_loop(app):
-    """Постоянная проверка фандинг рейтов"""
+    """Фоновая проверка фандинг рейтов"""
     while True:
         try:
             now_ts = datetime.utcnow().timestamp()
@@ -100,15 +151,15 @@ async def funding_sniper_loop(app):
             tickers = response["result"]["list"]
 
             for chat_id, data in sniper_active.items():
-                if not data.get('active'):
+                if not data.get('active', False):
                     continue
 
-                user_marja = data.get('real_marja', 0)
-                if user_marja <= 0:
+                marja = data.get('real_marja', 0)
+                if marja <= 0:
                     continue
 
                 leverage = 5
-                position = user_marja * leverage
+                position = marja * leverage
 
                 for t in tickers:
                     symbol = t["symbol"]
@@ -148,11 +199,21 @@ async def funding_sniper_loop(app):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Регистрация обработчиков
+    # Обработчики команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
+
+    # Обработчик установки маржи
+    conv_marja = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja)],
+        states={
+            SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_marja)
 
     # Запуск фоновой задачи
     async def on_startup(app):
