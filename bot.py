@@ -219,7 +219,8 @@ async def funding_sniper_loop(app):
                     )
 
                     # 🔥 Попытка открыть реальную сделку
-    try:                info = session.get_instruments_info(category="linear", symbol=top_symbol)
+    try:
+    info = session.get_instruments_info(category="linear", symbol=top_symbol)
     filters = info["result"]["list"][0]["lotSizeFilter"]
     min_qty = float(filters["minOrderQty"])
     step = float(filters["qtyStep"])
@@ -258,6 +259,7 @@ except Exception as e:
         chat_id,
         f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
     )
+
 
         except Exception as e:
             print(f"[Sniper Error] {e}")
