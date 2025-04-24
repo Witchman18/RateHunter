@@ -19,8 +19,8 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 # Инициализация
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 keyboard = [
-    ["📊 Топ-пары", "📐 Калькулятор прибыли"],
-    ["💰 Маржа", "📏 Плечо"],
+    ["📊 Топ-пары", "🧮 Калькулятор прибыли"],
+    ["💰 Маржа", "⚖ Плечо"],
     ["📡 Сигналы"]
 ]
 latest_top_pairs = []
@@ -258,29 +258,28 @@ if __name__ == "__main__":
 
     # Обработчики команд и кнопок
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("📊 Топ 5 funding-пар"), show_top_funding))
+    app.add_handler(MessageHandler(filters.Regex("📊 Топ-пары"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
 
     # Установка маржи
     conv_marja = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("🔧 Установить маржу"), set_real_marja)],
-        states={
-            SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    app.add_handler(conv_marja)
+    entry_points=[MessageHandler(filters.Regex("💰 Маржа"), set_real_marja)],
+    states={
+        SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+)
+app.add_handler(conv_marja)
 
-    # Установка плеча
-    conv_plecho = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("📐 Установить плечо"), set_real_plecho)],
-        states={
-            SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    app.add_handler(conv_plecho)
+conv_plecho = ConversationHandler(
+    entry_points=[MessageHandler(filters.Regex("⚖ Плечо"), set_real_plecho)],
+    states={
+        SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+)
+app.add_handler(conv_plecho)
 
     # Запуск фоновой задачи (фандинг-бот)
     async def on_startup(app):
