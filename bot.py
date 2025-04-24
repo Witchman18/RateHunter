@@ -11,348 +11,356 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Конфигурация ---
+# Конфигурация
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
-DEVELOPER_CHAT_ID = int(os.getenv("DEVELOPER_CHAT_ID"))  # Ваш chat_id в .env
 
-# --- Инициализация ---
-session = HTTP(
-    api_key=BYBIT_API_KEY,
-    api_secret=BYBIT_API_SECRET,
-    testnet=False  # True для тестовой сети
-)
-
-# Установка режима маржи
-try:
-    session.switch_margin_mode(
-        category="linear",
-        symbol="BTCUSDT",
-        tradeMode=1,  # Изолированная маржа
-        buyLeverage=10,
-        sellLeverage=10
-    )
-    print("⚙️ Режим маржи: Изолированный")
-except Exception as e:
-    print(f"❌ Ошибка настройки режима маржи: {e}")
-
+# Инициализация
+session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 keyboard = [
-    ["📊 Топ-пары", "🧮 Калькулятор"],
-    ["💰 Установить маржу", "⚖ Установить плечо"],
-    ["📡 Управление сигналами"]
+    ["📊 Топ-пары", "🧮 Калькулятор прибыли"],
+    ["💰 Маржа", "⚖ Плечо"],
+    ["📡 Сигналы"]
 ]
 latest_top_pairs = []
 sniper_active = {}
 
-# --- Состояния ---
-SET_MARJA, SET_PLECHO = range(2)
+# Состояния
+SET_MARJA = 0
+SET_PLECHO = 1
 
-# --- Проверка разработчика ---
-def is_developer(chat_id: int) -> bool:
-    return chat_id == DEVELOPER_CHAT_ID
+# Для установки реальной маржи
 
-# --- Улучшенный контроль баланса ---
-async def get_usdt_balance():
+# ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
+
+async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает топ-5 пар по funding rate с улучшенным оформлением"""
     try:
-        balance = session.get_wallet_balance(accountType="UNIFIED", coin="USDT")
-        return float(balance["result"]["list"][0]["availableBalance"])
-    except Exception as e:
-        print(f"🚨 Ошибка получения баланса: {e}")
-        return 0
+        response = session.get_tickers(category="linear")
+        tickers = response["result"]["list"]
+        funding_data = []
 
-# --- Сигналы ---
+        for t in tickers:
+            symbol = t["symbol"]
+            rate = t.get("fundingRate")
+            next_time = t.get("nextFundingTime")
+            try:
+                rate = float(rate)
+                funding_data.append((symbol, rate, int(next_time)))
+            except:
+                continue
+
+        funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
+        global latest_top_pairs
+        latest_top_pairs = funding_data[:5]
+
+        msg = "📊 Топ пары:\n\n"
+        now_ts = datetime.utcnow().timestamp()
+        for symbol, rate, ts in latest_top_pairs:
+            delta_sec = int(ts / 1000 - now_ts)
+            h, m = divmod(delta_sec // 60, 60)
+            time_left = f"{h}ч {m}м"
+            direction = "📈 LONG" if rate < 0 else "📉 SHORT"
+
+            msg += (
+                f"🎟 {symbol}\n"
+                f"{direction} Направление\n"
+                f"💹 Фандинг: {rate * 100:.4f}%\n"
+                f"⌛ Выплата через: {time_left}\n\n"
+            )
+
+        await update.message.reply_text(msg.strip())
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при получении топа: {e}")
+
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Что делаем?", reply_markup=reply_markup)
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Действие отменено.")
+    return ConversationHandler.END
+
+# ===================== УСТАНОВКА МАРЖИ =====================
+
+async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("💰 Введите сумму РЕАЛЬНОЙ маржи (в USDT):")
+    return SET_MARJA
+
+async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        marja = float(update.message.text)
+        chat_id = update.effective_chat.id
+        balance = session.get_wallet_balance(accountType="UNIFIED")
+        usdt_balance = float(balance["result"]["list"][0]["totalEquity"])
+
+        if marja > usdt_balance:
+            await update.message.reply_text("❌ Недостаточно средств.")
+            return ConversationHandler.END
+
+        if chat_id not in sniper_active:
+            sniper_active[chat_id] = {"active": False}
+        sniper_active[chat_id]["real_marja"] = marja
+        await update.message.reply_text(f"✅ Маржа установлена: {marja} USDT")
+        return ConversationHandler.END
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
+        return ConversationHandler.END
+        
+# ===================== УСТАНОВКА ПЛЕЧА =====================
+
+async def set_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📐 Введите плечо (например: 5):")
+    return SET_PLECHO
+
+async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        plecho = float(update.message.text)
+        chat_id = update.effective_chat.id
+
+        if chat_id not in sniper_active:
+            sniper_active[chat_id] = {}
+
+        sniper_active[chat_id]['real_plecho'] = plecho
+        await update.message.reply_text(f"✅ Плечо установлено: {plecho}x")
+        return ConversationHandler.END
+
+    except ValueError:
+        await update.message.reply_text("❌ Ошибка. Введите число (например: 5)")
+        return SET_PLECHO
+
+# ===================== СИГНАЛЫ =====================
+
 async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню управления сигналами"""
     buttons = [
-        [InlineKeyboardButton("🔔 Включить", callback_data="sniper_on")],
-        [InlineKeyboardButton("🔕 Выключить", callback_data="sniper_off")]
+        [InlineKeyboardButton("🔔 Вкл", callback_data="sniper_on")],
+        [InlineKeyboardButton("🔕 Выкл", callback_data="sniper_off")]
     ]
-    await update.message.reply_text(
-        "📡 Управление торговыми сигналами:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text("📡 Управление сигналами:", reply_markup=reply_markup)
 
 async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
-    
     if query.data == "sniper_on":
-        sniper_active[chat_id] = {
-            **sniper_active.get(chat_id, {}),
-            "active": True
-        }
-        await query.edit_message_text("🟢 Автоторговля включена")
+        sniper_active[chat_id] = sniper_active.get(chat_id, {})
+        sniper_active[chat_id]["active"] = True
+        await query.edit_message_text("🟢 Сигналы включены")
     else:
-        sniper_active[chat_id] = {
-            **sniper_active.get(chat_id, {}),
-            "active": False
-        }
-        await query.edit_message_text("🔴 Автоторговля выключена")
+        sniper_active[chat_id] = sniper_active.get(chat_id, {})
+        sniper_active[chat_id]["active"] = False
+        await query.edit_message_text("🔴 Сигналы выключены")
 
-# --- Основные функции ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(
-        "🚀 Бот готов к работе!",
-        reply_markup=reply_markup
-    )
+# ===================== СНАИПЕР =====================
+# ===================== ФОНОВАЯ ЗАДАЧА =====================
 
-async def show_top_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        response = session.get_tickers(category="linear")
-        usdt_pairs = [t for t in response["result"]["list"] if t["symbol"].endswith("USDT")]
-        
-        if not usdt_pairs:
-            await update.message.reply_text("❌ Нет доступных USDT-пар")
-            return
-
-        top_pairs = sorted(
-            [(t["symbol"], float(t["fundingRate"]), int(t["nextFundingTime"])) 
-            for t in usdt_pairs if t.get("fundingRate")],
-            key=lambda x: abs(x[1]),
-            reverse=True
-        )[:5]
-
-        global latest_top_pairs
-        latest_top_pairs = top_pairs
-
-        msg = "📊 Топ USDT-пар:\n\n"
-        for symbol, rate, ts in top_pairs:
-            time_left = datetime.fromtimestamp(ts/1000).strftime("%H:%M:%S")
-            msg += (
-                f"▪️ {symbol}\n"
-                f"Фандинг: {rate*100:.4f}% | "
-                f"Выплата: {time_left}\n"
-                f"Направление: {'LONG' if rate < 0 else 'SHORT'}\n\n"
-            )
-        
-        await update.message.reply_text(msg)
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
-
-# --- Управление параметрами ---
-async def set_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💰 Введите сумму маржи в USDT (мин. 10):")
-    return SET_MARJA
-
-async def save_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        marja = float(update.message.text)
-        if marja < 10:
-            await update.message.reply_text("❌ Минимум 10 USDT")
-            return SET_MARJA
-            
-        available = await get_usdt_balance()
-        if marja > available:
-            await update.message.reply_text(f"❌ Доступно: {available:.2f} USDT")
-            return SET_MARJA
-
-        chat_id = update.effective_chat.id
-        sniper_active[chat_id] = {
-            **sniper_active.get(chat_id, {}),
-            "real_marja": marja
-        }
-        await update.message.reply_text(f"✅ Маржа: {marja} USDT")
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ Введите число (например: 100)")
-        return SET_MARJA
-
-async def set_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("↔️ Введите плечо (1-100):")
-    return SET_PLECHO
-
-async def save_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        plecho = int(update.message.text)
-        if not 1 <= plecho <= 100:
-            await update.message.reply_text("❌ Допустимо 1-100")
-            return SET_PLECHO
-
-        chat_id = update.effective_chat.id
-        sniper_active[chat_id] = {
-            **sniper_active.get(chat_id, {}),
-            "real_plecho": plecho
-        }
-        await update.message.reply_text(f"✅ Плечо: {plecho}x")
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ Введите целое число")
-        return SET_PLECHO
-
-# --- Торговая логика ---
-async def execute_trade(symbol: str, direction: str, chat_id: int):
-    """Безопасное исполнение сделки"""
-    try:
-        settings = sniper_active.get(chat_id, {})
-        if not settings.get("real_marja") or not settings.get("real_plecho"):
-            await app.bot.send_message(chat_id, "❌ Не установлены маржа/плечо")
-            return False
-
-        symbol_info = session.get_instruments_info(category="linear", symbol=symbol)
-        if not symbol_info["result"]["list"]:
-            await app.bot.send_message(chat_id, f"❌ Пара {symbol} не найдена")
-            return False
-
-        min_qty = float(symbol_info["result"]["list"][0]["lotSizeFilter"]["minOrderQty"])
-        qty_step = float(symbol_info["result"]["list"][0]["lotSizeFilter"]["qtyStep"])
-        position_size = settings["real_marja"] * settings["real_plecho"]
-        adjusted_qty = max(min_qty, round(position_size / qty_step) * qty_step)
-
-        if adjusted_qty > await get_usdt_balance():
-            await app.bot.send_message(chat_id, "❌ Недостаточно USDT")
-            return False
-
-        await app.bot.send_message(
-            chat_id,
-            f"🔍 Анализ сделки:\n"
-            f"• Пара: {symbol}\n"
-            f"• Направление: {direction}\n"
-            f"• Объем: {adjusted_qty:.2f} USDT"
-        )
-
-        order = session.place_order(
-            category="linear",
-            symbol=symbol,
-            side="Buy" if direction == "LONG" else "Sell",
-            order_type="Market",
-            qty=adjusted_qty,
-            time_in_force="FillOrKill"
-        )
-
-        await app.bot.send_message(
-            chat_id,
-            f"✅ Сделка исполнена:\n"
-            f"• ID: {order['result']['orderId']}\n"
-            f"• Цена: {order['result']['avgPrice']}"
-        )
-        return True
-
-    except Exception as e:
-        await app.bot.send_message(
-            chat_id,
-            f"⛔ Ошибка:\n{str(e)}"
-        )
-        return False
-
-# --- Секретная команда для разработчика ---
-async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Только для разработчика! Тестовая сделка"""
-    chat_id = update.effective_chat.id
-    
-    if not is_developer(chat_id):
-        await update.message.reply_text("❌ Команда не найдена")
-        return
-
-    try:
-        # Проверяем настройки
-        if chat_id not in sniper_active:
-            await update.message.reply_text("❌ Сначала установите маржу и плечо")
-            return
-
-        marja = sniper_active[chat_id].get("real_marja")
-        plecho = sniper_active[chat_id].get("real_plecho")
-        
-        if not marja or not plecho:
-            await update.message.reply_text(
-                "❌ Не настроены:\n"
-                f"• Маржа: {'✅' if marja else '❌'}\n"
-                f"• Плечо: {'✅' if plecho else '❌'}"
-            )
-            return
-
-        # Используем BTCUSDT для теста
-        symbol = "BTCUSDT"
-        direction = "LONG"  # Тестовое направление
-        
-        await update.message.reply_text(
-            f"🧪 Тестовая сделка:\n"
-            f"• Пара: {symbol}\n"
-            f"• Направление: {direction}\n"
-            f"• Маржа: {marja} USDT\n"
-            f"• Плечо: {plecho}x\n\n"
-            f"Отправляю запрос..."
-        )
-
-        success = await execute_trade(symbol, direction, chat_id)
-        
-        if success:
-            await update.message.reply_text("✅ Тест успешен! Проверьте терминал Bybit")
-        else:
-            await update.message.reply_text("❌ Тест не удался. Смотрите логи")
-
-    except Exception as e:
-        await update.message.reply_text(f"💥 Критическая ошибка: {str(e)}")
-
-# --- Фоновая задача ---
-async def funding_sniper(app):
+async def funding_sniper_loop(app):
+    """Фоновая проверка funding rate и автоматическое открытие позиции по самой прибыльной паре"""
     while True:
         try:
-            tickers = session.get_tickers(category="linear")["result"]["list"]
-            usdt_pairs = [t for t in tickers if t["symbol"].endswith("USDT")]
+            now_ts = datetime.utcnow().timestamp()
 
-            valid_pairs = []
-            for t in usdt_pairs:
+            # Получаем funding-рейты
+            response = session.get_tickers(category="linear")
+            tickers = response["result"]["list"]
+
+            # Обновляем топ 5 пар по фандингу
+            funding_data = []
+            for t in tickers:
+                symbol = t["symbol"]
+                rate = t.get("fundingRate")
+                next_time = t.get("nextFundingTime")
                 try:
-                    rate = float(t["fundingRate"])
-                    valid_pairs.append((t["symbol"], rate, int(t["nextFundingTime"])))
+                    rate = float(rate)
+                    funding_data.append((symbol, rate, int(next_time)))
                 except:
                     continue
 
-            if not valid_pairs:
+            funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
+            global latest_top_pairs
+            latest_top_pairs = funding_data[:5]
+
+            if not latest_top_pairs:
                 await asyncio.sleep(30)
                 continue
 
-            best_pair = max(valid_pairs, key=lambda x: abs(x[1]))
-            symbol, rate, next_ts = best_pair
-            time_left = (next_ts - int(datetime.now().timestamp()*1000)) // 60000
+            top_symbol, rate, next_ts = latest_top_pairs[0]
+            minutes_left = int((next_ts / 1000 - now_ts) / 60)
 
-            if 0 <= time_left <= 1:
+            if 0 <= minutes_left <= 1:
                 direction = "LONG" if rate < 0 else "SHORT"
-                
-                for chat_id in list(sniper_active.keys()):
-                    if sniper_active[chat_id].get("active"):
-                        await execute_trade(symbol, direction, chat_id)
-                        await asyncio.sleep(1)
+
+                for chat_id, data in sniper_active.items():
+                    if not data.get('active'):
+                        continue
+
+                    marja = data.get('real_marja')
+                    plecho = data.get('real_plecho')
+                    if not marja or not plecho:
+                        continue
+
+                    position_size = marja * plecho
+                    gross = position_size * abs(rate)
+                    fees = position_size * 0.0006
+                    spread = position_size * 0.0002
+                    net = gross - fees - spread
+                    roi = (net / marja) * 100
+
+                    # 📡 Уведомление
+                    await app.bot.send_message(
+                        chat_id,
+                        f"📡 Сигнал обнаружен: {top_symbol}\n"
+                        f"{'📈 LONG' if direction == 'LONG' else '📉 SHORT'} | 📊 {rate * 100:.4f}%\n"
+                        f"💼 {marja} USDT x{plecho}  |  💰 Доход: {net:.2f} USDT\n"
+                        f"⏱ Вход через 1 минуту"
+                    )
+
+                    # 🔥 Попытка открыть реальную сделку
+                    try:
+                        info = session.get_instruments_info(category="linear", symbol=top_symbol)
+                        filters = info["result"]["list"][0]["lotSizeFilter"]
+                        min_qty = float(filters["minOrderQty"])
+                        step = float(filters["qtyStep"])
+
+                        raw_qty = position_size
+                        adjusted_qty = max(min_qty, (raw_qty // step) * step)
+
+                        if adjusted_qty < min_qty:
+                            await app.bot.send_message(
+                                chat_id,
+                                f"⚠️ Сделка по {top_symbol} не открыта: недостаточный объём для входа.\n"
+                                f"(Минимум: {min_qty}, попытка: {raw_qty})"
+                            )
+                            continue
+
+                        session.place_order(
+                            category="linear",
+                            symbol=top_symbol,
+                            side="Buy" if direction == "LONG" else "Sell",
+                            order_type="Market",
+                            qty=adjusted_qty,
+                            time_in_force="FillOrKill"
+                        )
+
+                        await asyncio.sleep(60)
+                        await app.bot.send_message(
+                            chat_id,
+                            f"✅ Сделка завершена: {top_symbol} ({direction})\n"
+                            f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
+                        )
+
+                    except Exception as e:
+                        await app.bot.send_message(
+                            chat_id,
+                            f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
+                        )
 
         except Exception as e:
-            print(f"🔴 Ошибка цикла: {e}")
-        finally:
-            await asyncio.sleep(30)
+            print(f"[Sniper Error] {e}")
 
-# --- Запуск ---
+        await asyncio.sleep(30)
+
+async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    # Проверяем активность и параметры
+    if chat_id not in sniper_active:
+        await update.message.reply_text("❌ Сначала установите маржу и плечо.")
+        return
+
+    marja = sniper_active[chat_id].get("real_marja")
+    plecho = sniper_active[chat_id].get("real_plecho")
+    if not marja or not plecho:
+        await update.message.reply_text("❌ Сначала установите маржу и плечо.")
+        return
+
+    symbol = "BTCUSDT"  # Можешь изменить на любую пару
+    direction = "LONG"
+    position_size = marja * plecho
+
+    try:
+    # Получаем параметры торгов для символа
+    info = session.get_instruments_info(category="linear", symbol=top_symbol)
+    filters = info["result"]["list"][0]["lotSizeFilter"]
+    min_qty = float(filters["minOrderQty"])
+    step = float(filters["qtyStep"])
+
+    raw_qty = position_size
+
+    # Проверка: если меньше минимального — не открываем
+    if raw_qty < min_qty:
+        await app.bot.send_message(
+            chat_id,
+            f"⚠️ Сделка по {top_symbol} не открыта: объём {raw_qty:.4f} меньше минимального ({min_qty})"
+        )
+        continue
+
+    # Округляем вниз до ближайшего допустимого количества
+    adjusted_qty = raw_qty - (raw_qty % step)
+
+    # Открытие рыночного ордера
+    session.place_order(
+        category="linear",
+        symbol=top_symbol,
+        side="Buy" if direction == "LONG" else "Sell",
+        order_type="Market",
+        qty=adjusted_qty,
+        time_in_force="FillOrKill"
+    )
+
+    await asyncio.sleep(60)
+    await app.bot.send_message(
+        chat_id,
+        f"✅ Сделка завершена: {top_symbol} ({direction})\n"
+        f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
+    )
+
+except Exception as e:
+    await app.bot.send_message(
+        chat_id,
+        f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
+    )
+# ===================== MAIN =====================
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Основные обработчики
+    # Обработчики команд и кнопок
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("📊 Топ-пары"), show_top_pairs))
-    
-    # Установка параметров
-    app.add_handler(ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("💰 Установить маржу"), set_marja)],
-        states={SET_MARJA: [MessageHandler(filters.TEXT, save_marja)]},
-        fallbacks=[]
-    ))
-    
-    app.add_handler(ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("⚖ Установить плечо"), set_plecho)],
-        states={SET_PLECHO: [MessageHandler(filters.TEXT, save_plecho)]},
-        fallbacks=[]
-    ))
-
-    # Сигналы
-    app.add_handler(MessageHandler(filters.Regex("📡 Управление сигналами"), signal_menu))
+    app.add_handler(MessageHandler(filters.Regex("📊 Топ-пары"), show_top_funding))
+    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
+    app.add_handler(CommandHandler("test_trade", test_trade))
 
-    # Секретная команда (только для разработчика)
-    app.add_handler(CommandHandler("test_trade", test_trade, filters=filters.User(DEVELOPER_CHAT_ID)))
 
-    # Фоновая задача
-    async def on_startup(_):
-        asyncio.create_task(funding_sniper(app))
-    
+    # Установка маржи
+    conv_marja = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("💰 Маржа"), set_real_marja)],
+        states={
+            SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_marja)
+
+    # Установка плеча
+    conv_plecho = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("⚖ Плечо"), set_real_plecho)],
+        states={
+            SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_plecho)
+
+    # Запуск фоновой задачи (фандинг-бот)
+    async def on_startup(app):
+        asyncio.create_task(funding_sniper_loop(app))
+
     app.post_init = on_startup
-    print("🟢 Бот запущен")
     app.run_polling()
