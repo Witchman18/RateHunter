@@ -54,8 +54,7 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
             h, m = divmod(delta_sec // 60, 60)
             time_left = f"{h}ч {m}м"
             direction = "📈 LONG" if rate < 0 else "📉 SHORT"
-            msg += f"{symbol} — {rate * 100:.4f}% → {direction} ⏱ через {time_left}
-"
+            msg += f"{symbol} — {rate * 100:.4f}% → {direction} ⏱ через {time_left}"
 
         await update.message.reply_text(msg)
     except Exception as e:
