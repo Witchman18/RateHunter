@@ -224,27 +224,49 @@ async def funding_sniper_loop(app):
 )
 
                     # 🔥 Попытка открыть реальную сделку
-                    try:
-                        side = "Buy" if direction == "LONG" else "Sell"
-                        session.place_order(
-                            category="linear",
-                            symbol=top_symbol,
-                            side=side,
-                            order_type="Market",
-                            qty=round(position_size, 2),
-                            time_in_force="FillOrKill"
-                        )
-                        await app.bot.send_message(
-    chat_id,
-    f"✅ Сделка завершена: {symbol} ({direction})\n"
-    f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
-)
+                   try:
+    # Получаем параметры торгов для символа
+    info = session.get_instruments_info(category="linear", symbol=top_symbol)
+    filters = info["result"]["list"][0]["lotSizeFilter"]
+    min_qty = float(filters["minOrderQty"])
+    step = float(filters["qtyStep"])
 
-                    except Exception as e:
-                        await app.bot.send_message(
-                            chat_id,
-                            f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
-                        )
+    # Округляем размер позиции вниз к ближайшему допустимому
+    raw_qty = position_size
+    adjusted_qty = max(min_qty, (raw_qty // step) * step)
+
+    # Проверка: не меньше минимального
+    if adjusted_qty < min_qty:
+        await app.bot.send_message(
+            chat_id,
+            f"⚠️ Сделка по {top_symbol} не открыта: недостаточный объём для входа.\n"
+            f"(Минимум: {min_qty}, попытка: {raw_qty})"
+        )
+        continue
+
+    # Открываем позицию
+    session.place_order(
+        category="linear",
+        symbol=top_symbol,
+        side="Buy" if direction == "LONG" else "Sell",
+        order_type="Market",
+        qty=adjusted_qty,
+        time_in_force="FillOrKill"
+    )
+
+    await asyncio.sleep(60)  # Ожидание фандинга
+    await app.bot.send_message(
+        chat_id,
+        f"✅ Сделка завершена: {top_symbol} ({direction})\n"
+        f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
+    )
+
+except Exception as e:
+    await app.bot.send_message(
+        chat_id,
+        f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
+    )
+
 
         except Exception as e:
             print(f"[Sniper Error] {e}")
