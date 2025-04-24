@@ -219,48 +219,46 @@ async def funding_sniper_loop(app):
                     )
 
                     # 🔥 Попытка открыть реальную сделку
-    try:
-    info = session.get_instruments_info(category="linear", symbol=top_symbol)
-    filters = info["result"]["list"][0]["lotSizeFilter"]
-    min_qty = float(filters["minOrderQty"])
-    step = float(filters["qtyStep"])
+                    try:
+                        info = session.get_instruments_info(category="linear", symbol=top_symbol)
+                        filters = info["result"]["list"][0]["lotSizeFilter"]
+                        min_qty = float(filters["minOrderQty"])
+                        step = float(filters["qtyStep"])
 
-    # Получаем цену и пересчитываем в qty
-    ticker_info = session.get_tickers(category="linear", symbol=top_symbol)
-    last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
-    raw_qty = position_size / last_price
-    adjusted_qty = raw_qty - (raw_qty % step)
+                        # Получаем цену и пересчитываем в qty
+                        ticker_info = session.get_tickers(category="linear", symbol=top_symbol)
+                        last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
+                        raw_qty = position_size / last_price
+                        adjusted_qty = raw_qty - (raw_qty % step)
 
-    if adjusted_qty < min_qty:
-        await app.bot.send_message(
-            chat_id,
-            f"⚠️ Сделка по {top_symbol} не открыта: объём {adjusted_qty:.6f} меньше минимального ({min_qty})"
-        )
-        continue
+                        if adjusted_qty < min_qty:
+                            await app.bot.send_message(
+                                chat_id,
+                                f"⚠️ Сделка по {top_symbol} не открыта: объём {adjusted_qty:.6f} меньше минимального ({min_qty})"
+                            )
+                            continue
 
-    session.place_order(
-        category="linear",
-        symbol=top_symbol,
-        side="Buy" if direction == "LONG" else "Sell",
-        order_type="Market",
-        qty=adjusted_qty,
-        time_in_force="FillOrKill"
-    )
+                        session.place_order(
+                            category="linear",
+                            symbol=top_symbol,
+                            side="Buy" if direction == "LONG" else "Sell",
+                            order_type="Market",
+                            qty=adjusted_qty,
+                            time_in_force="FillOrKill"
+                        )
 
-    await asyncio.sleep(60)
-    await app.bot.send_message(
-        chat_id,
-        f"✅ Сделка завершена: {top_symbol} ({direction})\n"
-        f"📦 Объём: {adjusted_qty:.6f} {top_symbol.replace('USDT', '')}"
-    )
+                        await asyncio.sleep(60)
+                        await app.bot.send_message(
+                            chat_id,
+                            f"✅ Сделка завершена: {top_symbol} ({direction})\n"
+                            f"📦 Объём: {adjusted_qty:.6f} {top_symbol.replace('USDT', '')}"
+                        )
 
-except Exception as e:
-    await app.bot.send_message(
-        chat_id,
-        f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
-    )
-
-
+                    except Exception as e:
+                        await app.bot.send_message(
+                            chat_id,
+                            f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
+                        )
 
         except Exception as e:
             print(f"[Sniper Error] {e}")
@@ -286,51 +284,51 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     position_size = marja * plecho
 
     try:
-    # Получаем цену символа
-    ticker_info = session.get_tickers(category="linear", symbol=symbol)
-    last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
+        # Получаем цену символа
+        ticker_info = session.get_tickers(category="linear", symbol=symbol)
+        last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
 
-    # Получаем параметры торгов для символа
-    info = session.get_instruments_info(category="linear", symbol=symbol)
-    filters = info["result"]["list"][0]["lotSizeFilter"]
-    min_qty = float(filters["minOrderQty"])
-    step = float(filters["qtyStep"])
+        # Получаем параметры торгов для символа
+        info = session.get_instruments_info(category="linear", symbol=symbol)
+        filters = info["result"]["list"][0]["lotSizeFilter"]
+        min_qty = float(filters["minOrderQty"])
+        step = float(filters["qtyStep"])
 
-    # Расчёт количества монеты
-    raw_qty = position_size / last_price
+        # Расчёт количества монеты
+        raw_qty = position_size / last_price
 
-    if raw_qty < min_qty:
+        if raw_qty < min_qty:
+            await context.bot.send_message(
+                chat_id,
+                f"⚠️ Сделка по {symbol} не открыта: объём {raw_qty:.6f} меньше минимального ({min_qty})"
+            )
+            return
+
+        # Округляем вниз по шагу
+        adjusted_qty = raw_qty - (raw_qty % step)
+
+        # Открытие рыночного ордера
+        session.place_order(
+            category="linear",
+            symbol=symbol,
+            side="Buy" if direction == "LONG" else "Sell",
+            order_type="Market",
+            qty=adjusted_qty,
+            time_in_force="FillOrKill"
+        )
+
+        await asyncio.sleep(60)
         await context.bot.send_message(
             chat_id,
-            f"⚠️ Сделка по {symbol} не открыта: объём {raw_qty:.6f} меньше минимального ({min_qty})"
+            f"✅ Сделка завершена: {symbol} ({direction})\n"
+            f"📦 Объём: {adjusted_qty:.6f} {symbol.replace('USDT', '')}"
         )
-        return
 
-    # Округляем вниз по шагу
-    adjusted_qty = raw_qty - (raw_qty % step)
-
-    # Открытие рыночного ордера
-    session.place_order(
-        category="linear",
-        symbol=symbol,
-        side="Buy" if direction == "LONG" else "Sell",
-        order_type="Market",
-        qty=adjusted_qty,
-        time_in_force="FillOrKill"
-    )
-
-    await asyncio.sleep(60)
-    await context.bot.send_message(
-        chat_id,
-        f"✅ Сделка завершена: {symbol} ({direction})\n"
-        f"📦 Объём: {adjusted_qty:.6f} {symbol.replace('USDT', '')}"
-    )
-
-except Exception as e:
-    await context.bot.send_message(
-        chat_id,
-        f"❌ Ошибка при открытии сделки по {symbol}:\n{str(e)}"
-    )
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id,
+            f"❌ Ошибка при открытии сделки по {symbol}:\n{str(e)}"
+        )
 
 # ===================== MAIN =====================
 
