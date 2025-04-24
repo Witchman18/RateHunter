@@ -181,12 +181,10 @@ async def funding_sniper_loop(app):
                 except:
                     continue
 
-            # Сортируем по абсолютной величине funding rate и берем топ-5
             funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
             global latest_top_pairs
             latest_top_pairs = funding_data[:5]
 
-            # Берем только самую первую — самую прибыльную пару
             if not latest_top_pairs:
                 await asyncio.sleep(30)
                 continue
@@ -194,11 +192,9 @@ async def funding_sniper_loop(app):
             top_symbol, rate, next_ts = latest_top_pairs[0]
             minutes_left = int((next_ts / 1000 - now_ts) / 60)
 
-            # Проверка — если выплата через 1 минуту, то можно заходить
             if 0 <= minutes_left <= 1:
                 direction = "LONG" if rate < 0 else "SHORT"
 
-                # Проверяем по всем активным пользователям
                 for chat_id, data in sniper_active.items():
                     if not data.get('active'):
                         continue
@@ -213,60 +209,56 @@ async def funding_sniper_loop(app):
                     fees = position_size * 0.0006
                     spread = position_size * 0.0002
                     net = gross - fees - spread
+                    roi = (net / marja) * 100
 
-                    # 📡 Уведомление о предстоящей сделке
+                    # 📡 Уведомление
                     await app.bot.send_message(
-    chat_id,
-    f"📡 Сигнал обнаружен: {symbol}\n"
-    f"{'📈 LONG' if direction == 'LONG' else '📉 SHORT'} | 📊 {rate * 100:.4f}%\n"
-    f"💼 {marja} USDT x{plecho}  |  💰 Доход: {net:.2f} USDT\n"
-    f"⏱ Вход через 1 минуту"
-)
+                        chat_id,
+                        f"📡 Сигнал обнаружен: {top_symbol}\n"
+                        f"{'📈 LONG' if direction == 'LONG' else '📉 SHORT'} | 📊 {rate * 100:.4f}%\n"
+                        f"💼 {marja} USDT x{plecho}  |  💰 Доход: {net:.2f} USDT\n"
+                        f"⏱ Вход через 1 минуту"
+                    )
 
                     # 🔥 Попытка открыть реальную сделку
-                   try:
-    # Получаем параметры торгов для символа
-    info = session.get_instruments_info(category="linear", symbol=top_symbol)
-    filters = info["result"]["list"][0]["lotSizeFilter"]
-    min_qty = float(filters["minOrderQty"])
-    step = float(filters["qtyStep"])
+                    try:
+                        info = session.get_instruments_info(category="linear", symbol=top_symbol)
+                        filters = info["result"]["list"][0]["lotSizeFilter"]
+                        min_qty = float(filters["minOrderQty"])
+                        step = float(filters["qtyStep"])
 
-    # Округляем размер позиции вниз к ближайшему допустимому
-    raw_qty = position_size
-    adjusted_qty = max(min_qty, (raw_qty // step) * step)
+                        raw_qty = position_size
+                        adjusted_qty = max(min_qty, (raw_qty // step) * step)
 
-    # Проверка: не меньше минимального
-    if adjusted_qty < min_qty:
-        await app.bot.send_message(
-            chat_id,
-            f"⚠️ Сделка по {top_symbol} не открыта: недостаточный объём для входа.\n"
-            f"(Минимум: {min_qty}, попытка: {raw_qty})"
-        )
-        continue
+                        if adjusted_qty < min_qty:
+                            await app.bot.send_message(
+                                chat_id,
+                                f"⚠️ Сделка по {top_symbol} не открыта: недостаточный объём для входа.\n"
+                                f"(Минимум: {min_qty}, попытка: {raw_qty})"
+                            )
+                            continue
 
-    # Открываем позицию
-    session.place_order(
-        category="linear",
-        symbol=top_symbol,
-        side="Buy" if direction == "LONG" else "Sell",
-        order_type="Market",
-        qty=adjusted_qty,
-        time_in_force="FillOrKill"
-    )
+                        session.place_order(
+                            category="linear",
+                            symbol=top_symbol,
+                            side="Buy" if direction == "LONG" else "Sell",
+                            order_type="Market",
+                            qty=adjusted_qty,
+                            time_in_force="FillOrKill"
+                        )
 
-    await asyncio.sleep(60)  # Ожидание фандинга
-    await app.bot.send_message(
-        chat_id,
-        f"✅ Сделка завершена: {top_symbol} ({direction})\n"
-        f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
-    )
+                        await asyncio.sleep(60)
+                        await app.bot.send_message(
+                            chat_id,
+                            f"✅ Сделка завершена: {top_symbol} ({direction})\n"
+                            f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
+                        )
 
-except Exception as e:
-    await app.bot.send_message(
-        chat_id,
-        f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
-    )
-
+                    except Exception as e:
+                        await app.bot.send_message(
+                            chat_id,
+                            f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
+                        )
 
         except Exception as e:
             print(f"[Sniper Error] {e}")
