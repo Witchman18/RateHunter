@@ -30,8 +30,6 @@ sniper_active = {}
 SET_MARJA = 0
 SET_PLECHO = 1
 
-# Для установки реальной маржи
-
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
 
 async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -73,8 +71,6 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg.strip())
     except Exception as e:
         await update.message.reply_text(f"Ошибка при получении топа: {e}")
-
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -156,11 +152,10 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sniper_active[chat_id]["active"] = False
         await query.edit_message_text("🔴 Сигналы выключены")
 
-# ===================== СНАИПЕР =====================
 # ===================== ФОНОВАЯ ЗАДАЧА =====================
 
 async def funding_sniper_loop(app):
-    """Фоновая проверка funding rate и автоматическое открытие позиции по самой прибыльной паре"""
+    """Фоновая проверка funding rate и автоматическое открытие позиции"""
     while True:
         try:
             now_ts = datetime.utcnow().timestamp()
@@ -211,7 +206,7 @@ async def funding_sniper_loop(app):
                     net = gross - fees - spread
                     roi = (net / marja) * 100
 
-                    # 📡 Уведомление
+                    # Уведомление о сигнале
                     await app.bot.send_message(
                         chat_id,
                         f"📡 Сигнал обнаружен: {top_symbol}\n"
@@ -220,7 +215,7 @@ async def funding_sniper_loop(app):
                         f"⏱ Вход через 1 минуту"
                     )
 
-                    # 🔥 Попытка открыть реальную сделку
+                    # Открытие сделки
                     try:
                         info = session.get_instruments_info(category="linear", symbol=top_symbol)
                         filters = info["result"]["list"][0]["lotSizeFilter"]
@@ -265,8 +260,6 @@ async def funding_sniper_loop(app):
 
         await asyncio.sleep(30)
 
-# ===================== MAIN =====================
-
 async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
@@ -281,52 +274,44 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Сначала установите маржу и плечо.")
         return
 
-    symbol = "BTCUSDT"  # Можешь изменить на любую пару
+    symbol = "BTCUSDT"  # Тестовая пара
     direction = "LONG"
     position_size = marja * plecho
 
     try:
-    # Получаем параметры торгов для символа
-    info = session.get_instruments_info(category="linear", symbol=top_symbol)
-    filters = info["result"]["list"][0]["lotSizeFilter"]
-    min_qty = float(filters["minOrderQty"])
-    step = float(filters["qtyStep"])
+        # Получаем параметры торгов для символа
+        info = session.get_instruments_info(category="linear", symbol=symbol)
+        filters = info["result"]["list"][0]["lotSizeFilter"]
+        min_qty = float(filters["minOrderQty"])
+        step = float(filters["qtyStep"])
 
-    raw_qty = position_size
+        raw_qty = position_size
 
-    # Проверка: если меньше минимального — не открываем
-    if raw_qty < min_qty:
-        await app.bot.send_message(
-            chat_id,
-            f"⚠️ Сделка по {top_symbol} не открыта: объём {raw_qty:.4f} меньше минимального ({min_qty})"
+        # Проверка минимального количества
+        if raw_qty < min_qty:
+            await update.message.reply_text(
+                f"⚠️ Сделка по {symbol} не открыта: объём {raw_qty:.4f} меньше минимального ({min_qty})"
+            )
+            return
+
+        # Округляем количество
+        adjusted_qty = raw_qty - (raw_qty % step)
+
+        # Открытие рыночного ордера
+        session.place_order(
+            category="linear",
+            symbol=symbol,
+            side="Buy" if direction == "LONG" else "Sell",
+            order_type="Market",
+            qty=adjusted_qty,
+            time_in_force="FillOrKill"
         )
-        continue
 
-    # Округляем вниз до ближайшего допустимого количества
-    adjusted_qty = raw_qty - (raw_qty % step)
+        await update.message.reply_text(f"✅ Тестовая сделка по {symbol} открыта")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при открытии сделки:\n{str(e)}")
 
-    # Открытие рыночного ордера
-    session.place_order(
-        category="linear",
-        symbol=top_symbol,
-        side="Buy" if direction == "LONG" else "Sell",
-        order_type="Market",
-        qty=adjusted_qty,
-        time_in_force="FillOrKill"
-    )
-
-    await asyncio.sleep(60)
-    await app.bot.send_message(
-        chat_id,
-        f"✅ Сделка завершена: {top_symbol} ({direction})\n"
-        f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
-    )
-
-except Exception as e:
-    await app.bot.send_message(
-        chat_id,
-        f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
-    )
+# ===================== MAIN =====================
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -337,7 +322,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback))
     app.add_handler(CommandHandler("test_trade", test_trade))
-
 
     # Установка маржи
     conv_marja = ConversationHandler(
@@ -359,9 +343,10 @@ if __name__ == "__main__":
     )
     app.add_handler(conv_plecho)
 
-    # Запуск фоновой задачи (фандинг-бот)
+    # Запуск фоновой задачи
     async def on_startup(app):
         asyncio.create_task(funding_sniper_loop(app))
 
     app.post_init = on_startup
+    print("Бот запущен...")
     app.run_polling()
