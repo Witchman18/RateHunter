@@ -153,9 +153,7 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================== ФОНОВАЯ ЗАДАЧА =====================
 
 async def funding_sniper_loop(app):
-    """Фоновая проверка фандинг рейтов и отправка сигналов"""
-    last_signal_time = {}  # Хранилище последних сигналов по паре и чату
-
+    """Фоновая проверка funding rate и автоматическое открытие позиции"""
     while True:
         try:
             now_ts = datetime.utcnow().timestamp()
@@ -166,15 +164,15 @@ async def funding_sniper_loop(app):
                 if not data.get('active', False):
                     continue
 
-                marja = data.get('real_marja', 0)
-                if marja <= 0:
+                marja = data.get('real_marja')
+                plecho = data.get('real_plecho')
+
+                if not marja or not plecho:
                     continue
 
-                leverage = 5
-                position = marja * leverage
+                position_size = marja * plecho
 
-                # Получаем топ 1 по фандингу
-                funding_data = []
+                # Берем только первую подходящую пару
                 for t in tickers:
                     symbol = t["symbol"]
                     rate = t.get("fundingRate")
@@ -187,54 +185,49 @@ async def funding_sniper_loop(app):
                         rate = float(rate)
                         next_ts = int(next_time) / 1000
                         minutes_left = int((next_ts - now_ts) / 60)
-                        funding_data.append((symbol, rate, next_ts, minutes_left))
                     except:
                         continue
 
-                # Сортируем по доходности
-                funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
+                    if 0 <= minutes_left <= 1:
+                        direction = "LONG" if rate < 0 else "SHORT"
+                        gross = position_size * abs(rate)
+                        fees = position_size * 0.0006
+                        spread = position_size * 0.0002
+                        net = gross - fees - spread
 
-                if not funding_data:
-                    continue
+                        # ✅ Отправка уведомления
+                        await app.bot.send_message(
+                            chat_id,
+                            f"🪶 СИГНАЛ: вход через 1 минуту\n"
+                            f"{symbol} ({direction}) — {rate*100:.4f}%\n"
+                            f"Ожидаемая прибыль: {net:.2f} USDT"
+                        )
 
-                # Берём только 1 топовую
-                top_symbol, rate, next_ts, minutes_left = funding_data[0]
-                direction = "LONG" if rate < 0 else "SHORT"
-
-                if 0 <= minutes_left <= 1:
-                    key = f"{chat_id}_{top_symbol}"
-                    now_min = int(now_ts // 60)
-
-                    if last_signal_time.get(key) == now_min:
-                        continue  # Уже отправляли в эту минуту
-
-                    last_signal_time[key] = now_min
-
-                    # Расчёт прибыли
-                    gross = position * abs(rate)
-                    fees = position * 0.0006
-                    spread = position * 0.0002
-                    net = gross - fees - spread
-
-                    # Отправляем сигнал
-                    await app.bot.send_message(
-                        chat_id,
-                        f"📡 СИГНАЛ: вход через 1 минуту\n"
-                        f"{top_symbol} ({direction}) — {rate * 100:.4f}%\n"
-                        f"Ожидаемая прибыль: {net:.2f} USDT"
-                    )
-
-                    # Симуляция закрытия через 60 сек
-                    await asyncio.sleep(60)
-                    await app.bot.send_message(
-                        chat_id,
-                        f"✅ Сделка завершена по {top_symbol}, прибыль: {net:.2f} USDT"
-                    )
+                        # ✅ Реальное открытие позиции
+                        try:
+                            side = "Buy" if direction == "LONG" else "Sell"
+                            session.place_order(
+                                category="linear",
+                                symbol=symbol,
+                                side=side,
+                                order_type="Market",
+                                qty=round(position_size, 2),
+                                time_in_force="FillOrKill"
+                            )
+                            await asyncio.sleep(60)  # Ждем, чтобы "прошел" фандинг
+                            await app.bot.send_message(
+                                chat_id,
+                                f"✅ Сделка завершена по {symbol}, прибыль: {net:.2f} USDT"
+                            )
+                        except Exception as e:
+                            await app.bot.send_message(
+                                chat_id,
+                                f"❌ Ошибка при открытии сделки по {symbol}:\n{str(e)}"
+                            )
+                        break  # 💡 Только одна сделка на цикл
 
         except Exception as e:
             print(f"[Sniper Error] {e}")
-            await asyncio.sleep(10)
-
         await asyncio.sleep(30)
 
 # ===================== MAIN =====================
