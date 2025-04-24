@@ -48,22 +48,25 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         latest_top_pairs = funding_data[:5]
 
         msg = "📊 Топ 5 funding-пар:\n\n"
-now_ts = datetime.utcnow().timestamp()
+        now_ts = datetime.utcnow().timestamp()
 
-for symbol, rate, ts in latest_top_pairs:
-    delta_sec = int(ts / 1000 - now_ts)
-    h, m = divmod(delta_sec // 60, 60)
-    time_left = f"{h}ч {m}м"
-    direction = "📈 LONG" if rate < 0 else "📉 SHORT"
-    msg += (
-        f"🔹 {symbol}\n"
-        f"   📊 Фандинг: {rate * 100:.4f}%\n"
-        f"   🧭 Направление: {direction}\n"
-        f"   ⏱ Выплата через: {time_left}\n\n"
-    )
+        for symbol, rate, ts in latest_top_pairs:
+            delta_sec = int(ts / 1000 - now_ts)
+            h, m = divmod(delta_sec // 60, 60)
+            time_left = f"{h}ч {m}м"
+            direction = "📈 LONG" if rate < 0 else "📉 SHORT"
+            msg += (
+                f"🔹 {symbol}\n"
+                f"   📊 Фандинг: {rate * 100:.4f}%\n"
+                f"   🧭 Направление: {direction}\n"
+                f"   ⏱ Выплата через: {time_left}\n\n"
+            )
+
         await update.message.reply_text(msg)
+
     except Exception as e:
         await update.message.reply_text(f"Ошибка при получении топа: {e}")
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
