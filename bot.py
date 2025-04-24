@@ -47,9 +47,7 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         global latest_top_pairs
         latest_top_pairs = funding_data[:5]
 
-        msg = "📊 Топ 5 funding-пар:
-
-"
+        msg = "📊 Топ 5 funding-пар:"
         now_ts = datetime.utcnow().timestamp()
         for symbol, rate, ts in latest_top_pairs:
             delta_sec = int(ts / 1000 - now_ts)
