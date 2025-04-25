@@ -249,20 +249,20 @@ async def funding_sniper_loop(app):
                                 f"⚠️ Сделка по {top_symbol} не открыта: объём {adjusted_qty:.6f} меньше минимального ({min_qty})"
                             )
                             continue
-                    try:
-        session.set_leverage(
-        category="linear",
-        symbol=top_symbol,
-        buyLeverage=str(plecho),
-        sellLeverage=str(plecho)
-    )
-except Exception as e:
-    if "110043" in str(e):
-        await app.bot.send_message(chat_id, f"⚠️ Плечо уже установлено: {plecho}x — продолжаю сделку.")
-    else:
-        await app.bot.send_message(chat_id, f"⚠️ Не удалось установить плечо: {str(e)}")
-        continue
 
+                        try:
+                            session.set_leverage(
+                                category="linear",
+                                symbol=top_symbol,
+                                buyLeverage=str(plecho),
+                                sellLeverage=str(plecho)
+                            )
+                        except Exception as e:
+                            if "110043" in str(e):
+                                await app.bot.send_message(chat_id, f"⚠️ Плечо уже установлено: {plecho}x — продолжаю сделку.")
+                            else:
+                                await app.bot.send_message(chat_id, f"⚠️ Не удалось установить плечо: {str(e)}")
+                                continue
 
                         session.place_order(
                             category="linear",
@@ -357,25 +357,20 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Устанавливаем плечо на бирже
         try:
-            try:
-    session.set_leverage(
-        category="linear",
-        symbol=top_symbol,
-        buyLeverage=str(plecho),
-        sellLeverage=str(plecho)
-    )
-except Exception as e:
-    if "110043" in str(e):
-        await app.bot.send_message(chat_id, f"⚠️ Плечо уже установлено: {plecho}x — продолжаю сделку.")
-    else:
-        await app.bot.send_message(chat_id, f"⚠️ Не удалось установить плечо: {str(e)}")
-        continue
-
-        except Exception as e:
-            await context.bot.send_message(
-                chat_id,
-                f"⚠️ Не удалось установить плечо: {str(e)}"
+            session.set_leverage(
+                category="linear",
+                symbol=symbol,
+                buyLeverage=str(plecho),
+                sellLeverage=str(plecho)
             )
+        except Exception as e:
+            if "110043" in str(e):
+                await context.bot.send_message(chat_id, f"⚠️ Плечо уже установлено: {plecho}x — продолжаю сделку.")
+            else:
+                await context.bot.send_message(
+                    chat_id,
+                    f"⚠️ Не удалось установить плечо: {str(e)}"
+                )
 
         # Открытие рыночного ордера
         session.place_order(
