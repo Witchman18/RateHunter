@@ -331,15 +331,23 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Округляем вниз по шагу
         adjusted_qty = raw_qty - (raw_qty % step)
 
-        # Открытие рыночного ордера
-        session.place_order(
-            category="linear",
-            symbol=symbol,
-            side="Buy" if direction == "LONG" else "Sell",
-            order_type="Market",
-            qty=adjusted_qty,
-            time_in_force="FillOrKill"
-        )
+        # Устанавливаем плечо на бирже
+session.set_leverage(
+    category="linear",
+    symbol=symbol,
+    buyLeverage=str(plecho),
+    sellLeverage=str(plecho)
+)
+
+# Открытие рыночного ордера
+session.place_order(
+    category="linear",
+    symbol=symbol,
+    side="Buy" if direction == "LONG" else "Sell",
+    order_type="Market",
+    qty=adjusted_qty,
+    time_in_force="FillOrKill"
+)
 
         await asyncio.sleep(60)
         await context.bot.send_message(
