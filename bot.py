@@ -116,7 +116,11 @@ async def set_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        plecho = float(update.message.text)
+        text = update.message.text.strip().replace(",", ".")
+        if not text.replace('.', '', 1).isdigit():
+            raise ValueError("Not a number")
+
+        plecho = float(text)
         chat_id = update.effective_chat.id
 
         if chat_id not in sniper_active:
