@@ -249,9 +249,8 @@ async def funding_sniper_loop(app):
                                 f"⚠️ Сделка по {top_symbol} не открыта: объём {adjusted_qty:.6f} меньше минимального ({min_qty})"
                             )
                             continue
-
-                        try:
-    session.set_leverage(
+                    try:
+        session.set_leverage(
         category="linear",
         symbol=top_symbol,
         buyLeverage=str(plecho),
