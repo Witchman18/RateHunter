@@ -158,16 +158,12 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================== ФОНОВАЯ ЗАДАЧА =====================
 
 async def funding_sniper_loop(app):
-    """Фоновая проверка funding rate и автоматическое открытие позиции по самой прибыльной паре"""
     while True:
         try:
             now_ts = datetime.utcnow().timestamp()
-
-            # Получаем funding-рейты
             response = session.get_tickers(category="linear")
             tickers = response["result"]["list"]
 
-            # Обновляем топ 5 пар по фандингу
             funding_data = []
             for t in tickers:
                 symbol = t["symbol"]
@@ -191,10 +187,14 @@ async def funding_sniper_loop(app):
             minutes_left = int((next_ts / 1000 - now_ts) / 60)
 
             if 0 <= minutes_left <= 1:
-                direction = "LONG" if rate < 0 else "SHORT"
+                direction = "SHORT" if rate < 0 else "LONG"
 
                 for chat_id, data in sniper_active.items():
                     if not data.get('active'):
+                        continue
+
+                    # Защита от повторного входа по той же паре и тому же funding time
+                    if (data.get("last_entry_symbol") == top_symbol and data.get("last_entry_ts") == next_ts):
                         continue
 
                     marja = data.get('real_marja')
@@ -209,7 +209,6 @@ async def funding_sniper_loop(app):
                     net = gross - fees - spread
                     roi = (net / marja) * 100
 
-                    # 📡 Уведомление
                     await app.bot.send_message(
                         chat_id,
                         f"📡 Сигнал обнаружен: {top_symbol}\n"
@@ -218,14 +217,12 @@ async def funding_sniper_loop(app):
                         f"⏱ Вход через 1 минуту"
                     )
 
-                    # 🔥 Попытка открыть реальную сделку
                     try:
                         info = session.get_instruments_info(category="linear", symbol=top_symbol)
                         filters = info["result"]["list"][0]["lotSizeFilter"]
                         min_qty = float(filters["minOrderQty"])
                         step = float(filters["qtyStep"])
 
-                        # Получаем цену и пересчитываем в qty
                         ticker_info = session.get_tickers(category="linear", symbol=top_symbol)
                         last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
                         raw_qty = position_size / last_price
@@ -241,13 +238,29 @@ async def funding_sniper_loop(app):
                         session.place_order(
                             category="linear",
                             symbol=top_symbol,
-                            side="Buy" if direction == "LONG" else "Sell",
+                            side="Sell" if direction == "SHORT" else "Buy",
                             order_type="Market",
                             qty=adjusted_qty,
                             time_in_force="FillOrKill"
                         )
 
-                        await asyncio.sleep(60)
+                        sniper_active[chat_id]["last_entry_symbol"] = top_symbol
+                        sniper_active[chat_id]["last_entry_ts"] = next_ts
+
+                        await asyncio.sleep(60)  # ждём выплату
+
+                        # Закрытие позиции после выплаты
+                        close_side = "Buy" if direction == "SHORT" else "Sell"
+
+                        session.place_order(
+                            category="linear",
+                            symbol=top_symbol,
+                            side=close_side,
+                            order_type="Market",
+                            qty=adjusted_qty,
+                            time_in_force="FillOrKill"
+                        )
+
                         await app.bot.send_message(
                             chat_id,
                             f"✅ Сделка завершена: {top_symbol} ({direction})\n"
@@ -257,7 +270,7 @@ async def funding_sniper_loop(app):
                     except Exception as e:
                         await app.bot.send_message(
                             chat_id,
-                            f"❌ Ошибка при открытии сделки по {top_symbol}:\n{str(e)}"
+                            f"❌ Ошибка при открытии или закрытии сделки по {top_symbol}:\n{str(e)}"
                         )
 
         except Exception as e:
