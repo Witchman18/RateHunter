@@ -257,8 +257,13 @@ async def funding_sniper_loop(app):
 
                         sniper_active[chat_id]["last_entry_symbol"] = top_symbol
                         sniper_active[chat_id]["last_entry_ts"] = next_ts
+now = datetime.utcnow().timestamp()
+delay = (next_ts / 1000) - now
+if delay > 0:
+    await asyncio.sleep(delay)
 
-                        await asyncio.sleep(60)  # ждём выплату
+await asyncio.sleep(10)
+)  # ждём выплату
 
                         # Закрытие позиции после выплаты
                         close_side = "Buy" if direction == "SHORT" else "Sell"
@@ -275,7 +280,7 @@ async def funding_sniper_loop(app):
                         await app.bot.send_message(
                             chat_id,
                             f"✅ Сделка завершена: {top_symbol} ({direction})\n"
-                            f"📦 Объём: {adjusted_qty:.6f} {top_symbol.replace('USDT', '')}"
+                            f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
                         )
 
                     except Exception as e:
