@@ -214,82 +214,81 @@ async def funding_sniper_loop(app):
                     roi = (net / marja) * 100
 
                     await app.bot.send_message(
-    chat_id,
-    f"📡 Сигнал обнаружен: {top_symbol}\n"
-    f"{'📉 SHORT' if direction == 'SHORT' else '📈 LONG'} | 📊 {rate * 100:.4f}%\n"
-    f"💼 {marja} USDT x{plecho}  |  💰 Доход: {net:.2f} USDT\n"
-    f"⏱ Вход через 1 минуту"
-)
+                        chat_id,
+                        f"📡 Сигнал обнаружен: {top_symbol}\n"
+                        f"{'📉 SHORT' if direction == 'SHORT' else '📈 LONG'} | 📊 {rate * 100:.4f}%\n"
+                        f"💼 {marja} USDT x{plecho}  |  💰 Доход: {net:.2f} USDT\n"
+                        f"⏱ Вход через 1 минуту"
+                    )
 
-try:
-    info = session.get_instruments_info(category="linear", symbol=top_symbol)
-    filters = info["result"]["list"][0]["lotSizeFilter"]
-    min_qty = float(filters["minOrderQty"])
-    step = float(filters["qtyStep"])
+                    try:
+                        info = session.get_instruments_info(category="linear", symbol=top_symbol)
+                        filters = info["result"]["list"][0]["lotSizeFilter"]
+                        min_qty = float(filters["minOrderQty"])
+                        step = float(filters["qtyStep"])
 
-    ticker_info = session.get_tickers(category="linear", symbol=top_symbol)
-    last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
-    raw_qty = position_size / last_price
-    adjusted_qty = raw_qty - (raw_qty % step)
+                        ticker_info = session.get_tickers(category="linear", symbol=top_symbol)
+                        last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
+                        raw_qty = position_size / last_price
+                        adjusted_qty = raw_qty - (raw_qty % step)
 
-    if adjusted_qty < min_qty:
-        await app.bot.send_message(
-            chat_id,
-            f"⚠️ Сделка по {top_symbol} не открыта: объём {adjusted_qty:.6f} меньше минимального ({min_qty})"
-        )
-        continue
+                        if adjusted_qty < min_qty:
+                            await app.bot.send_message(
+                                chat_id,
+                                f"⚠️ Сделка по {top_symbol} не открыта: объём {adjusted_qty:.6f} меньше минимального ({min_qty})"
+                            )
+                            continue
 
-    session.set_leverage(
-        category="linear",
-        symbol=top_symbol,
-        buyLeverage=str(plecho),
-        sellLeverage=str(plecho)
-    )
+                        session.set_leverage(
+                            category="linear",
+                            symbol=top_symbol,
+                            buyLeverage=str(plecho),
+                            sellLeverage=str(plecho)
+                        )
 
-    session.place_order(
-        category="linear",
-        symbol=top_symbol,
-        side="Sell" if direction == "SHORT" else "Buy",
-        order_type="Market",
-        qty=adjusted_qty,
-        time_in_force="FillOrKill"
-    )
+                        session.place_order(
+                            category="linear",
+                            symbol=top_symbol,
+                            side="Sell" if direction == "SHORT" else "Buy",
+                            order_type="Market",
+                            qty=adjusted_qty,
+                            time_in_force="FillOrKill"
+                        )
 
-    sniper_active[chat_id]["last_entry_symbol"] = top_symbol
-    sniper_active[chat_id]["last_entry_ts"] = next_ts
+                        sniper_active[chat_id]["last_entry_symbol"] = top_symbol
+                        sniper_active[chat_id]["last_entry_ts"] = next_ts
 
-    # Ждём до момента выплаты фандинга
-    now = datetime.utcnow().timestamp()
-    delay = (next_ts / 1000) - now
-    if delay > 0:
-        await asyncio.sleep(delay)
+                        # Ждём до момента выплаты фандинга
+                        now = datetime.utcnow().timestamp()
+                        delay = (next_ts / 1000) - now
+                        if delay > 0:
+                            await asyncio.sleep(delay)
 
-    await asyncio.sleep(10)  # Ждём ещё 10 сек после выплаты
+                        await asyncio.sleep(10)  # Ждём ещё 10 сек после выплаты
 
-    # Закрытие позиции после выплаты
-    close_side = "Buy" if direction == "SHORT" else "Sell"
+                        # Закрытие позиции после выплаты
+                        close_side = "Buy" if direction == "SHORT" else "Sell"
 
-    session.place_order(
-        category="linear",
-        symbol=top_symbol,
-        side=close_side,
-        order_type="Market",
-        qty=adjusted_qty,
-        time_in_force="FillOrKill"
-    )
+                        session.place_order(
+                            category="linear",
+                            symbol=top_symbol,
+                            side=close_side,
+                            order_type="Market",
+                            qty=adjusted_qty,
+                            time_in_force="FillOrKill"
+                        )
 
-    await app.bot.send_message(
-        chat_id,
-        f"✅ Сделка завершена: {top_symbol} ({direction})\n"
-        f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
-    )
+                        await app.bot.send_message(
+                            chat_id,
+                            f"✅ Сделка завершена: {top_symbol} ({direction})\n"
+                            f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
+                        )
 
-except Exception as e:
-    await app.bot.send_message(
-        chat_id,
-        f"❌ Ошибка при открытии или закрытии сделки по {top_symbol}:\n{str(e)}"
-    )
-
+                    except Exception as e:
+                        await app.bot.send_message(
+                            chat_id,
+                            f"❌ Ошибка при открытии или закрытии сделки по {top_symbol}:\n{str(e)}"
+                        )
 
         except Exception as e:
             print(f"[Sniper Error] {e}")
