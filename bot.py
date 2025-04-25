@@ -264,6 +264,7 @@ except Exception as e:
         await app.bot.send_message(chat_id, f"⚠️ Не удалось установить плечо: {str(e)}")
         continue
 
+
                         session.place_order(
                             category="linear",
                             symbol=top_symbol,
@@ -370,6 +371,7 @@ except Exception as e:
     else:
         await app.bot.send_message(chat_id, f"⚠️ Не удалось установить плечо: {str(e)}")
         continue
+
         except Exception as e:
             await context.bot.send_message(
                 chat_id,
