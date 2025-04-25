@@ -216,7 +216,7 @@ async def funding_sniper_loop(app):
                     await app.bot.send_message(
                         chat_id,
                         f"📡 Сигнал обнаружен: {top_symbol}\n"
-                        f"{'📈 LONG' if direction == 'LONG' else '📉 SHORT'} | 📊 {rate * 100:.4f}%\n"
+                        f"{'📉 SHORT' if direction == 'SHORT' else '📈 LONG'} | 📊 {rate * 100:.4f}%\n"
                         f"💼 {marja} USDT x{plecho}  |  💰 Доход: {net:.2f} USDT\n"
                         f"⏱ Вход через 1 минуту"
                     )
