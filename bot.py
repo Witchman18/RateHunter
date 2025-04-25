@@ -332,22 +332,28 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         adjusted_qty = raw_qty - (raw_qty % step)
 
         # Устанавливаем плечо на бирже
-session.set_leverage(
-    category="linear",
-    symbol=symbol,
-    buyLeverage=str(plecho),
-    sellLeverage=str(plecho)
-)
+        try:
+            session.set_leverage(
+                category="linear",
+                symbol=symbol,
+                buyLeverage=str(plecho),
+                sellLeverage=str(plecho)
+            )
+        except Exception as e:
+            await context.bot.send_message(
+                chat_id,
+                f"⚠️ Не удалось установить плечо: {str(e)}"
+            )
 
-# Открытие рыночного ордера
-session.place_order(
-    category="linear",
-    symbol=symbol,
-    side="Buy" if direction == "LONG" else "Sell",
-    order_type="Market",
-    qty=adjusted_qty,
-    time_in_force="FillOrKill"
-)
+        # Открытие рыночного ордера
+        session.place_order(
+            category="linear",
+            symbol=symbol,
+            side="Buy" if direction == "LONG" else "Sell",
+            order_type="Market",
+            qty=adjusted_qty,
+            time_in_force="FillOrKill"
+        )
 
         await asyncio.sleep(60)
         await context.bot.send_message(
@@ -361,6 +367,7 @@ session.place_order(
             chat_id,
             f"❌ Ошибка при открытии сделки по {symbol}:\n{str(e)}"
         )
+
 
 # ===================== MAIN =====================
 
