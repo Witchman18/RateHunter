@@ -232,4 +232,41 @@ async def funding_sniper_loop(app):
 
         await asyncio.sleep(30)
 
-# ... (остальной код остаётся без изменений)
+# ===================== MAIN =====================
+
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Обработчики команд и кнопок
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Regex("📊 Топ-пары"), show_top_funding))
+    app.add_handler(MessageHandler(filters.Regex("📡 Сигналы"), signal_menu))
+    app.add_handler(CallbackQueryHandler(signal_callback))
+    app.add_handler(CommandHandler("test_trade", test_trade))
+
+    # Установка маржи
+    conv_marja = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("💰 Маржа"), set_real_marja)],
+        states={
+            SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_marja)
+
+    # Установка плеча
+    conv_plecho = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("⚖ Плечо"), set_real_plecho)],
+        states={
+            SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_plecho)
+
+    # Запуск фоновой задачи (фандинг-бота)
+    async def on_startup(app):
+        asyncio.create_task(funding_sniper_loop(app))
+
+    app.post_init = on_startup
+    app.run_polling()
