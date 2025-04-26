@@ -30,8 +30,6 @@ sniper_active = {}
 SET_MARJA = 0
 SET_PLECHO = 1
 
-# Для установки реальной маржи
-
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
 
 async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -89,86 +87,73 @@ async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SET_MARJA
 
 async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     try:
-        marja = float(update.message.text)
-        chat_id = update.effective_chat.id
-        balance = session.get_wallet_balance(accountType="UNIFIED")
-        usdt_balance = float(balance["result"]["list"][0]["totalEquity"])
-
-        if marja > usdt_balance:
-            await update.message.reply_text("❌ Недостаточно средств.")
-            return ConversationHandler.END
-
+        marja = float(update.message.text.strip().replace(",", "."))
         if chat_id not in sniper_active:
-            sniper_active[chat_id] = {"active": False}
+            sniper_active[chat_id] = {}
         sniper_active[chat_id]["real_marja"] = marja
         await update.message.reply_text(f"✅ Маржа установлена: {marja} USDT")
-        return ConversationHandler.END
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
-        return ConversationHandler.END
-        
+    except:
+        await update.message.reply_text("❌ Неверный формат маржи.")
+    return ConversationHandler.END
+
 # ===================== УСТАНОВКА ПЛЕЧА =====================
 
 async def set_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📐 Введите плечо (например: 5):")
+    await update.message.reply_text("⚖ Введите размер плеча:")
     return SET_PLECHO
 
 async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     try:
-        text = update.message.text.strip().replace(",", ".")
-        if not text.replace('.', '', 1).isdigit():
-            raise ValueError("Not a number")
-
-        plecho = float(text)
-        chat_id = update.effective_chat.id
-
+        plecho = float(update.message.text.strip().replace(",", "."))
         if chat_id not in sniper_active:
             sniper_active[chat_id] = {}
-
-        sniper_active[chat_id]['real_plecho'] = plecho
+        sniper_active[chat_id]["real_plecho"] = plecho
         await update.message.reply_text(f"✅ Плечо установлено: {plecho}x")
-        return ConversationHandler.END
+    except:
+        await update.message.reply_text("❌ Неверный формат плеча.")
+    return ConversationHandler.END
 
-    except ValueError:
-        await update.message.reply_text("❌ Ошибка. Введите число (например: 5)")
-        return SET_PLECHO
-
-# ===================== СИГНАЛЫ =====================
+# ===================== МЕНЮ СИГНАЛОВ =====================
 
 async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Меню управления сигналами"""
+    chat_id = update.effective_chat.id
     buttons = [
-        [InlineKeyboardButton("🔔 Вкл", callback_data="sniper_on")],
-        [InlineKeyboardButton("🔕 Выкл", callback_data="sniper_off")]
+        [InlineKeyboardButton("Запустить снайпера", callback_data="start_sniper")],
+        [InlineKeyboardButton("Остановить снайпера", callback_data="stop_sniper")]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text("📡 Управление сигналами:", reply_markup=reply_markup)
+    await update.message.reply_text("📡 Сигналы:", reply_markup=reply_markup)
 
 async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
-    if query.data == "sniper_on":
-        sniper_active[chat_id] = sniper_active.get(chat_id, {})
-        sniper_active[chat_id]["active"] = True
-        await query.edit_message_text("🟢 Сигналы включены")
+    data = query.data
+
+    if data == "start_sniper":
+        if chat_id not in sniper_active:
+            sniper_active[chat_id] = {}
+        sniper_active[chat_id]['active'] = True
+        await query.edit_message_text("🚀 Снайпер запущен!")
+    elif data == "stop_sniper":
+        if chat_id in sniper_active:
+            sniper_active[chat_id]['active'] = False
+        await query.edit_message_text("🛑 Снайпер остановлен.")
+
+def get_position_direction(rate: float) -> str:
+    if rate is None:
+        return "NONE"
+    if rate < 0:
+        return "LONG"
+    elif rate > 0:
+        return "SHORT"
     else:
-        sniper_active[chat_id] = sniper_active.get(chat_id, {})
-        sniper_active[chat_id]["active"] = False
-        await query.edit_message_text("🔴 Сигналы выключены")
+        return "NONE"
 
-# ===================== СНАИПЕР =====================
-
-def get_position_direction(funding_rate: float) -> str:
-    if funding_rate > 0:
-        return "SHORT"  # положительная ставка → SHORT получает
-    elif funding_rate < 0:
-        return "LONG"   # отрицательная ставка → LONG получает
-    else:
-        return "NONE"   # нейтрально — ничего не делаем
-
-# ===================== ФОНОВАЯ ЗАДАЧА =====================
+# ===================== ФОНДОВЫЙ СНАЙПЕР (ФАНДИНГ-БОТ) =====================
 
 async def funding_sniper_loop(app):
     while True:
@@ -208,7 +193,6 @@ async def funding_sniper_loop(app):
                     if not data.get('active'):
                         continue
 
-                    # Защита от повторного входа по той же паре и тому же funding time
                     if (data.get("last_entry_symbol") == top_symbol and data.get("last_entry_ts") == next_ts):
                         continue
 
@@ -264,42 +248,187 @@ async def funding_sniper_loop(app):
                                 await app.bot.send_message(chat_id, f"⚠️ Не удалось установить плечо: {str(e)}")
                                 continue
 
-                        session.place_order(
+                        # Открытие позиции лимитным ордером (с ценой около рынка), с fallback на маркет
+                        orderbook = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
+                        best_bid = float(orderbook['result']['b'][0][0])
+                        best_ask = float(orderbook['result']['a'][0][0])
+                        open_side = "Sell" if direction == "SHORT" else "Buy"
+                        open_price = best_ask if direction == "SHORT" else best_bid
+
+                        order_resp = session.place_order(
                             category="linear",
                             symbol=top_symbol,
-                            side="Sell" if direction == "SHORT" else "Buy",
-                            order_type="Market",
+                            side=open_side,
+                            order_type="Limit",
                             qty=adjusted_qty,
-                            time_in_force="FillOrKill"
+                            price=str(open_price),
+                            time_in_force="GoodTillCancel"
                         )
+                        open_order_id = order_resp["result"]["orderId"]
+
+                        # Ждем 2 секунды исполнения лимитного ордера
+                        await asyncio.sleep(2)
+
+                        # Отменяем лимитный ордер, если не исполнился полностью
+                        try:
+                            session.cancel_order(category="linear", symbol=top_symbol, orderId=open_order_id)
+                        except Exception as e:
+                            pass
+
+                        # Проверяем исполнение лимитного ордера
+                        order_info = session.get_order_history(category="linear", orderId=open_order_id)
+                        order_list = order_info.get("result", {}).get("list", [])
+                        cum_exec_qty_open = 0.0
+                        cum_exec_value_open = 0.0
+                        cum_exec_fee_open = 0.0
+                        if order_list:
+                            ord_data = order_list[0]
+                            cum_exec_qty_open = float(ord_data.get("cumExecQty", 0))
+                            cum_exec_value_open = float(ord_data.get("cumExecValue", 0))
+                            cum_exec_fee_open = float(ord_data.get("cumExecFee", 0))
+
+                        remaining_qty = adjusted_qty - cum_exec_qty_open
+                        open_order_id_2 = None
+                        cum_exec_qty_open2 = 0.0
+                        cum_exec_value_open2 = 0.0
+                        cum_exec_fee_open2 = 0.0
+
+                        if remaining_qty > 0:
+                            if remaining_qty < min_qty:
+                                await app.bot.send_message(
+                                    chat_id,
+                                    f"⚠️ Частично исполнено {cum_exec_qty_open:.6f} из {adjusted_qty:.6f}. Остаток {remaining_qty:.6f} меньше минимума, продолжаем с позицией {cum_exec_qty_open:.6f}."
+                                )
+                            else:
+                                order_resp2 = session.place_order(
+                                    category="linear",
+                                    symbol=top_symbol,
+                                    side=open_side,
+                                    order_type="Market",
+                                    qty=remaining_qty,
+                                    time_in_force="FillOrKill"
+                                )
+                                open_order_id_2 = order_resp2["result"]["orderId"]
+                                order_info2 = session.get_order_history(category="linear", orderId=open_order_id_2)
+                                order_list2 = order_info2.get("result", {}).get("list", [])
+                                if order_list2:
+                                    ord_data2 = order_list2[0]
+                                    cum_exec_qty_open2 = float(ord_data2.get("cumExecQty", 0))
+                                    cum_exec_value_open2 = float(ord_data2.get("cumExecValue", 0))
+                                    cum_exec_fee_open2 = float(ord_data2.get("cumExecFee", 0))
+
+                        opened_qty = cum_exec_qty_open + cum_exec_qty_open2
 
                         sniper_active[chat_id]["last_entry_symbol"] = top_symbol
                         sniper_active[chat_id]["last_entry_ts"] = next_ts
 
-                        # Ждём до момента выплаты фандинга
+                        # Ждем до момента выплаты фандинга
                         now = datetime.utcnow().timestamp()
                         delay = (next_ts / 1000) - now
                         if delay > 0:
                             await asyncio.sleep(delay)
 
-                        await asyncio.sleep(10)  # Ждём ещё 10 сек после выплаты
+                        await asyncio.sleep(10)  # Ждем ещё 10 сек после выплаты
 
                         # Закрытие позиции после выплаты
                         close_side = "Buy" if direction == "SHORT" else "Sell"
+                        orderbook_close = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
+                        best_bid_close = float(orderbook_close['result']['b'][0][0])
+                        best_ask_close = float(orderbook_close['result']['a'][0][0])
+                        close_price = best_bid_close if direction == "SHORT" else best_ask_close
 
-                        session.place_order(
+                        close_order_resp = session.place_order(
                             category="linear",
                             symbol=top_symbol,
                             side=close_side,
-                            order_type="Market",
-                            qty=adjusted_qty,
-                            time_in_force="FillOrKill"
+                            order_type="Limit",
+                            qty=opened_qty,
+                            price=str(close_price),
+                            time_in_force="GoodTillCancel"
                         )
+                        close_order_id = close_order_resp["result"]["orderId"]
+
+                        await asyncio.sleep(2)
+
+                        try:
+                            session.cancel_order(category="linear", symbol=top_symbol, orderId=close_order_id)
+                        except Exception as e:
+                            pass
+
+                        close_info = session.get_order_history(category="linear", orderId=close_order_id)
+                        close_list = close_info.get("result", {}).get("list", [])
+                        cum_exec_qty_close = 0.0
+                        cum_exec_value_close = 0.0
+                        cum_exec_fee_close = 0.0
+                        if close_list:
+                            close_data = close_list[0]
+                            cum_exec_qty_close = float(close_data.get("cumExecQty", 0))
+                            cum_exec_value_close = float(close_data.get("cumExecValue", 0))
+                            cum_exec_fee_close = float(close_data.get("cumExecFee", 0))
+
+                        remaining_close_qty = opened_qty - cum_exec_qty_close
+                        close_order_id_2 = None
+                        cum_exec_qty_close2 = 0.0
+                        cum_exec_value_close2 = 0.0
+                        cum_exec_fee_close2 = 0.0
+
+                        if remaining_close_qty > 0:
+                            close_order_resp2 = session.place_order(
+                                category="linear",
+                                symbol=top_symbol,
+                                side=close_side,
+                                order_type="Market",
+                                qty=remaining_close_qty,
+                                time_in_force="FillOrKill"
+                            )
+                            close_order_id_2 = close_order_resp2["result"]["orderId"]
+                            close_info2 = session.get_order_history(category="linear", orderId=close_order_id_2)
+                            close_list2 = close_info2.get("result", {}).get("list", [])
+                            if close_list2:
+                                close_data2 = close_list2[0]
+                                cum_exec_qty_close2 = float(close_data2.get("cumExecQty", 0))
+                                cum_exec_value_close2 = float(close_data2.get("cumExecValue", 0))
+                                cum_exec_fee_close2 = float(close_data2.get("cumExecFee", 0))
+
+                        # Рассчитываем комиссии и прибыль
+                        total_fees = cum_exec_fee_open + cum_exec_fee_open2 + cum_exec_fee_close + cum_exec_fee_close2
+                        total_buy_value = 0.0
+                        total_sell_value = 0.0
+
+                        if order_list:
+                            if ord_data.get("side") == "Buy":
+                                total_buy_value += cum_exec_value_open
+                            else:
+                                total_sell_value += cum_exec_value_open
+                        if open_order_id_2 and order_list2:
+                            if ord_data2.get("side") == "Buy":
+                                total_buy_value += cum_exec_value_open2
+                            else:
+                                total_sell_value += cum_exec_value_open2
+                        if close_list:
+                            if close_data.get("side") == "Buy":
+                                total_buy_value += cum_exec_value_close
+                            else:
+                                total_sell_value += cum_exec_value_close
+                        if close_order_id_2 and close_list2:
+                            if close_data2.get("side") == "Buy":
+                                total_buy_value += cum_exec_value_close2
+                            else:
+                                total_sell_value += cum_exec_value_close2
+
+                        price_profit = total_sell_value - total_buy_value
+                        funding_profit = (cum_exec_value_open + cum_exec_value_open2) * abs(rate)
+                        gross_profit = price_profit + funding_profit
+                        net_profit = gross_profit - total_fees
+                        roi_pct = (net_profit / marja) * 100 if marja else 0.0
 
                         await app.bot.send_message(
                             chat_id,
                             f"✅ Сделка завершена: {top_symbol} ({direction})\n"
-                            f"💸 Профит: {net:.2f} USDT  |  📈 ROI: {roi:.2f}%"
+                            f"💰 Грязная прибыль: {gross_profit:.2f} USDT\n"
+                            f"💵 Комиссии: {total_fees:.2f} USDT\n"
+                            f"💸 Чистая прибыль: {net_profit:.2f} USDT\n"
+                            f"📈 ROI: {roi_pct:.2f}%"
                         )
 
                     except Exception as e:
@@ -342,7 +471,7 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         min_qty = float(filters["minOrderQty"])
         step = float(filters["qtyStep"])
 
-        # Расчёт количества монеты
+        # Расчет количества монеты
         raw_qty = position_size / last_price
 
         if raw_qty < min_qty:
@@ -355,7 +484,7 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Округляем вниз по шагу
         adjusted_qty = raw_qty - (raw_qty % step)
 
-        # Устанавливаем плечо на бирже
+        # Устанавливаем плечо
         try:
             session.set_leverage(
                 category="linear",
@@ -367,26 +496,61 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "110043" in str(e):
                 await context.bot.send_message(chat_id, f"⚠️ Плечо уже установлено: {plecho}x — продолжаю сделку.")
             else:
-                await context.bot.send_message(
-                    chat_id,
-                    f"⚠️ Не удалось установить плечо: {str(e)}"
-                )
+                await context.bot.send_message(chat_id, f"⚠️ Не удалось установить плечо: {str(e)}")
 
-        # Открытие рыночного ордера
-        session.place_order(
+        # Открытие позиции лимитным ордером с fallback на маркет
+        orderbook = session.get_orderbook(category="linear", symbol=symbol, limit=1)
+        best_bid = float(orderbook['result']['b'][0][0])
+        best_ask = float(orderbook['result']['a'][0][0])
+        open_side = "Sell" if direction == "SHORT" else "Buy"
+        open_price = best_ask if direction == "SHORT" else best_bid
+
+        order_resp = session.place_order(
             category="linear",
             symbol=symbol,
-            side="Buy" if direction == "LONG" else "Sell",
-            order_type="Market",
+            side=open_side,
+            order_type="Limit",
             qty=adjusted_qty,
-            time_in_force="FillOrKill"
+            price=str(open_price),
+            time_in_force="GoodTillCancel"
         )
+        open_order_id = order_resp["result"]["orderId"]
+        await asyncio.sleep(2)
+        try:
+            session.cancel_order(category="linear", symbol=symbol, orderId=open_order_id)
+        except Exception as e:
+            pass
+
+        order_info = session.get_order_history(category="linear", orderId=open_order_id)
+        order_list = order_info.get("result", {}).get("list", [])
+        cum_exec_qty_open = 0.0
+        if order_list:
+            ord_data = order_list[0]
+            cum_exec_qty_open = float(ord_data.get("cumExecQty", 0))
+        remaining_qty = adjusted_qty - cum_exec_qty_open
+        if remaining_qty > 0:
+            if remaining_qty >= min_qty:
+                session.place_order(
+                    category="linear",
+                    symbol=symbol,
+                    side=open_side,
+                    order_type="Market",
+                    qty=remaining_qty,
+                    time_in_force="FillOrKill"
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id,
+                    f"⚠️ Частично исполнено: {cum_exec_qty_open:.6f} из {adjusted_qty:.6f}. Остаток {remaining_qty:.6f} не исполнен."
+                )
+
+        opened_qty = cum_exec_qty_open + (remaining_qty if remaining_qty > 0 and remaining_qty >= min_qty else 0.0)
 
         await asyncio.sleep(60)
         await context.bot.send_message(
             chat_id,
             f"✅ Сделка завершена: {symbol} ({direction})\n"
-            f"📦 Объём: {adjusted_qty:.6f} {symbol.replace('USDT', '')}"
+            f"📦 Объём: {opened_qty:.6f} {symbol.replace('USDT', '')}"
         )
 
     except Exception as e:
@@ -394,7 +558,6 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id,
             f"❌ Ошибка при открытии сделки по {symbol}:\n{str(e)}"
         )
-
 
 # ===================== MAIN =====================
 
