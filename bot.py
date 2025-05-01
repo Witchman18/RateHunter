@@ -337,7 +337,7 @@ best_bid_close = float(orderbook_close['result']['b'][0][0])
 best_ask_close = float(orderbook_close['result']['a'][0][0])
 close_price = best_bid_close if direction == "SHORT" else best_ask_close
 
-# 🛠 Пытаемся выставить лимитку на закрытие, с авто-fallback
+# 🛠 Закрытие позиции: лимитка с fallback
 try:
     close_order_resp = session.place_order(
         category="linear",
@@ -350,7 +350,7 @@ try:
     )
 except Exception as e:
     if "timeInForce invalid" in str(e):
-        await app.bot.send_message(chat_id, f"⚠️ Ошибка при закрытии (timeInForce). Пробую другой тип...")
+        await app.bot.send_message(chat_id, f"⚠️ Ошибка timeInForce на закрытии. Пробую ImmediateOrCancel...")
         close_order_resp = session.place_order(
             category="linear",
             symbol=top_symbol,
@@ -364,13 +364,13 @@ except Exception as e:
         raise e
 
 close_order_id = close_order_resp["result"]["orderId"]
-
-await asyncio.sleep(5)  # ⏳ Даём 5 секунд лимитке
+await asyncio.sleep(5)
 
 try:
     session.cancel_order(category="linear", symbol=top_symbol, orderId=close_order_id)
 except Exception:
     pass
+
 
 
                         close_info = session.get_order_history(category="linear", orderId=close_order_id)
