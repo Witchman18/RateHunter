@@ -262,7 +262,7 @@ async def funding_sniper_loop(app):
                             order_type="Limit",
                             qty=adjusted_qty,
                             price=str(open_price),
-                            time_in_force="GoodTillCancel"
+                            
                         )
                         open_order_id = order_resp["result"]["orderId"]
 
@@ -344,7 +344,7 @@ async def funding_sniper_loop(app):
                             order_type="Limit",
                             qty=opened_qty,
                             price=str(close_price),
-                            time_in_force="GoodTillCancel"
+                            
                         )
                         close_order_id = close_order_resp["result"]["orderId"]
 
@@ -512,7 +512,7 @@ async def test_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
             order_type="Limit",
             qty=adjusted_qty,
             price=str(open_price),
-            time_in_force="GoodTillCancel"
+            time_in_force="PostOnly"
         )
         open_order_id = order_resp["result"]["orderId"]
         await asyncio.sleep(2)
