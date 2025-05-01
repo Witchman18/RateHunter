@@ -331,29 +331,47 @@ async def funding_sniper_loop(app):
                         await asyncio.sleep(10)  # Ждем ещё 10 сек после выплаты
 
                         # Закрытие позиции после выплаты
-                        close_side = "Buy" if direction == "SHORT" else "Sell"
-                        orderbook_close = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
-                        best_bid_close = float(orderbook_close['result']['b'][0][0])
-                        best_ask_close = float(orderbook_close['result']['a'][0][0])
-                        close_price = best_bid_close if direction == "SHORT" else best_ask_close
+close_side = "Buy" if direction == "SHORT" else "Sell"
+orderbook_close = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
+best_bid_close = float(orderbook_close['result']['b'][0][0])
+best_ask_close = float(orderbook_close['result']['a'][0][0])
+close_price = best_bid_close if direction == "SHORT" else best_ask_close
 
-                        close_order_resp = session.place_order(
-                            category="linear",
-                            symbol=top_symbol,
-                            side=close_side,
-                            order_type="Limit",
-                            qty=opened_qty,
-                            price=str(close_price),
-                            
-                        )
-                        close_order_id = close_order_resp["result"]["orderId"]
+# 🛠 Пытаемся выставить лимитку на закрытие, с авто-fallback
+try:
+    close_order_resp = session.place_order(
+        category="linear",
+        symbol=top_symbol,
+        side=close_side,
+        order_type="Limit",
+        qty=opened_qty,
+        price=str(close_price),
+        time_in_force="GoodTillCancel"
+    )
+except Exception as e:
+    if "timeInForce invalid" in str(e):
+        await app.bot.send_message(chat_id, f"⚠️ Ошибка при закрытии (timeInForce). Пробую другой тип...")
+        close_order_resp = session.place_order(
+            category="linear",
+            symbol=top_symbol,
+            side=close_side,
+            order_type="Limit",
+            qty=opened_qty,
+            price=str(close_price),
+            time_in_force="ImmediateOrCancel"
+        )
+    else:
+        raise e
 
-                        await asyncio.sleep(2)
+close_order_id = close_order_resp["result"]["orderId"]
 
-                        try:
-                            session.cancel_order(category="linear", symbol=top_symbol, orderId=close_order_id)
-                        except Exception as e:
-                            pass
+await asyncio.sleep(5)  # ⏳ Даём 5 секунд лимитке
+
+try:
+    session.cancel_order(category="linear", symbol=top_symbol, orderId=close_order_id)
+except Exception:
+    pass
+
 
                         close_info = session.get_order_history(category="linear", orderId=close_order_id)
                         close_list = close_info.get("result", {}).get("list", [])
