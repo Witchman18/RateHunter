@@ -764,7 +764,7 @@ if __name__ == "__main__":
     app.add_handler(conv_marja)
 
     conv_plecho = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^⚖ Плечо$"), set_real_plecho)],
+        entry_points=[MessageHandler(filters.Regex("^⚖️ Плечо$"), set_real_plecho)],
         states={SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)]},
         fallbacks=[CommandHandler("cancel", cancel)],
         conversation_timeout=60.0
