@@ -153,6 +153,17 @@ def get_position_direction(rate: float) -> str:
     else:
         return "NONE"
 
+def calculate_adjusted_qty(position_size, price, qty_step, min_qty):
+    """
+    Возвращает округлённый объём позиции (qty), подходящий по требованиям биржи.
+    """
+    raw_qty = position_size / price
+    adjusted_qty = raw_qty - (raw_qty % qty_step)
+    adjusted_qty = round(adjusted_qty, 10)
+    if adjusted_qty < min_qty:
+        return None
+    return adjusted_qty
+
 # ===================== ФОНДОВЫЙ СНАЙПЕР (ФАНДИНГ-БОТ) =====================
 
 async def funding_sniper_loop(app):
@@ -224,15 +235,13 @@ async def funding_sniper_loop(app):
 
                         ticker_info = session.get_tickers(category="linear", symbol=top_symbol)
                         last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
-                        raw_qty = position_size / last_price
-                        adjusted_qty = raw_qty - (raw_qty % step)
-
-                        if adjusted_qty < min_qty:
-                            await app.bot.send_message(
-                                chat_id,
-                                f"⚠️ Сделка по {top_symbol} не открыта: объём {adjusted_qty:.6f} меньше минимального ({min_qty})"
-                            )
-                            continue
+                        adjusted_qty = calculate_adjusted_qty(position_size, last_price, step, min_qty)
+if adjusted_qty is None:
+    await app.bot.send_message(
+        chat_id,
+        f"⚠️ Сделка по {top_symbol} не открыта: объём меньше минимального ({min_qty})"
+    )
+    continue
 
                         try:
                             session.set_leverage(
@@ -330,81 +339,88 @@ async def funding_sniper_loop(app):
 
                         await asyncio.sleep(10)  # Ждем ещё 10 сек после выплаты
 
-                        # Закрытие позиции после выплаты
-                        close_side = "Buy" if direction == "SHORT" else "Sell"
-                        orderbook_close = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
-                        best_bid_close = float(orderbook_close['result']['b'][0][0])
-                        best_ask_close = float(orderbook_close['result']['a'][0][0])
-                        close_price = best_bid_close if direction == "SHORT" else best_ask_close
+                        # Закрытие позиции после выплаты (PostOnly + reduceOnly + смещение цены)
+close_side = "Buy" if direction == "SHORT" else "Sell"
 
-                        try:
-                            close_order_resp = session.place_order(
-                                category="linear",
-                                symbol=top_symbol,
-                                side=close_side,
-                                order_type="Limit",
-                                qty=opened_qty,
-                                price=str(close_price),
-                                time_in_force="GoodTillCancel"
-                            )
-                        except Exception as e:
-                            if "timeInForce invalid" in str(e):
-                                await app.bot.send_message(chat_id, f"⚠️ Ошибка timeInForce при закрытии. Пробую ImmediateOrCancel...")
-                                close_order_resp = session.place_order(
-                                    category="linear",
-                                    symbol=top_symbol,
-                                    side=close_side,
-                                    order_type="Limit",
-                                    qty=opened_qty,
-                                    price=str(close_price),
-                                    time_in_force="ImmediateOrCancel"
-                                )
-                            else:
-                                raise e
+# Получаем стакан и шаг цены
+instrument_info = session.get_instruments_info(category="linear", symbol=top_symbol)
+price_filter = instrument_info["result"]["list"][0]["priceFilter"]
+tick_size = float(price_filter["tickSize"])
+orderbook_close = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
+best_bid_close = float(orderbook_close['result']['b'][0][0])
+best_ask_close = float(orderbook_close['result']['a'][0][0])
 
-                        close_order_id = close_order_resp["result"]["orderId"]
-                        await asyncio.sleep(5)
+# Смещаем цену на 0.3% и округляем по tickSize
+buffer_pct = 0.003
+raw_close_price = (
+    best_bid_close * (1 + buffer_pct) if direction == "SHORT"
+    else best_ask_close * (1 - buffer_pct)
+)
+close_price = round(raw_close_price / tick_size) * tick_size
 
-                        try:
-                            session.cancel_order(category="linear", symbol=top_symbol, orderId=close_order_id)
-                        except Exception:
-                            pass
+try:
+    close_order_resp = session.place_order(
+        category="linear",
+        symbol=top_symbol,
+        side=close_side,
+        order_type="Limit",
+        qty=opened_qty,
+        price=str(close_price),
+        time_in_force="PostOnly",
+        reduce_only=True
+    )
+except Exception as e:
+    await app.bot.send_message(chat_id, f"❌ Ошибка при выставлении лимитного закрытия: {e}")
+    close_order_resp = None
 
+close_order_id = None
+if close_order_resp and "result" in close_order_resp and "orderId" in close_order_resp["result"]:
+    close_order_id = close_order_resp["result"]["orderId"]
+    await asyncio.sleep(5)
+    try:
+        session.cancel_order(category="linear", symbol=top_symbol, orderId=close_order_id)
+    except:
+        pass
 
-                        close_info = session.get_order_history(category="linear", orderId=close_order_id)
-                        close_list = close_info.get("result", {}).get("list", [])
-                        cum_exec_qty_close = 0.0
-                        cum_exec_value_close = 0.0
-                        cum_exec_fee_close = 0.0
-                        if close_list:
-                            close_data = close_list[0]
-                            cum_exec_qty_close = float(close_data.get("cumExecQty", 0))
-                            cum_exec_value_close = float(close_data.get("cumExecValue", 0))
-                            cum_exec_fee_close = float(close_data.get("cumExecFee", 0))
+# Получаем историю исполнения
+cum_exec_qty_close = 0.0
+cum_exec_value_close = 0.0
+cum_exec_fee_close = 0.0
+if close_order_id:
+    close_info = session.get_order_history(category="linear", orderId=close_order_id)
+    close_list = close_info.get("result", {}).get("list", [])
+    if close_list:
+        close_data = close_list[0]
+        cum_exec_qty_close = float(close_data.get("cumExecQty", 0))
+        cum_exec_value_close = float(close_data.get("cumExecValue", 0))
+        cum_exec_fee_close = float(close_data.get("cumExecFee", 0))
 
-                        remaining_close_qty = opened_qty - cum_exec_qty_close
-                        close_order_id_2 = None
-                        cum_exec_qty_close2 = 0.0
-                        cum_exec_value_close2 = 0.0
-                        cum_exec_fee_close2 = 0.0
-
-                        if remaining_close_qty > 0:
-                            close_order_resp2 = session.place_order(
-                                category="linear",
-                                symbol=top_symbol,
-                                side=close_side,
-                                order_type="Market",
-                                qty=remaining_close_qty,
-                                time_in_force="FillOrKill"
-                            )
-                            close_order_id_2 = close_order_resp2["result"]["orderId"]
-                            close_info2 = session.get_order_history(category="linear", orderId=close_order_id_2)
-                            close_list2 = close_info2.get("result", {}).get("list", [])
-                            if close_list2:
-                                close_data2 = close_list2[0]
-                                cum_exec_qty_close2 = float(close_data2.get("cumExecQty", 0))
-                                cum_exec_value_close2 = float(close_data2.get("cumExecValue", 0))
-                                cum_exec_fee_close2 = float(close_data2.get("cumExecFee", 0))
+# Если не всё исполнилось — добиваем маркетом
+remaining_close_qty = opened_qty - cum_exec_qty_close
+if remaining_close_qty > 0:
+    try:
+        close_order_resp2 = session.place_order(
+            category="linear",
+            symbol=top_symbol,
+            side=close_side,
+            order_type="Market",
+            qty=remaining_close_qty,
+            time_in_force="FillOrKill",
+            reduce_only=True
+        )
+        close_order_id_2 = close_order_resp2["result"]["orderId"]
+        close_info2 = session.get_order_history(category="linear", orderId=close_order_id_2)
+        close_list2 = close_info2.get("result", {}).get("list", [])
+        if close_list2:
+            close_data2 = close_list2[0]
+            cum_exec_qty_close2 = float(close_data2.get("cumExecQty", 0))
+            cum_exec_value_close2 = float(close_data2.get("cumExecValue", 0))
+            cum_exec_fee_close2 = float(close_data2.get("cumExecFee", 0))
+    except Exception as e:
+        await app.bot.send_message(chat_id, f"❌ Ошибка при маркет-закрытии: {e}")
+        cum_exec_qty_close2 = cum_exec_value_close2 = cum_exec_fee_close2 = 0.0
+else:
+    cum_exec_qty_close2 = cum_exec_value_close2 = cum_exec_fee_close2 = 0.0
 
                         # Рассчитываем комиссии и прибыль
                         total_fees = cum_exec_fee_open + cum_exec_fee_open2 + cum_exec_fee_close + cum_exec_fee_close2
