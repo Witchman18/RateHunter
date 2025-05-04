@@ -237,10 +237,7 @@ async def funding_sniper_loop(app):
                         last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
                         adjusted_qty = calculate_adjusted_qty(position_size, last_price, step, min_qty)
 if adjusted_qty is None:
-    await app.bot.send_message(
-        chat_id,
-        f"⚠️ Сделка по {top_symbol} не открыта: объём меньше минимального ({min_qty})"
-    )
+    await app.bot.send_message(chat_id,f"⚠️ Сделка по {top_symbol} не открыта: объём меньше минимального ({min_qty})")
     continue
 
                         try:
