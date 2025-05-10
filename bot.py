@@ -1,3 +1,5 @@
+# --- START OF FILE bot (8).py ---
+
 import os
 import asyncio
 import time # Импортируем time для работы с timestamp
@@ -40,7 +42,9 @@ SET_PLECHO = 1
 # Константы для стратегии
 ENTRY_WINDOW_START_SECONDS = 25 # За сколько секунд ДО фандинга начинаем пытаться войти
 ENTRY_WINDOW_END_SECONDS = 10  # За сколько секунд ДО фандинга прекращаем попытки входа
-POST_FUNDING_WAIT_SECONDS = 15 # Сколько секунд ждем ПОСЛЕ времени фандинга перед выходом
+# === ИЗМЕНЕНО ЗДЕСЬ ===
+POST_FUNDING_WAIT_SECONDS = 7 # Сколько секунд ждем ПОСЛЕ времени фандинга перед выходом
+# =======================
 MAKER_ORDER_WAIT_SECONDS_ENTRY = 2 # Сколько секунд ждем исполнения PostOnly ордера на ВХОД
 MAKER_ORDER_WAIT_SECONDS_EXIT = 5  # Сколько секунд ждем исполнения PostOnly ордера на ВЫХОД
 SNIPER_LOOP_INTERVAL_SECONDS = 5 # Как часто проверяем тикеры в основном цикле
@@ -212,7 +216,7 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================== УСТАНОВКА ПЛЕЧА =====================
 
 async def set_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⚖ Введите размер плеча (например, 5 или 10):")
+    await update.message.reply_text("⚖ Введите размер плеча (например, 5 или 10):") # Оригинальный эмодзи был без _fe0f
     return SET_PLECHO
 
 async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -247,12 +251,11 @@ async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    # query.answer() теперь вызывается внутри show_top_funding, если нужно
     chat_id = query.message.chat_id
     data = query.data
 
     if data == "toggle_sniper":
-        await query.answer() # Отвечаем здесь для toggle
+        await query.answer()
         if chat_id not in sniper_active:
             sniper_active[chat_id] = {'active': False}
 
@@ -268,35 +271,29 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")]
         ]
         reply_markup = InlineKeyboardMarkup(buttons)
-        # Используем try-except для редактирования сообщения
         try:
             await query.edit_message_text(f"{action_text}\n📡 Меню управления снайпером:", reply_markup=reply_markup)
         except Exception as e:
             print(f"Error editing message on toggle: {e}")
-            # Если не удалось отредактировать, отправляем новое сообщение
             await context.bot.send_message(chat_id, f"{action_text}\n(Не удалось обновить предыдущее сообщение)")
 
-
     elif data == "show_top_pairs_inline":
-        # Просто вызываем функцию, она сама разберется с редактированием и query.answer()
+        # query.answer() вызывается внутри show_top_funding
         await show_top_funding(update, context)
 
 # ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
 
 def get_position_direction(rate: float) -> str:
-    # Возвращает 'Buy' для лонга (если rate < 0), 'Sell' для шорта (если rate > 0)
     if rate is None: return "NONE"
     if rate < 0: return "Buy"
     elif rate > 0: return "Sell"
     else: return "NONE"
 
 def quantize_qty(raw_qty: Decimal, qty_step: Decimal) -> Decimal:
-    """ Округляет кол-во ВНИЗ до шага qty_step """
     if qty_step <= 0: return raw_qty
     return (raw_qty // qty_step) * qty_step
 
 def quantize_price(raw_price: Decimal, tick_size: Decimal) -> Decimal:
-    """ Округляет цену по правилам tick_size (обычно к ближайшему) """
     if tick_size <= 0: return raw_price
     return round(raw_price / tick_size) * tick_size
 
@@ -308,65 +305,39 @@ async def funding_sniper_loop(app: ApplicationBuilder):
         await asyncio.sleep(SNIPER_LOOP_INTERVAL_SECONDS)
         try:
             now_ts = time.time()
-            now_dt = datetime.utcnow()
-            print(f"\n--- {now_dt.strftime('%Y-%m-%d %H:%M:%S UTC')} Checking ---")
-
-            # Получаем свежие тикеры
+            # (начало цикла, получение тикеров, фильтрация funding_data - как в полной версии)
             response = session.get_tickers(category="linear")
             tickers = response.get("result", {}).get("list", [])
-            if not tickers:
-                print("No tickers received.")
-                continue
-
+            if not tickers: print("No tickers."); continue
             funding_data = []
             for t in tickers:
-                # (Парсинг и фильтрация тикеров как в прошлой версии)
-                symbol = t.get("symbol")
-                rate = t.get("fundingRate")
-                next_time_str = t.get("nextFundingTime")
-                turnover = t.get("turnover24h")
-                if not all([symbol, rate, next_time_str, turnover]): continue
+                symbol, rate_str, next_ts_str, _, turnover_str = t.get("symbol"), t.get("fundingRate"), t.get("nextFundingTime"), t.get("volume24h"), t.get("turnover24h")
+                if not all([symbol, rate_str, next_ts_str, turnover_str]): continue
                 try:
-                    rate_f = float(rate)
-                    next_ts = int(next_time_str) / 1000
-                    turnover_f = float(turnover)
+                    rate_f, next_ts_val, turnover_f = float(rate_str), int(next_ts_str) / 1000, float(turnover_str)
                     if turnover_f < 1_000_000 or abs(rate_f) < 0.0001: continue
-                    funding_data.append({"symbol": symbol, "rate": rate_f, "next_ts": next_ts})
-                except (ValueError, TypeError): continue
-
-            if not funding_data:
-                print("No suitable pairs found after filtering.")
-                continue
-
+                    funding_data.append({"symbol": symbol, "rate": rate_f, "next_ts": next_ts_val})
+                except: continue # Пропускаем элемент при ошибке парсинга
+            if not funding_data: print("No suitable pairs."); continue
             funding_data.sort(key=lambda x: abs(x["rate"]), reverse=True)
             top_pair = funding_data[0]
-            top_symbol = top_pair["symbol"]
-            rate = top_pair["rate"]
-            next_funding_ts = top_pair["next_ts"]
-
+            top_symbol, rate, next_funding_ts = top_pair["symbol"], top_pair["rate"], top_pair["next_ts"]
             seconds_left = next_funding_ts - now_ts
-            print(f"Top pair: {top_symbol}, Rate: {rate*100:.4f}%, Funding in: {seconds_left:.0f}s")
+            # print(f"Top: {top_symbol}, R: {rate*100:.4f}%, In: {seconds_left:.0f}s")
 
-            # === ПРОВЕРКА ОКНА ВХОДА ===
             if ENTRY_WINDOW_END_SECONDS <= seconds_left <= ENTRY_WINDOW_START_SECONDS:
                 print(f"Entering trade window for {top_symbol} ({seconds_left:.0f}s left)")
                 open_side = get_position_direction(rate)
-                if open_side == "NONE":
-                    print("Funding rate is zero, skipping.")
-                    continue
+                if open_side == "NONE": print("Funding rate is zero, skipping."); continue
 
-                # Обработка активных пользователей
                 for chat_id, data in list(sniper_active.items()):
                     if not data.get('active'): continue
                     if (data.get("last_entry_symbol") == top_symbol and
                             data.get("last_entry_ts") == next_funding_ts):
                         continue
 
-                    marja = data.get('real_marja')
-                    plecho = data.get('real_plecho')
-                    if not marja or not plecho:
-                        await app.bot.send_message(chat_id, f"⚠️ Пропуск {top_symbol}: Маржа или плечо не установлены.")
-                        continue
+                    marja, plecho = data.get('real_marja'), data.get('real_plecho')
+                    if not marja or not plecho: await app.bot.send_message(chat_id, f"⚠️ Пропуск {top_symbol}: Маржа/плечо не установлены."); continue
 
                     print(f"\n>>> Processing {top_symbol} for chat {chat_id} <<<")
                     await app.bot.send_message(
@@ -377,9 +348,7 @@ async def funding_sniper_loop(app: ApplicationBuilder):
                         f"Осталось: `{seconds_left:.0f} сек`",
                          parse_mode='Markdown'
                     )
-
-                    # ==================== НАЧАЛО БЛОКА СДЕЛКИ ====================
-                    trade_success = False
+                    
                     position_data = {
                         "symbol": top_symbol, "open_side": open_side,
                         "marja": marja, "plecho": plecho,
@@ -388,351 +357,203 @@ async def funding_sniper_loop(app: ApplicationBuilder):
                         "opened_qty": Decimal("0"), "closed_qty": Decimal("0"),
                         "total_open_value": Decimal("0"), "total_close_value": Decimal("0"),
                         "total_open_fee": Decimal("0"), "total_close_fee": Decimal("0"),
-                        "actual_funding_fee": None,
+                        "actual_funding_fee": Decimal("0"), # Инициализируем нулем
                         "target_qty": Decimal("0"),
                     }
 
                     try:
                         # --- Получение инфо и расчет кол-ва ---
                         print(f"Getting instrument info for {top_symbol}...")
-                        info = session.get_instruments_info(category="linear", symbol=top_symbol)
-                        instrument_info = info.get("result", {}).get("list", [])[0]
+                        info_resp = session.get_instruments_info(category="linear", symbol=top_symbol)
+                        instrument_info = info_resp.get("result", {}).get("list", [])[0]
                         lot_filter = instrument_info["lotSizeFilter"]
                         price_filter = instrument_info["priceFilter"]
                         min_qty = Decimal(lot_filter["minOrderQty"])
                         qty_step = Decimal(lot_filter["qtyStep"])
                         tick_size = Decimal(price_filter["tickSize"])
-                        print(f"Min Qty: {min_qty}, Qty Step: {qty_step}, Tick Size: {tick_size}")
-
+                        
                         print(f"Getting ticker info for {top_symbol}...")
-                        ticker_info = session.get_tickers(category="linear", symbol=top_symbol)
-                        last_price = Decimal(ticker_info["result"]["list"][0]["lastPrice"])
-                        print(f"Last Price: {last_price}")
-
+                        ticker_resp = session.get_tickers(category="linear", symbol=top_symbol)
+                        last_price = Decimal(ticker_resp["result"]["list"][0]["lastPrice"])
+                        
                         position_size_usdt = marja * plecho
                         if last_price <= 0: raise ValueError("Invalid last price")
                         raw_qty = position_size_usdt / last_price
                         adjusted_qty = quantize_qty(raw_qty, qty_step)
-                        print(f"Calculated Qty: {raw_qty:.8f}, Adjusted Qty: {adjusted_qty}")
-
-                        if adjusted_qty < min_qty:
-                            await app.bot.send_message(chat_id, f"⚠️ Расчетный объем {adjusted_qty} {top_symbol} меньше минимального ({min_qty}). Сделка отменена.")
-                            continue
-
+                        if adjusted_qty < min_qty: await app.bot.send_message(chat_id, f"⚠️ Расчетный объем {adjusted_qty} {top_symbol} < мин. ({min_qty}). Отмена."); continue
                         position_data["target_qty"] = adjusted_qty
 
                         # --- Установка плеча ---
                         print(f"Setting leverage {plecho}x for {top_symbol}...")
-                        try:
-                            session.set_leverage(
-                                category="linear", symbol=top_symbol,
-                                buyLeverage=str(plecho), sellLeverage=str(plecho)
-                            )
-                            print("Leverage set successfully.")
+                        try: session.set_leverage(category="linear", symbol=top_symbol, buyLeverage=str(plecho), sellLeverage=str(plecho))
                         except Exception as e:
-                            if "110043" in str(e): print(f"Leverage already set to {plecho}x.")
-                            else: raise ValueError(f"Failed to set leverage: {e}")
+                            if "110043" not in str(e): raise ValueError(f"Не удалось установить плечо: {e}")
+                            else: print(f"Плечо {plecho}x уже установлено.")
 
-                        # ==================== ОТКРЫТИЕ ПОЗИЦИИ (Maker -> Market) ====================
-                        print("\n--- Attempting to Open Position ---")
-                        open_qty_remaining = adjusted_qty
-
-                        # --- Попытка Maker Open ---
+                        # --- ОТКРЫТИЕ (Maker -> Market) ---
+                        open_qty_rem = adjusted_qty
+                        # Maker Open
                         try:
-                            orderbook = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
-                            best_bid = Decimal(orderbook['result']['b'][0][0])
-                            best_ask = Decimal(orderbook['result']['a'][0][0])
-                            maker_price = best_bid if open_side == "Buy" else best_ask
-                            maker_price_adj = quantize_price(maker_price, tick_size)
-                            print(f"Attempting Maker Open ({open_side}) at {maker_price_adj}...")
-
-                            maker_order_resp = session.place_order(
-                                category="linear", symbol=top_symbol, side=open_side,
-                                order_type="Limit", qty=str(open_qty_remaining),
-                                price=str(maker_price_adj), time_in_force="PostOnly"
-                            )
-                            maker_order_id = maker_order_resp.get("result", {}).get("orderId")
-                            if not maker_order_id: raise ValueError("Failed to place maker order (no ID).")
-                            print(f"Maker Open Order ID: {maker_order_id}")
-                            await app.bot.send_message(chat_id, f"⏳ Попытка входа Maker @{maker_price_adj} (ID: ...{maker_order_id[-6:]})")
+                            ob_resp = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
+                            ob = ob_resp['result']
+                            mp = quantize_price(Decimal(ob['b'][0][0] if open_side=="Buy" else ob['a'][0][0]), tick_size)
+                            resp = session.place_order(category="linear",symbol=top_symbol,side=open_side,order_type="Limit",qty=str(open_qty_rem),price=str(mp),time_in_force="PostOnly")
+                            oid = resp["result"]["orderId"]
+                            await app.bot.send_message(chat_id, f"⏳ Попытка входа Maker @{mp} (ID: ...{oid[-6:]})")
                             await asyncio.sleep(MAKER_ORDER_WAIT_SECONDS_ENTRY)
-
-                            order_info = session.get_order_history(category="linear", orderId=maker_order_id, limit=1)
-                            order_data = order_info.get("result", {}).get("list", [])
-                            if order_data:
-                                order_data = order_data[0]
-                                cum_exec_qty = Decimal(order_data.get("cumExecQty", "0"))
-                                status = order_data.get("orderStatus")
-                                print(f"Maker Open Order Status: {status}, Filled Qty: {cum_exec_qty}")
-                                if cum_exec_qty > 0:
-                                    position_data["opened_qty"] += cum_exec_qty
-                                    position_data["total_open_value"] += Decimal(order_data.get("cumExecValue", "0"))
-                                    position_data["total_open_fee"] += Decimal(order_data.get("cumExecFee", "0"))
-                                    open_qty_remaining -= cum_exec_qty
-                                    await app.bot.send_message(chat_id, f"✅ Частично исполнено Maker: {cum_exec_qty} {top_symbol}")
-                                if status not in ["Filled", "Cancelled", "Rejected"]:
-                                    try:
-                                        print(f"Cancelling Maker Open Order {maker_order_id}...")
-                                        session.cancel_order(category="linear", symbol=top_symbol, orderId=maker_order_id)
-                                        print("Maker order cancelled.")
-                                    except Exception as cancel_e:
-                                         if "Order does not exist" not in str(cancel_e) and "already been filled" not in str(cancel_e):
-                                            print(f"Minor error cancelling maker order: {cancel_e}")
-                            else: print(f"Could not get history for Maker Order {maker_order_id}")
-                        except Exception as e:
-                            print(f"Maker Open attempt failed: {e}")
-                            await app.bot.send_message(chat_id, f"⚠️ Ошибка при попытке входа Maker: {e}")
-
-                        # --- Добивание Market Open ---
-                        open_qty_remaining = quantize_qty(open_qty_remaining, qty_step)
-                        if open_qty_remaining >= min_qty:
-                            print(f"Attempting Market Open ({open_side}) for remaining {open_qty_remaining}...")
-                            await app.bot.send_message(chat_id, f"🛒 Добиваю маркетом остаток: {open_qty_remaining} {top_symbol}")
+                            hist_resp = session.get_order_history(category="linear", orderId=oid, limit=1)
+                            hist = hist_resp.get("result",{}).get("list",[])
+                            if hist:
+                                h = hist[0]; exec_q = Decimal(h.get("cumExecQty","0"))
+                                if exec_q > 0:
+                                    position_data["opened_qty"]+=exec_q; position_data["total_open_value"]+=Decimal(h.get("cumExecValue","0")); position_data["total_open_fee"]+=Decimal(h.get("cumExecFee","0")); open_qty_rem-=exec_q
+                                    await app.bot.send_message(chat_id, f"✅ Частично исполнено Maker: {exec_q} {top_symbol}")
+                                if h.get("orderStatus") not in ["Filled","Cancelled","Rejected"]: 
+                                    try: session.cancel_order(category="linear",symbol=top_symbol,orderId=oid)
+                                    except Exception as cancel_e: print(f"Minor cancel error (Maker Open): {cancel_e}")
+                        except Exception as e: print(f"Maker Open attempt failed: {e}"); await app.bot.send_message(chat_id, f"⚠️ Ошибка при попытке входа Maker: {e}")
+                        # Market Open
+                        open_qty_rem = quantize_qty(open_qty_rem, qty_step)
+                        if open_qty_rem >= min_qty:
+                            await app.bot.send_message(chat_id, f"🛒 Добиваю маркетом остаток: {open_qty_rem} {top_symbol}")
                             try:
-                                market_order_resp = session.place_order(
-                                    category="linear", symbol=top_symbol, side=open_side,
-                                    order_type="Market", qty=str(open_qty_remaining),
-                                    time_in_force="ImmediateOrCancel"
-                                )
-                                market_order_id = market_order_resp.get("result", {}).get("orderId")
-                                if not market_order_id: raise ValueError("Failed to place market order (no ID).")
-                                print(f"Market Open Order ID: {market_order_id}")
-                                await asyncio.sleep(1.5) # Увеличил немного ожидание
-                                order_info = session.get_order_history(category="linear", orderId=market_order_id, limit=1)
-                                order_data = order_info.get("result", {}).get("list", [])
-                                if order_data:
-                                    order_data = order_data[0]
-                                    cum_exec_qty = Decimal(order_data.get("cumExecQty", "0"))
-                                    status = order_data.get("orderStatus")
-                                    print(f"Market Open Order Status: {status}, Filled Qty: {cum_exec_qty}")
-                                    if cum_exec_qty > 0:
-                                        position_data["opened_qty"] += cum_exec_qty
-                                        position_data["total_open_value"] += Decimal(order_data.get("cumExecValue", "0"))
-                                        position_data["total_open_fee"] += Decimal(order_data.get("cumExecFee", "0"))
-                                        await app.bot.send_message(chat_id, f"✅ Исполнено Маркет: {cum_exec_qty} {top_symbol}")
-                                    else: await app.bot.send_message(chat_id, f"⚠️ Маркет ордер ({market_order_id}) не исполнил ничего.")
-                                else: print(f"Could not get history for Market Order {market_order_id}")
-                            except Exception as e:
-                                print(f"Market Open attempt failed: {e}")
-                                await app.bot.send_message(chat_id, f"❌ Ошибка при добивании маркетом: {e}")
-                        elif open_qty_remaining > 0: print(f"Remaining open qty {open_qty_remaining} < min qty {min_qty}.")
-
-                        # --- Проверка итогового открытия ---
+                                resp = session.place_order(category="linear",symbol=top_symbol,side=open_side,order_type="Market",qty=str(open_qty_rem),time_in_force="ImmediateOrCancel")
+                                oid = resp["result"]["orderId"]; await asyncio.sleep(1.5)
+                                hist_resp = session.get_order_history(category="linear",orderId=oid,limit=1)
+                                hist = hist_resp.get("result",{}).get("list",[])
+                                if hist:
+                                    h=hist[0]; exec_q = Decimal(h.get("cumExecQty","0"))
+                                    if exec_q > 0:
+                                        position_data["opened_qty"]+=exec_q; position_data["total_open_value"]+=Decimal(h.get("cumExecValue","0")); position_data["total_open_fee"]+=Decimal(h.get("cumExecFee","0"))
+                                        await app.bot.send_message(chat_id, f"✅ Исполнено Маркет: {exec_q} {top_symbol}")
+                                    else: await app.bot.send_message(chat_id, f"⚠️ Маркет ордер ({oid}) не исполнил ничего.")
+                            except Exception as e: print(f"Market Open attempt failed: {e}"); await app.bot.send_message(chat_id, f"❌ Ошибка при добивании маркетом: {e}")
+                        
                         final_opened_qty = position_data["opened_qty"]
-                        if final_opened_qty < min_qty:
-                            await app.bot.send_message(chat_id, f"❌ Не удалось открыть минимальный объем ({min_qty}) для {top_symbol}. Итого открыто: {final_opened_qty}. Отмена сделки.")
-                            continue
+                        if final_opened_qty < min_qty: await app.bot.send_message(chat_id, f"❌ Не открыт мин. объем ({min_qty}). Открыто: {final_opened_qty}. Отмена."); continue
+                        avg_op = f"{position_data['total_open_value']/final_opened_qty:.4f}" if final_opened_qty else "N/A"
+                        await app.bot.send_message(chat_id, f"✅ Позиция *{top_symbol}* ({'LONG' if open_side=='Buy' else 'SHORT'}) открыта.\nОбъем: `{final_opened_qty}`, Ср.цена: `{avg_op}`, Ком.откр: `{position_data['total_open_fee']:.4f}`", parse_mode='Markdown')
+                        data["last_entry_symbol"], data["last_entry_ts"] = top_symbol, next_funding_ts
 
-                        avg_open_price_str = f"{position_data['total_open_value'] / final_opened_qty:.4f}" if final_opened_qty else "N/A"
-                        await app.bot.send_message(
-                            chat_id,
-                            f"✅ Позиция *{top_symbol}* ({'LONG' if open_side == 'Buy' else 'SHORT'}) открыта.\n"
-                            f"Объем: `{final_opened_qty}`\n"
-                            f"Средств. цена (прибл.): `{avg_open_price_str}`\n"
-                            f"Комиссия откр.: `{position_data['total_open_fee']:.4f}` USDT",
-                            parse_mode='Markdown'
-                        )
-                        print(f"Position Opened. Total Qty: {final_opened_qty}")
-                        sniper_active[chat_id]["last_entry_symbol"] = top_symbol
-                        sniper_active[chat_id]["last_entry_ts"] = next_funding_ts
-
-                        # ==================== ОЖИДАНИЕ И ПРОВЕРКА ФАНДИНГА ====================
-                        print("\n--- Waiting for Funding Payment ---")
-                        now_ts_before_wait = time.time()
-                        delay_needed = next_funding_ts - now_ts_before_wait
-                        wait_duration = max(0, delay_needed) + POST_FUNDING_WAIT_SECONDS
-                        print(f"Funding at {datetime.fromtimestamp(next_funding_ts)} UTC. Waiting for {wait_duration:.1f} seconds...")
+                        # --- ОЖИДАНИЕ И ПРОВЕРКА ФАНДИНГА ---
+                        wait_duration = max(0, next_funding_ts - time.time()) + POST_FUNDING_WAIT_SECONDS
                         await app.bot.send_message(chat_id, f"⏳ Ожидаю выплаты фандинга (~{wait_duration:.0f} сек)...")
                         await asyncio.sleep(wait_duration)
 
-                        print("Checking actual funding payment...")
+                        # === ИСПРАВЛЕНО ЗДЕСЬ: Проверка фандинга через Transaction Log ===
+                        print("Checking actual funding payment using Transaction Log...")
                         try:
-                            funding_check_start_time = int(next_funding_ts * 1000)
-                            funding_check_end_time = int((next_funding_ts + 60) * 1000)
-                            funding_history = session.get_funding_history(
-                                category="linear", symbol=top_symbol,
-                                startTime=funding_check_start_time, endTime=funding_check_end_time,
-                                limit=1
+                            start_ts_ms = int((next_funding_ts - 120) * 1000) 
+                            end_ts_ms = int((next_funding_ts + 120) * 1000)   
+                            
+                            transaction_log_resp = session.get_transaction_log(
+                                category="linear", 
+                                symbol=top_symbol, 
+                                type="SETTLEMENT",
+                                startTime=start_ts_ms,
+                                endTime=end_ts_ms,
+                                limit=10 
                             )
-                            funding_list = funding_history.get("result", {}).get("list", [])
-                            if funding_list:
-                                last_funding = funding_list[0]
-                                funding_fee = Decimal(last_funding.get("fundingFee", "0"))
-                                funding_time_ms = int(last_funding.get("execTime", "0"))
-                                if abs(funding_time_ms / 1000 - next_funding_ts) < 60:
-                                    position_data["actual_funding_fee"] = funding_fee
-                                    print(f"Actual Funding Fee recorded: {funding_fee}")
-                                    await app.bot.send_message(chat_id, f"💰 Фандинг получен: `{funding_fee:.4f}` USDT", parse_mode='Markdown')
+                            log_list = transaction_log_resp.get("result", {}).get("list", [])
+                            found_funding_in_log = Decimal("0")
+                            
+                            if log_list:
+                                for entry in log_list:
+                                    change_str = entry.get("change", "0")
+                                    exec_time_ms = int(entry.get("transactionTime", "0"))
+                                    if abs(exec_time_ms / 1000 - next_funding_ts) < 60: 
+                                        found_funding_in_log += Decimal(change_str)
+                                        print(f"Found Funding Log: Time {datetime.fromtimestamp(exec_time_ms/1000)}, Change: {change_str}, Symbol: {entry.get('symbol')}")
+                                
+                                if found_funding_in_log != Decimal("0"):
+                                    position_data["actual_funding_fee"] = found_funding_in_log
+                                    await app.bot.send_message(chat_id, f"💰 Фандинг (из лога): `{found_funding_in_log:.4f}` USDT", parse_mode='Markdown')
                                 else:
-                                     print(f"Funding record found, but timestamp mismatch: expected ~{next_funding_ts*1000}, got {funding_time_ms}")
-                                     await app.bot.send_message(chat_id, f"⚠️ Найден фандинг, но время не совпадает.")
-                                     position_data["actual_funding_fee"] = Decimal("0")
+                                    await app.bot.send_message(chat_id, f"⚠️ Не найдено SETTLEMENT для {top_symbol} в логе в ожидаемое время.")
                             else:
-                                print("No funding fee record found.")
-                                await app.bot.send_message(chat_id, f"⚠️ Не найдено записей о фандинге для {top_symbol}.")
-                                position_data["actual_funding_fee"] = Decimal("0")
+                                await app.bot.send_message(chat_id, f"⚠️ Лог транзакций пуст для {top_symbol} в указ. период.")
+                        
                         except Exception as e:
-                            print(f"Error checking funding history: {e}")
-                            await app.bot.send_message(chat_id, f"❌ Ошибка при проверке истории фандинга: {e}")
-                            position_data["actual_funding_fee"] = Decimal("0")
+                            print(f"Error checking transaction log: {e}"); import traceback; traceback.print_exc()
+                            await app.bot.send_message(chat_id, f"❌ Ошибка при проверке лога транзакций: {e}")
+                        # ==================================================================
 
-                        # ==================== ЗАКРЫТИЕ ПОЗИЦИИ (Maker -> Market) ====================
-                        print("\n--- Attempting to Close Position ---")
+                        # --- ЗАКРЫТИЕ (Maker -> Market) ---
                         close_side = "Buy" if open_side == "Sell" else "Sell"
-                        close_qty_remaining = final_opened_qty
-
-                        # --- Попытка Maker Close ---
+                        close_qty_rem = final_opened_qty
+                        # Maker Close
                         try:
-                            orderbook = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
-                            best_bid = Decimal(orderbook['result']['b'][0][0])
-                            best_ask = Decimal(orderbook['result']['a'][0][0])
-                            maker_price = best_bid if close_side == "Buy" else best_ask
-                            maker_price_adj = quantize_price(maker_price, tick_size)
-                            print(f"Attempting Maker Close ({close_side}) at {maker_price_adj}...")
-                            maker_close_resp = session.place_order(
-                                category="linear", symbol=top_symbol, side=close_side,
-                                order_type="Limit", qty=str(close_qty_remaining),
-                                price=str(maker_price_adj), time_in_force="PostOnly",
-                                reduce_only=True
-                            )
-                            maker_close_id = maker_close_resp.get("result", {}).get("orderId")
-                            if not maker_close_id: raise ValueError("Failed to place maker close order (no ID).")
-                            print(f"Maker Close Order ID: {maker_close_id}")
-                            await app.bot.send_message(chat_id, f"⏳ Попытка выхода Maker @{maker_price_adj} (ID: ...{maker_close_id[-6:]})")
+                            ob_resp = session.get_orderbook(category="linear",symbol=top_symbol,limit=1)
+                            ob = ob_resp['result']
+                            mp = quantize_price(Decimal(ob['b'][0][0] if close_side=="Buy" else ob['a'][0][0]), tick_size)
+                            resp = session.place_order(category="linear",symbol=top_symbol,side=close_side,order_type="Limit",qty=str(close_qty_rem),price=str(mp),time_in_force="PostOnly",reduce_only=True)
+                            oid = resp["result"]["orderId"]
+                            await app.bot.send_message(chat_id, f"⏳ Попытка выхода Maker @{mp} (ID: ...{oid[-6:]})")
                             await asyncio.sleep(MAKER_ORDER_WAIT_SECONDS_EXIT)
-
-                            order_info = session.get_order_history(category="linear", orderId=maker_close_id, limit=1)
-                            order_data = order_info.get("result", {}).get("list", [])
-                            if order_data:
-                                order_data = order_data[0]
-                                cum_exec_qty = Decimal(order_data.get("cumExecQty", "0"))
-                                status = order_data.get("orderStatus")
-                                print(f"Maker Close Order Status: {status}, Filled Qty: {cum_exec_qty}")
-                                if cum_exec_qty > 0:
-                                    position_data["closed_qty"] += cum_exec_qty
-                                    position_data["total_close_value"] += Decimal(order_data.get("cumExecValue", "0"))
-                                    position_data["total_close_fee"] += Decimal(order_data.get("cumExecFee", "0"))
-                                    close_qty_remaining -= cum_exec_qty
-                                    await app.bot.send_message(chat_id, f"✅ Частично исполнено Maker (закрытие): {cum_exec_qty} {top_symbol}")
-                                if status not in ["Filled", "Cancelled", "Rejected", "Deactivated"]:
-                                    try:
-                                        print(f"Cancelling Maker Close Order {maker_close_id}...")
-                                        session.cancel_order(category="linear", symbol=top_symbol, orderId=maker_close_id)
-                                        print("Maker close order cancelled.")
-                                    except Exception as cancel_e:
-                                         if "Order does not exist" not in str(cancel_e) and "already been filled" not in str(cancel_e):
-                                            print(f"Minor error cancelling maker close order: {cancel_e}")
-                            else: print(f"Could not get history for Maker Close Order {maker_close_id}")
-                        except Exception as e:
-                            print(f"Maker Close attempt failed: {e}")
-                            await app.bot.send_message(chat_id, f"⚠️ Ошибка при попытке выхода Maker: {e}")
-
-                        # --- Добивание Market Close ---
-                        close_qty_remaining = quantize_qty(close_qty_remaining, qty_step)
-                        if close_qty_remaining >= min_qty:
-                            print(f"Attempting Market Close ({close_side}) for remaining {close_qty_remaining}...")
-                            await app.bot.send_message(chat_id, f"🛒 Закрываю маркетом остаток: {close_qty_remaining} {top_symbol}")
+                            hist_resp = session.get_order_history(category="linear",orderId=oid,limit=1)
+                            hist = hist_resp.get("result",{}).get("list",[])
+                            if hist:
+                                h=hist[0]; exec_q=Decimal(h.get("cumExecQty","0"))
+                                if exec_q > 0:
+                                    position_data["closed_qty"]+=exec_q; position_data["total_close_value"]+=Decimal(h.get("cumExecValue","0")); position_data["total_close_fee"]+=Decimal(h.get("cumExecFee","0")); close_qty_rem-=exec_q
+                                    await app.bot.send_message(chat_id, f"✅ Частично исполнено Maker (закрытие): {exec_q}")
+                                if h.get("orderStatus") not in ["Filled","Cancelled","Rejected","Deactivated"]: 
+                                    try: session.cancel_order(category="linear",symbol=top_symbol,orderId=oid)
+                                    except Exception as cancel_e: print(f"Minor cancel error (Maker Close): {cancel_e}")
+                        except Exception as e: print(f"Maker Close attempt failed: {e}"); await app.bot.send_message(chat_id, f"⚠️ Ошибка при попытке выхода Maker: {e}")
+                        # Market Close
+                        close_qty_rem = quantize_qty(close_qty_rem, qty_step)
+                        if close_qty_rem >= min_qty:
+                            await app.bot.send_message(chat_id, f"🛒 Закрываю маркетом остаток: {close_qty_rem} {top_symbol}")
                             try:
-                                market_close_resp = session.place_order(
-                                    category="linear", symbol=top_symbol, side=close_side,
-                                    order_type="Market", qty=str(close_qty_remaining),
-                                    time_in_force="ImmediateOrCancel", reduce_only=True
-                                )
-                                market_close_id = market_close_resp.get("result", {}).get("orderId")
-                                if not market_close_id: raise ValueError("Failed to place market close order (no ID).")
-                                print(f"Market Close Order ID: {market_close_id}")
-                                await asyncio.sleep(1.5) # Увеличил немного ожидание
-                                order_info = session.get_order_history(category="linear", orderId=market_close_id, limit=1)
-                                order_data = order_info.get("result", {}).get("list", [])
-                                if order_data:
-                                    order_data = order_data[0]
-                                    cum_exec_qty = Decimal(order_data.get("cumExecQty", "0"))
-                                    status = order_data.get("orderStatus")
-                                    print(f"Market Close Order Status: {status}, Filled Qty: {cum_exec_qty}")
-                                    if cum_exec_qty > 0:
-                                        position_data["closed_qty"] += cum_exec_qty
-                                        position_data["total_close_value"] += Decimal(order_data.get("cumExecValue", "0"))
-                                        position_data["total_close_fee"] += Decimal(order_data.get("cumExecFee", "0"))
-                                        await app.bot.send_message(chat_id, f"✅ Исполнено Маркет (закрытие): {cum_exec_qty} {top_symbol}")
-                                    else: await app.bot.send_message(chat_id, f"⚠️ Маркет ордер закрытия ({market_close_id}) не исполнил ничего.")
-                                else: print(f"Could not get history for Market Close Order {market_close_id}")
-                            except Exception as e:
-                                print(f"Market Close attempt failed: {e}")
-                                await app.bot.send_message(chat_id, f"❌ Ошибка при маркет-закрытии: {e}")
-                        elif close_qty_remaining > 0: print(f"Remaining close qty {close_qty_remaining} < min qty {min_qty}.")
-
-                        # --- Проверка итогового закрытия ---
+                                resp = session.place_order(category="linear",symbol=top_symbol,side=close_side,order_type="Market",qty=str(close_qty_rem),time_in_force="ImmediateOrCancel",reduce_only=True)
+                                oid = resp["result"]["orderId"]; await asyncio.sleep(1.5)
+                                hist_resp = session.get_order_history(category="linear",orderId=oid,limit=1)
+                                hist = hist_resp.get("result",{}).get("list",[])
+                                if hist:
+                                    h=hist[0]; exec_q=Decimal(h.get("cumExecQty","0"))
+                                    if exec_q > 0:
+                                        position_data["closed_qty"]+=exec_q; position_data["total_close_value"]+=Decimal(h.get("cumExecValue","0")); position_data["total_close_fee"]+=Decimal(h.get("cumExecFee","0"))
+                                        await app.bot.send_message(chat_id, f"✅ Исполнено Маркет (закрытие): {exec_q}")
+                                    else: await app.bot.send_message(chat_id, f"⚠️ Маркет ордер закрытия ({oid}) не исполнил ничего.")
+                            except Exception as e: print(f"Market Close attempt failed: {e}"); await app.bot.send_message(chat_id, f"❌ Ошибка при маркет-закрытии: {e}")
+                        
                         final_closed_qty = position_data["closed_qty"]
-                        print(f"Position Closed. Total Qty: {final_closed_qty}")
-                        if abs(final_closed_qty - final_opened_qty) > min_qty * Decimal("0.1"):
-                             await app.bot.send_message(
-                                 chat_id,
-                                 f"⚠️ Позиция *{top_symbol}* закрыта не полностью!\n"
-                                 f"Открыто: `{final_opened_qty}`, Закрыто: `{final_closed_qty}`.\n"
-                                 f"❗️ Проверьте вручную!", parse_mode='Markdown'
-                            )
-                        else:
-                             await app.bot.send_message(
-                                 chat_id,
-                                 f"✅ Позиция *{top_symbol}* успешно закрыта ({final_closed_qty}).", parse_mode='Markdown'
-                             )
+                        if abs(final_closed_qty - final_opened_qty) > min_qty * Decimal("0.1"): await app.bot.send_message(chat_id, f"⚠️ Позиция *{top_symbol}* не полностью закрыта! Откр: `{final_opened_qty}`, Закр: `{final_closed_qty}`. ПРОВЕРЬТЕ!", parse_mode='Markdown')
+                        else: await app.bot.send_message(chat_id, f"✅ Позиция *{top_symbol}* успешно закрыта ({final_closed_qty}).", parse_mode='Markdown')
 
-                        # ==================== РАСЧЕТ РЕАЛЬНОГО PNL ====================
-                        print("\n--- Calculating Real PNL ---")
+                        # --- РАСЧЕТ PNL ---
                         price_pnl = position_data["total_close_value"] - position_data["total_open_value"]
                         if open_side == "Sell": price_pnl = -price_pnl
-                        funding_pnl = position_data.get("actual_funding_fee") or Decimal("0")
+                        funding_pnl = position_data["actual_funding_fee"] 
                         total_fees = position_data["total_open_fee"] + position_data["total_close_fee"]
                         net_pnl = price_pnl + funding_pnl - total_fees
-                        roi_pct = (net_pnl / marja) * 100 if marja else Decimal("0")
-
-                        print(f"Price PNL: {price_pnl:.4f}")
-                        print(f"Funding PNL: {funding_pnl:.4f}")
-                        print(f"Total Fees: {total_fees:.4f}")
-                        print(f"Net PNL: {net_pnl:.4f}")
-                        print(f"ROI: {roi_pct:.2f}%")
-
-                        # Вывод результата пользователю
+                        roi_pct = (net_pnl / marja) * 100 if marja != Decimal(0) else Decimal("0") # Проверка деления на ноль
                         await app.bot.send_message(
-                            chat_id,
-                            f"📊 Результат сделки: *{top_symbol}* ({'LONG' if open_side == 'Buy' else 'SHORT'})\n\n"
+                            chat_id, 
+                            f"📊 Результат сделки: *{top_symbol}* ({'LONG' if open_side=='Buy' else 'SHORT'})\n\n"
                             f" PNL (цена): `{price_pnl:+.4f}` USDT\n"
                             f" PNL (фандинг): `{funding_pnl:+.4f}` USDT\n"
                             f" Комиссии (откр+закр): `{-total_fees:.4f}` USDT\n"
                             f"💰 *Чистая прибыль: {net_pnl:+.4f} USDT*\n"
-                            f"📈 ROI от маржи ({marja} USDT): `{roi_pct:.2f}%`",
-                             parse_mode='Markdown'
+                            f"📈 ROI от маржи ({marja} USDT): `{roi_pct:.2f}%`", 
+                            parse_mode='Markdown'
                         )
                         trade_success = True
 
-                    # ==================== КОНЕЦ БЛОКА СДЕЛКИ (обработка ошибок) =====================
                     except Exception as trade_e:
                         print(f"\n!!! CRITICAL TRADE ERROR for chat {chat_id}, symbol {top_symbol} !!!")
-                        print(f"Error: {trade_e}")
-                        import traceback
-                        traceback.print_exc()
-                        await app.bot.send_message(
-                            chat_id,
-                            f"❌ КРИТИЧЕСКАЯ ОШИБКА во время сделки по *{top_symbol}*:\n"
-                            f"`{trade_e}`\n\n"
-                            f"❗️ *ПРОВЕРЬТЕ СЧЕТ И ПОЗИЦИИ ВРУЧНУЮ!*",
-                             parse_mode='Markdown'
-                        )
-
+                        print(f"Error: {trade_e}"); import traceback; traceback.print_exc()
+                        await app.bot.send_message(chat_id, f"❌ КРИТИЧЕСКАЯ ОШИБКА во время сделки по *{top_symbol}*:\n`{trade_e}`\n\n❗️ *ПРОВЕРЬТЕ СЧЕТ И ПОЗИЦИИ ВРУЧНУЮ!*", parse_mode='Markdown')
                     finally:
                         print(f">>> Finished processing {top_symbol} for chat {chat_id} <<<")
-
             else:
                 # print(f"Not in entry window for {top_symbol} ({seconds_left:.0f}s left).")
                 pass
-
         except Exception as loop_e:
             print("\n!!! UNHANDLED ERROR IN SNIPER LOOP !!!")
-            print(f"Error: {loop_e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error: {loop_e}"); import traceback; traceback.print_exc()
             await asyncio.sleep(30)
-
 
 # ===================== MAIN =====================
 
@@ -741,20 +562,12 @@ if __name__ == "__main__":
     app_builder = ApplicationBuilder().token(BOT_TOKEN)
     app = app_builder.build()
 
-    # --- Добавляем хендлеры ---
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
-
-    # --- Обработчики кнопок основного меню ---
-    # Используем Regex с якорями ^ и $ для точного совпадения
     app.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("^📡 Сигналы$"), signal_menu))
-    # app.add_handler(MessageHandler(filters.Regex("^🧮 Калькулятор прибыли$"), calculator_handler)) # Placeholder
-
-    # --- Обработчик Inline кнопок ---
     app.add_handler(CallbackQueryHandler(signal_callback, pattern="^(toggle_sniper|show_top_pairs_inline)$"))
 
-    # --- Диалоги ---
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 Маржа$"), set_real_marja)],
         states={SET_MARJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_marja)]},
@@ -764,30 +577,25 @@ if __name__ == "__main__":
     app.add_handler(conv_marja)
 
     conv_plecho = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^⚖️ Плечо$"), set_real_plecho)],
+        entry_points=[MessageHandler(filters.Regex("^⚖️ Плечо$"), set_real_plecho)], # Исправлен эмодзи для соответствия клавиатуре
         states={SET_PLECHO: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_real_plecho)]},
         fallbacks=[CommandHandler("cancel", cancel)],
         conversation_timeout=60.0
     )
     app.add_handler(conv_plecho)
 
-    # --- Запуск фоновой задачи ---
     async def post_init_tasks(passed_app: ApplicationBuilder):
         print("Running post_init tasks...")
         asyncio.create_task(funding_sniper_loop(passed_app))
         print("Sniper loop task created.")
-
     app.post_init = post_init_tasks
 
-    # --- Запуск бота ---
     print("Starting bot polling...")
     try:
-        # allowed_updates можно убрать или настроить точнее, если нужно
         app.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         print(f"\nBot polling stopped due to error: {e}")
     finally:
         print("\nBot shutdown.")
 
-
-# --- END OF FILE bot (7).py ---
+# --- END OF FILE bot (8).py ---
