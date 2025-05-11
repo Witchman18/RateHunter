@@ -657,7 +657,7 @@ async def funding_sniper_loop(app: ApplicationBuilder):
                                 maker_price = quantize_price(Decimal(ob['b'][0][0]), tick_size) # Лучший бид
                             else: # SHORT
                                 maker_price = quantize_price(Decimal(ob['a'][0][0]), tick_size) # Лучший аск
-                         except Exception as e:
+                        except Exception as e:
                             await app.bot.send_message(chat_id, f"⚠️ Не удалось получить ордербук для {top_symbol} для Maker цены: {e}. Пропускаю Maker вход.")
                             maker_price = Decimal("0") # Не будем пытаться мейкером если нет цены
 
