@@ -297,6 +297,249 @@ def quantize_price(raw_price: Decimal, tick_size: Decimal) -> Decimal:
     if tick_size <= 0: return raw_price
     return round(raw_price / tick_size) * tick_size
 
+# ===================== НОВЫЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ТОРГОВЛИ =====================
+# (ВСТАВЬТЕ ЭТОТ БЛОК ПЕРЕД funding_sniper_loop)
+
+async def get_order_status_robust(session, order_id, symbol, category="linear", max_retries=3, delay=0.5):
+    """Надежно получает статус ордера с несколькими попытками."""
+    for attempt in range(max_retries):
+        try:
+            # Используем get_order_history, так как он показывает и исполненные, и отмененные
+            # Если нужен только активный ордер, можно get_open_orders, но история надежнее для пост-проверки
+            response = session.get_order_history(
+                category=category,
+                orderId=order_id,
+                limit=1 # Нам нужен только этот ордер
+            )
+            if response and response.get("retCode") == 0 and response.get("result", {}).get("list"):
+                order_data = response["result"]["list"][0]
+                if order_data.get("orderId") == order_id: # Убедимся, что это тот самый ордер
+                    return order_data # Возвращаем всю информацию об ордере
+            print(f"[get_order_status_robust] Попытка {attempt+1}: Не найден ордер {order_id} или ошибка API: {response}")
+        except Exception as e:
+            print(f"[get_order_status_robust] Попытка {attempt+1}: Ошибка при запросе статуса ордера {order_id}: {e}")
+        if attempt < max_retries - 1:
+            await asyncio.sleep(delay)
+    return None # Если все попытки неудачны
+
+
+async def place_limit_order_with_retry(
+    session, app, chat_id,
+    symbol, side, qty, price,
+    time_in_force="PostOnly", reduce_only=False,
+    max_wait_seconds=MAKER_ORDER_WAIT_SECONDS_ENTRY, # Используем вашу константу
+    check_interval_seconds=0.5
+):
+    """
+    Размещает лимитный ордер и ждет его исполнения или отмены.
+    Возвращает словарь с результатом или None в случае неудачи.
+    Результат: {'status': 'Filled'/'PartiallyFilled'/'Cancelled'/'Error', 'executed_qty': Decimal, 'avg_price': Decimal, 'fee': Decimal, 'message': str}
+    """
+    order_id = None
+    try:
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": side,
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(price),
+            "timeInForce": time_in_force
+        }
+        if reduce_only:
+            params["reduceOnly"] = True
+
+        print(f"Размещаю ЛИМИТНЫЙ ордер: {side} {qty} {symbol} @ {price} (ReduceOnly: {reduce_only})")
+        response = session.place_order(**params)
+        
+        if response and response.get("retCode") == 0 and response.get("result", {}).get("orderId"):
+            order_id = response["result"]["orderId"]
+            await app.bot.send_message(chat_id, f"⏳ {('Выход' if reduce_only else 'Вход')} Maker @{price} (ID: ...{order_id[-6:]})")
+
+            waited_seconds = 0
+            while waited_seconds < max_wait_seconds:
+                await asyncio.sleep(check_interval_seconds)
+                waited_seconds += check_interval_seconds
+                
+                order_info = await get_order_status_robust(session, order_id, symbol)
+                if order_info:
+                    order_status = order_info.get("orderStatus")
+                    cum_exec_qty = Decimal(order_info.get("cumExecQty", "0"))
+                    avg_price = Decimal(order_info.get("avgPrice", "0")) # avgPrice может быть "0" если не исполнен
+                    if avg_price == Decimal("0") and cum_exec_qty > 0 and Decimal(order_info.get("cumExecValue", "0")) > 0: # Для V5 avgPrice может быть 0, если ордер только создан
+                         avg_price = Decimal(order_info.get("cumExecValue", "0")) / cum_exec_qty
+
+                    cum_exec_fee = Decimal(order_info.get("cumExecFee", "0"))
+
+                    if order_status == "Filled":
+                        await app.bot.send_message(chat_id, f"✅ Maker ордер ...{order_id[-6:]} ПОЛНОСТЬЮ исполнен: {cum_exec_qty} {symbol}")
+                        return {'status': 'Filled', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': 'Filled'}
+                    elif order_status == "PartiallyFilled":
+                        # Продолжаем ждать, но запоминаем текущее исполнение
+                        print(f"Maker ордер ...{order_id[-6:]} ЧАСТИЧНО исполнен: {cum_exec_qty}. Ждем дальше.")
+                        continue # Не выходим, ждем полного исполнения или таймаута
+                    elif order_status in ["Cancelled", "Rejected", "Deactivated", "Expired"]:
+                        msg = f"⚠️ Maker ордер ...{order_id[-6:]} {order_status}. Исполнено: {cum_exec_qty}"
+                        await app.bot.send_message(chat_id, msg)
+                        return {'status': order_status, 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': msg}
+                else:
+                    print(f"Не удалось получить статус для Maker ордера ...{order_id[-6:]}. Попытка {int(waited_seconds/check_interval_seconds)}.")
+            
+            # Таймаут ожидания
+            final_order_info = await get_order_status_robust(session, order_id, symbol)
+            if final_order_info:
+                order_status = final_order_info.get("orderStatus")
+                cum_exec_qty = Decimal(final_order_info.get("cumExecQty", "0"))
+                avg_price = Decimal(final_order_info.get("avgPrice", "0"))
+                if avg_price == Decimal("0") and cum_exec_qty > 0 and Decimal(final_order_info.get("cumExecValue", "0")) > 0:
+                     avg_price = Decimal(final_order_info.get("cumExecValue", "0")) / cum_exec_qty
+                cum_exec_fee = Decimal(final_order_info.get("cumExecFee", "0"))
+
+                if order_status not in ["Filled", "Cancelled", "Rejected", "Deactivated", "Expired"]:
+                    try:
+                        print(f"Отменяю Maker ордер ...{order_id[-6:]} по таймауту.")
+                        session.cancel_order(category="linear", symbol=symbol, orderId=order_id)
+                        await app.bot.send_message(chat_id, f"⏳ Maker ордер ...{order_id[-6:]} отменен по таймауту. Исполнено: {cum_exec_qty}")
+                        return {'status': 'CancelledByTimeout', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': 'Cancelled by timeout'}
+                    except Exception as cancel_e:
+                        await app.bot.send_message(chat_id, f"❌ Ошибка отмены Maker ордера ...{order_id[-6:]}: {cancel_e}")
+                        return {'status': 'ErrorCancelling', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': str(cancel_e)}
+                else: # Если он уже сам отменился/исполнился пока мы ждали
+                     return {'status': order_status, 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': f'Final status: {order_status}'}
+            else:
+                 await app.bot.send_message(chat_id, f"⚠️ Не удалось получить финальный статус для Maker ордера ...{order_id[-6:]} после таймаута.")
+                 return {'status': 'ErrorNoStatus', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': 'Could not get final status'}
+
+        else:
+            err_msg = f"Ошибка размещения Maker ордера: {response.get('retMsg', 'Unknown error') if response else 'No response'}"
+            print(err_msg)
+            await app.bot.send_message(chat_id, f"❌ {err_msg}")
+            return {'status': 'ErrorPlacing', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': err_msg}
+
+    except Exception as e:
+        error_text = f"КРИТ.ОШИБКА в place_limit_order_with_retry: {e}"
+        print(error_text)
+        import traceback
+        traceback.print_exc()
+        await app.bot.send_message(chat_id, f"❌ {error_text}")
+        if order_id: # Если ордер был создан, но потом произошла ошибка
+             # Попытаться получить его статус и вернуть хоть что-то
+            final_order_info_on_exc = await get_order_status_robust(session, order_id, symbol)
+            if final_order_info_on_exc:
+                cum_exec_qty = Decimal(final_order_info_on_exc.get("cumExecQty", "0"))
+                avg_price = Decimal(final_order_info_on_exc.get("avgPrice", "0"))
+                if avg_price == Decimal("0") and cum_exec_qty > 0 and Decimal(final_order_info_on_exc.get("cumExecValue", "0")) > 0:
+                     avg_price = Decimal(final_order_info_on_exc.get("cumExecValue", "0")) / cum_exec_qty
+                cum_exec_fee = Decimal(final_order_info_on_exc.get("cumExecFee", "0"))
+                return {'status': 'ExceptionAfterPlace', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': str(e)}
+        return {'status': 'Exception', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': str(e)}
+
+
+async def place_market_order_robust(
+    session, app, chat_id,
+    symbol, side, qty,
+    time_in_force="ImmediateOrCancel", reduce_only=False
+):
+    """
+    Размещает рыночный ордер и проверяет его исполнение.
+    Возвращает словарь с результатом или None в случае неудачи.
+    Результат: {'status': 'Filled'/'PartiallyFilled'/'Error', 'executed_qty': Decimal, 'avg_price': Decimal, 'fee': Decimal, 'message': str}
+    """
+    try:
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": side,
+            "orderType": "Market",
+            "qty": str(qty),
+            "timeInForce": time_in_force
+        }
+        if reduce_only:
+            params["reduceOnly"] = True
+
+        print(f"Размещаю РЫНОЧНЫЙ ордер: {side} {qty} {symbol} (ReduceOnly: {reduce_only})")
+        response = session.place_order(**params)
+
+        if response and response.get("retCode") == 0 and response.get("result", {}).get("orderId"):
+            order_id = response["result"]["orderId"]
+            await app.bot.send_message(chat_id, f"🛒 Маркет ордер ({('выход' if reduce_only else 'вход')}) отправлен (ID: ...{order_id[-6:]}). Проверяю исполнение...")
+            
+            await asyncio.sleep(1.5) # Даем бирже время обработать рыночный ордер IOC
+
+            order_info = await get_order_status_robust(session, order_id, symbol)
+            if order_info:
+                order_status = order_info.get("orderStatus")
+                cum_exec_qty = Decimal(order_info.get("cumExecQty", "0"))
+                avg_price = Decimal(order_info.get("avgPrice", "0"))
+                if avg_price == Decimal("0") and cum_exec_qty > 0 and Decimal(order_info.get("cumExecValue", "0")) > 0:
+                     avg_price = Decimal(order_info.get("cumExecValue", "0")) / cum_exec_qty
+                cum_exec_fee = Decimal(order_info.get("cumExecFee", "0"))
+
+                if order_status == "Filled":
+                    await app.bot.send_message(chat_id, f"✅ Маркет ордер ...{order_id[-6:]} ИСПОЛНЕН: {cum_exec_qty} {symbol}")
+                    return {'status': 'Filled', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': 'Market Filled'}
+                elif order_status == "PartiallyFilled" and time_in_force == "ImmediateOrCancel": # Для IOC это частичное исполнение
+                    await app.bot.send_message(chat_id, f"✅ Маркет IOC ордер ...{order_id[-6:]} ЧАСТИЧНО ИСПОЛНЕН: {cum_exec_qty} {symbol}")
+                    return {'status': 'PartiallyFilled', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': 'Market IOC PartiallyFilled'}
+                elif cum_exec_qty == Decimal("0") and order_status in ["Cancelled", "Rejected", "Deactivated"]: # IOC не исполнился
+                    msg = f"⚠️ Маркет IOC ордер ...{order_id[-6:]} не исполнил ничего (статус: {order_status})."
+                    await app.bot.send_message(chat_id, msg)
+                    return {'status': order_status, 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': msg}
+                else: # Неожиданный статус для рыночного ордера
+                    msg = f"⚠️ Неожиданный статус для Маркет ордера ...{order_id[-6:]}: {order_status}. Исполнено: {cum_exec_qty}"
+                    await app.bot.send_message(chat_id, msg)
+                    return {'status': order_status, 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': msg}
+            else:
+                msg = f"⚠️ Не удалось получить статус для Маркет ордера ...{order_id[-6:]}."
+                await app.bot.send_message(chat_id, msg)
+                # В этом случае мы не знаем, что произошло. Лучше считать, что не исполнился.
+                return {'status': 'ErrorNoStatusMarket', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': msg}
+        else:
+            # Проверяем код ошибки 110007 "ab not enough for new order"
+            ret_msg = response.get('retMsg', 'Unknown error') if response else 'No response'
+            error_code = response.get('retCode') if response else None
+            if error_code == 110007 or "not enough" in ret_msg.lower() or "insufficient" in ret_msg.lower():
+                 err_msg = f"❌ Ошибка 'Недостаточно средств' при размещении Маркет ордера: {ret_msg}"
+            else:
+                 err_msg = f"❌ Ошибка размещения Маркет ордера: {ret_msg}"
+            print(err_msg)
+            await app.bot.send_message(chat_id, err_msg)
+            return {'status': 'ErrorPlacingMarket', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': err_msg}
+
+    except Exception as e:
+        error_text = f"КРИТ.ОШИБКА в place_market_order_robust: {e}"
+        print(error_text)
+        import traceback
+        traceback.print_exc()
+        await app.bot.send_message(chat_id, f"❌ {error_text}")
+        return {'status': 'ExceptionMarket', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': str(e)}
+
+
+async def get_current_position_info(session, symbol, category="linear"):
+    """Получает информацию о текущей открытой позиции для символа."""
+    try:
+        response = session.get_positions(category=category, symbol=symbol)
+        if response and response.get("retCode") == 0:
+            pos_list = response.get("result", {}).get("list", [])
+            if pos_list:
+                # Обычно для одного символа в режиме One-Way будет одна запись
+                # или две для Hedge Mode (но мы ориентируемся на One-Way)
+                for pos_data in pos_list:
+                    if pos_data.get("symbol") == symbol and Decimal(pos_data.get("size", "0")) > 0:
+                        return {
+                            "size": Decimal(pos_data.get("size", "0")),
+                            "side": pos_data.get("side"), # "Buy", "Sell", or "None"
+                            "avg_price": Decimal(pos_data.get("avgPrice", "0")),
+                            "liq_price": Decimal(pos_data.get("liqPrice", "0")),
+                            "unrealised_pnl": Decimal(pos_data.get("unrealisedPnl", "0"))
+                        }
+        return None # Нет открытой позиции или ошибка
+    except Exception as e:
+        print(f"Ошибка при получении информации о позиции для {symbol}: {e}")
+        return None
+
+# ===================== КОНЕЦ НОВЫХ ВСПОМОГАТЕЛЬНЫХ ФУНКЦИЙ =====================
+
 # ===================== ФОНДОВЫЙ СНАЙПЕР (ФАНДИНГ-БОТ) =====================
 
 async def funding_sniper_loop(app: ApplicationBuilder):
@@ -390,49 +633,143 @@ async def funding_sniper_loop(app: ApplicationBuilder):
                             if "110043" not in str(e): raise ValueError(f"Не удалось установить плечо: {e}")
                             else: print(f"Плечо {plecho}x уже установлено.")
 
-                        # --- ОТКРЫТИЕ (Maker -> Market) ---
-                        open_qty_rem = adjusted_qty
-                        # Maker Open
-                        try:
+                                                # --- НОВАЯ ЛОГИКА ОТКРЫТИЯ ПОЗИЦИИ ---
+                        print(f"Attempting to open position: {open_side} {adjusted_qty} {top_symbol}")
+                        
+                        # Сброс данных о текущей попытке входа в position_data
+                        position_data["opened_qty"] = Decimal("0")
+                        position_data["total_open_value"] = Decimal("0")
+                        position_data["total_open_fee"] = Decimal("0")
+                        
+                        # 1. Попытка входа лимитным ордером (Maker)
+                        maker_price = Decimal("0")
+                        try {
                             ob_resp = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
                             ob = ob_resp['result']
-                            mp = quantize_price(Decimal(ob['b'][0][0] if open_side=="Buy" else ob['a'][0][0]), tick_size)
-                            resp = session.place_order(category="linear",symbol=top_symbol,side=open_side,order_type="Limit",qty=str(open_qty_rem),price=str(mp),time_in_force="PostOnly")
-                            oid = resp["result"]["orderId"]
-                            await app.bot.send_message(chat_id, f"⏳ Попытка входа Maker @{mp} (ID: ...{oid[-6:]})")
-                            await asyncio.sleep(MAKER_ORDER_WAIT_SECONDS_ENTRY)
-                            hist_resp = session.get_order_history(category="linear", orderId=oid, limit=1)
-                            hist = hist_resp.get("result",{}).get("list",[])
-                            if hist:
-                                h = hist[0]; exec_q = Decimal(h.get("cumExecQty","0"))
-                                if exec_q > 0:
-                                    position_data["opened_qty"]+=exec_q; position_data["total_open_value"]+=Decimal(h.get("cumExecValue","0")); position_data["total_open_fee"]+=Decimal(h.get("cumExecFee","0")); open_qty_rem-=exec_q
-                                    await app.bot.send_message(chat_id, f"✅ Частично исполнено Maker: {exec_q} {top_symbol}")
-                                if h.get("orderStatus") not in ["Filled","Cancelled","Rejected"]: 
-                                    try: session.cancel_order(category="linear",symbol=top_symbol,orderId=oid)
-                                    except Exception as cancel_e: print(f"Minor cancel error (Maker Open): {cancel_e}")
-                        except Exception as e: print(f"Maker Open attempt failed: {e}"); await app.bot.send_message(chat_id, f"⚠️ Ошибка при попытке входа Maker: {e}")
-                        # Market Open
-                        open_qty_rem = quantize_qty(open_qty_rem, qty_step)
-                        if open_qty_rem >= min_qty:
-                            await app.bot.send_message(chat_id, f"🛒 Добиваю маркетом остаток: {open_qty_rem} {top_symbol}")
-                            try:
-                                resp = session.place_order(category="linear",symbol=top_symbol,side=open_side,order_type="Market",qty=str(open_qty_rem),time_in_force="ImmediateOrCancel")
-                                oid = resp["result"]["orderId"]; await asyncio.sleep(1.5)
-                                hist_resp = session.get_order_history(category="linear",orderId=oid,limit=1)
-                                hist = hist_resp.get("result",{}).get("list",[])
-                                if hist:
-                                    h=hist[0]; exec_q = Decimal(h.get("cumExecQty","0"))
-                                    if exec_q > 0:
-                                        position_data["opened_qty"]+=exec_q; position_data["total_open_value"]+=Decimal(h.get("cumExecValue","0")); position_data["total_open_fee"]+=Decimal(h.get("cumExecFee","0"))
-                                        await app.bot.send_message(chat_id, f"✅ Исполнено Маркет: {exec_q} {top_symbol}")
-                                    else: await app.bot.send_message(chat_id, f"⚠️ Маркет ордер ({oid}) не исполнил ничего.")
-                            except Exception as e: print(f"Market Open attempt failed: {e}"); await app.bot.send_message(chat_id, f"❌ Ошибка при добивании маркетом: {e}")
+                            # Для покупки (LONG) берем лучшую цену продажи (ask), для продажи (SHORT) - лучшую цену покупки (bid)
+                            # Чтобы наш PostOnly ордер встал в стакан и не исполнился сразу как Taker.
+                            # НО, так как мы хотим быть Maker, мы должны ставить цену чуть хуже для нас.
+                            # Если Long (Buy), то цена должна быть на bid[0] или чуть ниже.
+                            # Если Short (Sell), то цена должна быть на ask[0] или чуть выше.
+                            # Однако, для PostOnly, если цена пересекает спред, он отменяется.
+                            # Поэтому ставим точно на лучшую цену в "нашу" сторону стакана.
+                            if open_side == "Buy": # LONG
+                                maker_price = quantize_price(Decimal(ob['b'][0][0]), tick_size) # Лучший бид
+                            else: # SHORT
+                                maker_price = quantize_price(Decimal(ob['a'][0][0]), tick_size) # Лучший аск
+                        } except Exception as e:
+                            await app.bot.send_message(chat_id, f"⚠️ Не удалось получить ордербук для {top_symbol} для Maker цены: {e}. Пропускаю Maker вход.")
+                            maker_price = Decimal("0") # Не будем пытаться мейкером если нет цены
+
+                        limit_order_result = None
+                        if maker_price > 0:
+                             limit_order_result = await place_limit_order_with_retry(
+                                session, app, chat_id, top_symbol, open_side, 
+                                adjusted_qty, # Пытаемся весь объем лимиткой
+                                maker_price,
+                                time_in_force="PostOnly",
+                                max_wait_seconds=MAKER_ORDER_WAIT_SECONDS_ENTRY # Ваша константа
+                            )
+
+                        if limit_order_result and limit_order_result['executed_qty'] > 0:
+                            position_data["opened_qty"] += limit_order_result['executed_qty']
+                            # Средняя цена считается как общая стоимость / общее количество
+                            position_data["total_open_value"] += limit_order_result['executed_qty'] * limit_order_result['avg_price']
+                            position_data["total_open_fee"] += limit_order_result['fee']
+
+                        remaining_qty_to_open = adjusted_qty - position_data["opened_qty"]
+                        remaining_qty_to_open = quantize_qty(remaining_qty_to_open, qty_step) # Округляем до шага лота
+
+                        # 2. "Добивание" рыночным ордером, если не весь объем вошел лимиткой
+                        if remaining_qty_to_open >= min_qty:
+                            await app.bot.send_message(chat_id, f"🛒 Добиваю маркетом остаток: {remaining_qty_to_open} {top_symbol}")
+                            market_order_result = await place_market_order_robust(
+                                session, app, chat_id, top_symbol, open_side, 
+                                remaining_qty_to_open,
+                                time_in_force="ImmediateOrCancel" # Важно для "добивания"
+                            )
+                            if market_order_result and market_order_result['executed_qty'] > 0:
+                                position_data["opened_qty"] += market_order_result['executed_qty']
+                                position_data["total_open_value"] += market_order_result['executed_qty'] * market_order_result['avg_price']
+                                position_data["total_open_fee"] += market_order_result['fee']
+                            elif market_order_result and market_order_result['status'] == 'ErrorPlacingMarket' and "not enough" in market_order_result['message'].lower():
+                                await app.bot.send_message(chat_id, f"⚠️ Не хватило средств для добивания маркетом. Возможно, первая часть сделки уже использовала баланс. Проверяю позицию...")
+
+
+                        # 3. ФИНАЛЬНАЯ ПРОВЕРКА И СИНХРОНИЗАЦИЯ ПОЗИЦИИ С БИРЖЕЙ
+                        await app.bot.send_message(chat_id, f"🔍 Финальная проверка открытой позиции для {top_symbol}...")
+                        actual_position_on_exchange = await get_current_position_info(session, top_symbol)
+
+                        final_opened_qty_on_bot = position_data["opened_qty"]
                         
-                        final_opened_qty = position_data["opened_qty"]
-                        if final_opened_qty < min_qty: await app.bot.send_message(chat_id, f"❌ Не открыт мин. объем ({min_qty}). Открыто: {final_opened_qty}. Отмена."); continue
-                        avg_op = f"{position_data['total_open_value']/final_opened_qty:.4f}" if final_opened_qty else "N/A"
-                        await app.bot.send_message(chat_id, f"✅ Позиция *{top_symbol}* ({'LONG' if open_side=='Buy' else 'SHORT'}) открыта.\nОбъем: `{final_opened_qty}`, Ср.цена: `{avg_op}`, Ком.откр: `{position_data['total_open_fee']:.4f}`", parse_mode='Markdown')
+                        if actual_position_on_exchange:
+                            actual_size = actual_position_on_exchange['size']
+                            actual_side = actual_position_on_exchange['side'] # 'Buy' или 'Sell'
+                            actual_avg_price = actual_position_on_exchange['avg_price']
+                            
+                            await app.bot.send_message(chat_id, f"   Биржа: {actual_side} {actual_size} @ {actual_avg_price}. Бот думает: {open_side} {final_opened_qty_on_bot}.")
+
+                            if actual_side == open_side and actual_size > 0:
+                                # Позиция на бирже соответствует ожиданиям по направлению
+                                if abs(actual_size - final_opened_qty_on_bot) > qty_step: # Если расхождение больше шага лота
+                                    await app.bot.send_message(chat_id, f"⚠️ Расхождение! Бот насчитал {final_opened_qty_on_bot}, на бирже {actual_size}. Синхронизируюсь с биржей.")
+                                # Синхронизируем данные бота с биржей в любом случае, если позиция есть
+                                position_data["opened_qty"] = actual_size
+                                # Пересчитать total_open_value и total_open_fee сложнее без истории сделок,
+                                # пока что будем доверять средней цене с биржи. Для PNL это будет точнее.
+                                position_data["total_open_value"] = actual_size * actual_avg_price
+                                # Комиссию за открытие по факту сложно вытащить без перебора истории сделок,
+                                # будем использовать то, что насчитали по ордерам, если только не было полного расхождения.
+                                # Если же бот думал 0, а на бирже есть, то комиссию пока не знаем.
+                                if final_opened_qty_on_bot == Decimal("0") and actual_size > 0:
+                                     position_data["total_open_fee"] = Decimal("0") # Не можем точно знать, ставим 0
+                                     await app.bot.send_message(chat_id, "   (Комиссия открытия неизвестна из-за расхождения, принята за 0)")
+
+                                final_opened_qty = actual_size # Это теперь наш "официальный" открытый объем
+                            elif actual_side != "None" and actual_side != open_side:
+                                await app.bot.send_message(chat_id, f"❌ КРИТИЧЕСКАЯ ОШИБКА: На бирже позиция в ПРОТИВОПОЛОЖНУЮ сторону ({actual_side} {actual_size})! Пропускаю сделку.")
+                                continue # Переходим к следующей итерации цикла по чатам/парам
+                            else: # actual_side == "None" or actual_size == 0
+                                await app.bot.send_message(chat_id, f"   По данным биржи, позиция {open_side} НЕ открыта.")
+                                position_data["opened_qty"] = Decimal("0")
+                                final_opened_qty = Decimal("0")
+                        else:
+                            # get_current_position_info вернул None (нет позиции или ошибка API)
+                            await app.bot.send_message(chat_id, f"   Не удалось получить данные о позиции с биржи или позиция отсутствует.")
+                            if final_opened_qty_on_bot > 0:
+                                await app.bot.send_message(chat_id, f"   Бот думал, что открыл {final_opened_qty_on_bot}, но на бирже пусто. Считаем, что не открыто.")
+                            position_data["opened_qty"] = Decimal("0") # Синхронизируем - позиции нет
+                            final_opened_qty = Decimal("0")
+
+                        # Проверка минимального объема после всех синхронизаций
+                        if final_opened_qty < min_qty:
+                            await app.bot.send_message(chat_id, f"❌ Не открыт мин. объем ({min_qty}). Открыто по факту: {final_opened_qty}. Отмена сделки.")
+                            # Тут можно добавить логику принудительного закрытия этого "мусора", если он есть.
+                            # Но для начала просто отменяем сделку в боте.
+                            if final_opened_qty > Decimal("0"):
+                                 await app.bot.send_message(chat_id, f"❗️ ВНИМАНИЕ: На бирже осталась небольшая позиция {final_opened_qty} {top_symbol}. Закройте вручную, если не нужна.")
+                            continue # Переходим к следующей итерации цикла по чатам/парам
+
+                        # Если дошли сюда, значит, позиция успешно открыта (или синхронизирована) и удовлетворяет мин. объему
+                        avg_open_price_display = (position_data['total_open_value'] / final_opened_qty) if final_opened_qty > 0 else Decimal("0")
+                        
+                        # Используем actual_avg_price из позиции, если она есть, для большей точности отображения
+                        if actual_position_on_exchange and actual_position_on_exchange['avg_price'] > 0:
+                             avg_open_price_display = actual_position_on_exchange['avg_price']
+
+                        await app.bot.send_message(
+                            chat_id,
+                            f"✅ Позиция *{top_symbol}* ({'LONG' if open_side == 'Buy' else 'SHORT'}) открыта/подтверждена.\n"
+                            f"Объем: `{final_opened_qty}`\n"
+                            f"Ср.цена входа (биржа): `{avg_open_price_display:.{price_filter['tickSize'].split('.')[1].__len__()}f}`\n" # Форматируем по tickSize
+                            f"Комиссия откр. (бот): `{position_data['total_open_fee']:.4f}` USDT",
+                            parse_mode='Markdown'
+                        )
+                        data["last_entry_symbol"] = top_symbol
+                        data["last_entry_ts"] = next_funding_ts
+                        # ВАЖНО: Сохраняем `position_data` в `data` для этого чата, чтобы использовать при закрытии
+                        data['active_trade_data'] = position_data 
+                        # --- КОНЕЦ НОВОЙ ЛОГИКИ ОТКРЫТИЯ ---
                         data["last_entry_symbol"], data["last_entry_ts"] = top_symbol, next_funding_ts
 
                         # --- ОЖИДАНИЕ И ПРОВЕРКА ФАНДИНГА ---
@@ -478,68 +815,143 @@ async def funding_sniper_loop(app: ApplicationBuilder):
                             await app.bot.send_message(chat_id, f"❌ Ошибка при проверке лога транзакций: {e}")
                         # ==================================================================
 
-                        # --- ЗАКРЫТИЕ (Maker -> Market) ---
-                        close_side = "Buy" if open_side == "Sell" else "Sell"
-                        close_qty_rem = final_opened_qty
-                        # Maker Close
+                                                # --- НОВАЯ ЛОГИКА ЗАКРЫТИЯ ПОЗИЦИИ ---
+                        active_trade = data.get('active_trade_data')
+                        # Убедимся, что есть что закрывать и есть нужные ключи
+                        if not active_trade or \
+                           active_trade.get('opened_qty', Decimal("0")) < min_qty or \
+                           'open_side' not in active_trade:
+                            await app.bot.send_message(chat_id, f"⚠️ Нет активной подтвержденной сделки для {top_symbol} для закрытия, или объем/данные некорректны.")
+                            # Очищаем на всякий случай, если данные неполные
+                            if 'active_trade_data' in data: del data['active_trade_data']
+                            continue # Пропускаем закрытие для этого чата
+
+                        qty_to_close = active_trade['opened_qty'] # Объем, который нужно закрыть
+                        original_open_side = active_trade['open_side']
+                        close_side = "Buy" if original_open_side == "Sell" else "Sell"
+
+                        # Сбрасываем/инициализируем данные о закрытии в active_trade перед попытками
+                        active_trade["closed_qty"] = Decimal("0")
+                        active_trade["total_close_value"] = Decimal("0")
+                        active_trade["total_close_fee"] = Decimal("0")
+
+                        await app.bot.send_message(chat_id, f"🎬 Начинаю закрытие позиции {original_open_side} {qty_to_close} {top_symbol}")
+
+                        # 1. Попытка закрытия лимитным ордером (Maker)
+                        maker_close_price = Decimal("0")
                         try:
-                            ob_resp = session.get_orderbook(category="linear",symbol=top_symbol,limit=1)
+                            ob_resp = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
                             ob = ob_resp['result']
-                            mp = quantize_price(Decimal(ob['b'][0][0] if close_side=="Buy" else ob['a'][0][0]), tick_size)
-                            resp = session.place_order(category="linear",symbol=top_symbol,side=close_side,order_type="Limit",qty=str(close_qty_rem),price=str(mp),time_in_force="PostOnly",reduce_only=True)
-                            oid = resp["result"]["orderId"]
-                            await app.bot.send_message(chat_id, f"⏳ Попытка выхода Maker @{mp} (ID: ...{oid[-6:]})")
-                            await asyncio.sleep(MAKER_ORDER_WAIT_SECONDS_EXIT)
-                            hist_resp = session.get_order_history(category="linear",orderId=oid,limit=1)
-                            hist = hist_resp.get("result",{}).get("list",[])
-                            if hist:
-                                h=hist[0]; exec_q=Decimal(h.get("cumExecQty","0"))
-                                if exec_q > 0:
-                                    position_data["closed_qty"]+=exec_q; position_data["total_close_value"]+=Decimal(h.get("cumExecValue","0")); position_data["total_close_fee"]+=Decimal(h.get("cumExecFee","0")); close_qty_rem-=exec_q
-                                    await app.bot.send_message(chat_id, f"✅ Частично исполнено Maker (закрытие): {exec_q}")
-                                if h.get("orderStatus") not in ["Filled","Cancelled","Rejected","Deactivated"]: 
-                                    try: session.cancel_order(category="linear",symbol=top_symbol,orderId=oid)
-                                    except Exception as cancel_e: print(f"Minor cancel error (Maker Close): {cancel_e}")
-                        except Exception as e: print(f"Maker Close attempt failed: {e}"); await app.bot.send_message(chat_id, f"⚠️ Ошибка при попытке выхода Maker: {e}")
-                        # Market Close
-                        close_qty_rem = quantize_qty(close_qty_rem, qty_step)
-                        if close_qty_rem >= min_qty:
-                            await app.bot.send_message(chat_id, f"🛒 Закрываю маркетом остаток: {close_qty_rem} {top_symbol}")
-                            try:
-                                resp = session.place_order(category="linear",symbol=top_symbol,side=close_side,order_type="Market",qty=str(close_qty_rem),time_in_force="ImmediateOrCancel",reduce_only=True)
-                                oid = resp["result"]["orderId"]; await asyncio.sleep(1.5)
-                                hist_resp = session.get_order_history(category="linear",orderId=oid,limit=1)
-                                hist = hist_resp.get("result",{}).get("list",[])
-                                if hist:
-                                    h=hist[0]; exec_q=Decimal(h.get("cumExecQty","0"))
-                                    if exec_q > 0:
-                                        position_data["closed_qty"]+=exec_q; position_data["total_close_value"]+=Decimal(h.get("cumExecValue","0")); position_data["total_close_fee"]+=Decimal(h.get("cumExecFee","0"))
-                                        await app.bot.send_message(chat_id, f"✅ Исполнено Маркет (закрытие): {exec_q}")
-                                    else: await app.bot.send_message(chat_id, f"⚠️ Маркет ордер закрытия ({oid}) не исполнил ничего.")
-                            except Exception as e: print(f"Market Close attempt failed: {e}"); await app.bot.send_message(chat_id, f"❌ Ошибка при маркет-закрытии: {e}")
+                            # Для закрытия LONG (Sell) - ставим на лучший Ask
+                            # Для закрытия SHORT (Buy) - ставим на лучший Bid
+                            if close_side == "Buy": 
+                                maker_close_price = quantize_price(Decimal(ob['b'][0][0]), tick_size)
+                            else: 
+                                maker_close_price = quantize_price(Decimal(ob['a'][0][0]), tick_size)
+                        except Exception as e:
+                            await app.bot.send_message(chat_id, f"⚠️ Не удалось получить ордербук для {top_symbol} для Maker цены (закрытие): {e}. Пропускаю Maker выход.")
+                            maker_close_price = Decimal("0") # Не будем пытаться мейкером если нет цены
+
+                        limit_close_order_result = None
+                        if maker_close_price > 0 and qty_to_close >= min_qty : # Убедимся, что есть что закрывать и есть цена
+                            limit_close_order_result = await place_limit_order_with_retry(
+                                session, app, chat_id, top_symbol, close_side,
+                                qty_to_close, # Пытаемся весь объем лимиткой
+                                maker_close_price,
+                                time_in_force="PostOnly", 
+                                reduce_only=True, # Обязательно для закрытия
+                                max_wait_seconds=MAKER_ORDER_WAIT_SECONDS_EXIT # Ваша константа
+                            )
                         
-                        final_closed_qty = position_data["closed_qty"]
-                        if abs(final_closed_qty - final_opened_qty) > min_qty * Decimal("0.1"): await app.bot.send_message(chat_id, f"⚠️ Позиция *{top_symbol}* не полностью закрыта! Откр: `{final_opened_qty}`, Закр: `{final_closed_qty}`. ПРОВЕРЬТЕ!", parse_mode='Markdown')
-                        else: await app.bot.send_message(chat_id, f"✅ Позиция *{top_symbol}* успешно закрыта ({final_closed_qty}).", parse_mode='Markdown')
+                        if limit_close_order_result and limit_close_order_result.get('executed_qty', Decimal("0")) > 0:
+                            active_trade["closed_qty"] += limit_close_order_result['executed_qty']
+                            active_trade["total_close_value"] += limit_close_order_result['executed_qty'] * limit_close_order_result['avg_price']
+                            active_trade["total_close_fee"] += limit_close_order_result['fee']
+
+                        remaining_qty_to_close = qty_to_close - active_trade["closed_qty"]
+                        remaining_qty_to_close = quantize_qty(remaining_qty_to_close, qty_step) # Округляем до шага лота
+
+                        # 2. "Добивание" закрытия рыночным ордером
+                        if remaining_qty_to_close >= min_qty:
+                            await app.bot.send_message(chat_id, f"🛒 Закрываю маркетом остаток: {remaining_qty_to_close} {top_symbol}")
+                            market_close_order_result = await place_market_order_robust(
+                                session, app, chat_id, top_symbol, close_side,
+                                remaining_qty_to_close,
+                                time_in_force="ImmediateOrCancel", # Важно для "добивания"
+                                reduce_only=True # Обязательно для закрытия
+                            )
+                            if market_close_order_result and market_close_order_result.get('executed_qty', Decimal("0")) > 0:
+                                active_trade["closed_qty"] += market_close_order_result['executed_qty']
+                                active_trade["total_close_value"] += market_close_order_result['executed_qty'] * market_close_order_result['avg_price']
+                                active_trade["total_close_fee"] += market_close_order_result['fee']
+                        
+                        final_closed_qty_bot = active_trade["closed_qty"]
+
+                        # ФИНАЛЬНАЯ ПРОВЕРКА ПОЗИЦИИ ПОСЛЕ ЗАКРЫТИЯ
+                        await asyncio.sleep(1.5) # Небольшая пауза перед финальной проверкой
+                        final_position_after_close = await get_current_position_info(session, top_symbol)
+                        
+                        actual_qty_left_on_exchange = Decimal("0")
+                        if final_position_after_close:
+                            actual_qty_left_on_exchange = final_position_after_close.get('size', Decimal("0"))
+                            pos_side_after_close = final_position_after_close.get('side', "None")
+                            await app.bot.send_message(chat_id, f"   Биржа после закрытия: осталось {actual_qty_left_on_exchange} {top_symbol} (Сторона: {pos_side_after_close})")
+                        else:
+                            await app.bot.send_message(chat_id, f"   Биржа после закрытия: позиция по {top_symbol} отсутствует или не удалось получить инфо.")
+
+                        # Сравниваем то, что бот ПЫТАЛСЯ закрыть (qty_to_close), с тем, что ОСТАЛОСЬ на бирже
+                        if actual_qty_left_on_exchange >= min_qty: # Если остался значимый "хвост"
+                             await app.bot.send_message(chat_id, f"⚠️ Позиция *{top_symbol}* НЕ ПОЛНОСТЬЮ ЗАКРЫТА! Остаток на бирже: `{actual_qty_left_on_exchange}`. Бот обработал для закрытия: `{final_closed_qty_bot}`. ПРОВЕРЬТЕ ВРУЧНУЮ!", parse_mode='Markdown')
+                        elif final_closed_qty_bot >= qty_to_close - qty_step: # Если бот считает, что закрыл почти все что должен был
+                             await app.bot.send_message(chat_id, f"✅ Позиция *{top_symbol}* успешно закрыта (бот обработал: {final_closed_qty_bot}, остаток на бирже: {actual_qty_left_on_exchange}).", parse_mode='Markdown')
+                        else: # Бот не смог закрыть то, что должен был, но на бирже почти пусто
+                             await app.bot.send_message(chat_id, f"⚠️ Похоже, позиция *{top_symbol}* закрыта или почти закрыта, но бот не смог подтвердить весь объем закрытия (бот: {final_closed_qty_bot}, на бирже остаток: {actual_qty_left_on_exchange}). Проверьте для уверенности.", parse_mode='Markdown')
+
 
                         # --- РАСЧЕТ PNL ---
-                        price_pnl = position_data["total_close_value"] - position_data["total_open_value"]
-                        if open_side == "Sell": price_pnl = -price_pnl
-                        funding_pnl = position_data["actual_funding_fee"] 
-                        total_fees = position_data["total_open_fee"] + position_data["total_close_fee"]
+                        # Убедимся, что все нужные ключи есть в active_trade
+                        total_open_val = active_trade.get("total_open_value", Decimal("0"))
+                        total_close_val = active_trade.get("total_close_value", Decimal("0"))
+                        open_s = active_trade.get("open_side", "Buy") # По умолчанию Buy, если что-то пошло не так
+                        
+                        price_pnl = total_close_val - total_open_val
+                        if open_s == "Sell": # Если был шорт
+                            price_pnl = -price_pnl
+                        
+                        funding_pnl = active_trade.get("actual_funding_fee", Decimal("0"))
+                        total_open_f = active_trade.get("total_open_fee", Decimal("0"))
+                        total_close_f = active_trade.get("total_close_fee", Decimal("0"))
+                        total_fees = total_open_f + total_close_f
+                        
                         net_pnl = price_pnl + funding_pnl - total_fees
-                        roi_pct = (net_pnl / marja) * 100 if marja != Decimal(0) else Decimal("0") # Проверка деления на ноль
+                        
+                        marja_for_pnl = data.get('real_marja', Decimal("1")) 
+                        if not isinstance(marja_for_pnl, Decimal) or marja_for_pnl <= Decimal("0"): 
+                            marja_for_pnl = Decimal("1") # Защита от некорректной маржи
+
+                        roi_pct = (net_pnl / marja_for_pnl) * 100
+                        
+                        opened_qty_display = active_trade.get('opened_qty', 'N/A')
+                        closed_qty_display = active_trade.get('closed_qty', 'N/A')
+
                         await app.bot.send_message(
                             chat_id, 
-                            f"📊 Результат сделки: *{top_symbol}* ({'LONG' if open_side=='Buy' else 'SHORT'})\n\n"
+                            f"📊 Результат сделки: *{top_symbol}* ({'LONG' if open_s=='Buy' else 'SHORT'})\n\n"
+                            f" Открыто: `{opened_qty_display}` Закрыто: `{closed_qty_display}`\n"
                             f" PNL (цена): `{price_pnl:+.4f}` USDT\n"
                             f" PNL (фандинг): `{funding_pnl:+.4f}` USDT\n"
                             f" Комиссии (откр+закр): `{-total_fees:.4f}` USDT\n"
                             f"💰 *Чистая прибыль: {net_pnl:+.4f} USDT*\n"
-                            f"📈 ROI от маржи ({marja} USDT): `{roi_pct:.2f}%`", 
+                            f"📈 ROI от маржи ({marja_for_pnl} USDT): `{roi_pct:.2f}%`", 
                             parse_mode='Markdown'
                         )
-                        trade_success = True
+                        
+                        # Очищаем данные об активной сделке после ее завершения
+                        if 'active_trade_data' in data:
+                            del data['active_trade_data']
+                        
+                        trade_success = True # Это было в вашем коде, оставляю
+                        # --- КОНЕЦ НОВОЙ ЛОГИКИ ЗАКРЫТИЯ И PNL ---
 
                     except Exception as trade_e:
                         print(f"\n!!! CRITICAL TRADE ERROR for chat {chat_id}, symbol {top_symbol} !!!")
