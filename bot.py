@@ -244,7 +244,9 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
         marja = Decimal(marja_str)
         if marja <= 0:
              await update.message.reply_text("❌ Маржа должна быть положительным числом.")
+             # Завершаем диалог, если значение некорректно
              return ConversationHandler.END
+
         if chat_id not in sniper_active:
             # Инициализация полной структуры
             sniper_active[chat_id] = {
@@ -252,20 +254,29 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'real_marja': None,
                 'real_plecho': None,
                 'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
-                'ongoing_trades': {}, # Словарь для активных сделок {symbol: position_data}
+                'ongoing_trades': {},
             }
-        # Теперь устанавливаем маржу
+        # Устанавливаем маржу
         sniper_active[chat_id]["real_marja"] = marja
         await update.message.reply_text(f"✅ Маржа для сделки установлена: {marja} USDT")
-        # Добавить сообщение о текущем лимите сделок
-        max_trades = sniper_active[chat_id].get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
-    except Exception:
-        await update.message.reply_text("❌ Неверный формат маржи. Введите число (например, 100 или 55.5).")
-        return SET_MARJA
+
+        # --- ВЫЗОВ ИТОГОВОГО СООБЩЕНИЯ ---
+        # Вызываем функцию здесь, после успешного сохранения
         await send_final_config_message(chat_id, context)
-    except Exception:
+        # ------------------------------------
+
+    except (ValueError, TypeError): # Объединяем обработку ошибок формата
         await update.message.reply_text("❌ Неверный формат маржи. Введите число (например, 100 или 55.5).")
-        # return SET_MARJA # Если нужно повторить ввод при ошибке
+        # Не завершаем диалог, позволяем пользователю попробовать еще раз или отменить
+        # return ConversationHandler.END # Раскомментируйте, если хотите завершать при ошибке формата
+        # Вместо завершения, можем вернуть состояние, чтобы запросить ввод снова:
+        return SET_MARJA
+    except Exception as e: # Отлавливаем другие возможные ошибки
+        print(f"Error in save_real_marja: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при сохранении маржи.")
+        return ConversationHandler.END # Завершаем при других ошибках
+
+    # Завершаем диалог только при полном успехе
     return ConversationHandler.END
 
 # ===================== УСТАНОВКА ПЛЕЧА =====================
@@ -279,9 +290,11 @@ async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         plecho_str = update.message.text.strip().replace(",", ".")
         plecho = Decimal(plecho_str)
-        if not (0 < plecho <= 100):
+        if not (0 < plecho <= 100): # Проверяем диапазон
              await update.message.reply_text("❌ Плечо должно быть положительным числом (обычно до 100).")
+             # Завершаем диалог, если значение некорректно
              return ConversationHandler.END
+
         if chat_id not in sniper_active:
              # Инициализация полной структуры
             sniper_active[chat_id] = {
@@ -289,20 +302,29 @@ async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'real_marja': None,
                 'real_plecho': None,
                 'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
-                'ongoing_trades': {}, # Словарь для активных сделок {symbol: position_data}
+                'ongoing_trades': {},
             }
-        # Теперь устанавливаем плечо
+        # Устанавливаем плечо
         sniper_active[chat_id]["real_plecho"] = plecho
         await update.message.reply_text(f"✅ Плечо установлено: {plecho}x")
-        # Добавить сообщение о текущем лимите сделок
-        max_trades = sniper_active[chat_id].get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
-    except Exception:
-        await update.message.reply_text("❌ Неверный формат плеча. Введите число (например, 10).")
-        return SET_PLECHO
+
+        # --- ВЫЗОВ ИТОГОВОГО СООБЩЕНИЯ ---
+        # Вызываем функцию здесь, после успешного сохранения
         await send_final_config_message(chat_id, context)
-    except Exception:
+        # ------------------------------------
+
+    except (ValueError, TypeError): # Объединяем обработку ошибок формата
         await update.message.reply_text("❌ Неверный формат плеча. Введите число (например, 10).")
-        # return SET_PLECHO # Если нужно повторить ввод при ошибке
+        # Не завершаем диалог, позволяем пользователю попробовать еще раз или отменить
+        # return ConversationHandler.END # Раскомментируйте, если хотите завершать при ошибке формата
+        # Вместо завершения, можем вернуть состояние, чтобы запросить ввод снова:
+        return SET_PLECHO
+    except Exception as e: # Отлавливаем другие возможные ошибки
+         print(f"Error in save_real_plecho: {e}")
+         await update.message.reply_text("❌ Произошла ошибка при сохранении плеча.")
+         return ConversationHandler.END # Завершаем при других ошибках
+
+    # Завершаем диалог только при полном успехе
     return ConversationHandler.END
 
 # ===================== МЕНЮ СИГНАЛОВ =====================
