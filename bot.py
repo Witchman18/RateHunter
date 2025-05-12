@@ -263,86 +263,118 @@ async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    is_active = sniper_active.get(chat_id, {}).get('active', False)
+    # Получаем текущие настройки или значения по умолчанию
+    chat_settings = sniper_active.get(chat_id, {})
+    is_active = chat_settings.get('active', False)
+    current_max_trades = chat_settings.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
+
     status_text = "🟢 Активен" if is_active else "🔴 Остановлен"
+    status_button = InlineKeyboardButton(f"Статус: {status_text}", callback_data="toggle_sniper")
+    top_pairs_button = InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")
+
+    # Создаем кнопки для выбора количества сделок
+    trade_limit_buttons = []
+    for i in range(1, 6): # Кнопки от 1 до 5
+        text = f"[{i}]" if i == current_max_trades else f"{i}" # Выделяем текущее значение
+        trade_limit_buttons.append(InlineKeyboardButton(text, callback_data=f"set_max_trades_{i}"))
+
+    # Собираем клавиатуру
     buttons = [
-        [InlineKeyboardButton(f"Статус: {status_text}", callback_data="toggle_sniper")],
-        [InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")]
+        [status_button],
+        trade_limit_buttons, # Ряд кнопок [1] [2] [3] [4] [5]
+        [top_pairs_button]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text("📡 Меню управления снайпером:", reply_markup=reply_markup)
+
+    # Сообщение меню
+    menu_text = (
+        f"📡 Меню управления снайпером:\n\n"
+        f"Лимит одновременных сделок: *{current_max_trades}*\n"
+        f"(Нажмите на цифру ниже, чтобы изменить)"
+    )
+    # Используем reply_text для отправки нового сообщения при вызове через команду / Сигналы
+    # Если нужно будет редактировать существующее, логику нужно будет усложнить
+    await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer() # Отвечаем на callback сразу
+
     chat_id = query.message.chat_id
     data = query.data
 
-    if data == "toggle_sniper":
-        await query.answer()
-        # Проверяем, существует ли запись для этого чата
-        if chat_id not in sniper_active:
-            # Инициализация полной структуры при первом переключении
-            sniper_active[chat_id] = {
-                'active': False, # Статус будет сразу инвертирован ниже
-                'real_marja': None,
-                'real_plecho': None,
-                'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
-                'ongoing_trades': {},
-            }
-        # Эта строка ДОЛЖНА иметь тот же отступ, что и строка "if chat_id not in sniper_active:" выше
-        current_status = sniper_active[chat_id].get('active', False)
-        new_status = not current_status
-        sniper_active[chat_id]['active'] = new_status
+    # --- Инициализация настроек чата, если их нет ---
+    if chat_id not in sniper_active:
+        sniper_active[chat_id] = {
+            'active': False,
+            'real_marja': None,
+            'real_plecho': None,
+            'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
+            'ongoing_trades': {},
+        }
+    chat_settings = sniper_active[chat_id]
+    # --- Конец инициализации ---
 
-        status_text = "🟢 Активен" if new_status else "🔴 Остановлен"
+    action_text = "" # Текст для подтверждения действия
+
+    if data == "toggle_sniper":
+        new_status = not chat_settings.get('active', False)
+        chat_settings['active'] = new_status
         action_text = "🚀 Снайпер запущен!" if new_status else "🛑 Снайпер остановлен."
 
-        buttons = [
-            [InlineKeyboardButton(f"Статус: {status_text}", callback_data="toggle_sniper")],
-            [InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")]
-        ]
-        reply_markup = InlineKeyboardMarkup(buttons)
+    elif data.startswith("set_max_trades_"):
         try:
-            await query.edit_message_text(f"{action_text}\n📡 Меню управления снайпером:", reply_markup=reply_markup)
-        except Exception as e:
-            print(f"Error editing message on toggle: {e}")
-            # Сообщение об ошибке можно отправить как ответ на исходное сообщение кнопки
-            await query.message.reply_text(f"{action_text}\n(Не удалось обновить предыдущее сообщение)")
+            new_max_trades = int(data.split("_")[-1])
+            if 1 <= new_max_trades <= 5:
+                chat_settings['max_concurrent_trades'] = new_max_trades
+                action_text = f"✅ Лимит сделок изменен на: {new_max_trades}"
+            else:
+                action_text = "⚠️ Ошибка: Неверное значение лимита."
+        except (ValueError, IndexError):
+             action_text = "⚠️ Ошибка: Не удалось обработать значение лимита."
 
     elif data == "show_top_pairs_inline":
-        # query.answer() вызывается внутри show_top_funding
+        # Эта команда сама редактирует сообщение, выходим из коллбека здесь
         await show_top_funding(update, context)
-# Добавим команду для установки лимита
-async def set_max_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    args = context.args
-    if not args:
-        await update.message.reply_text("⚠️ Укажите количество после команды, например: /setmax_trades 3")
-        return
+        return # Важно выйти, чтобы не пытаться редактировать сообщение ниже
 
-    try:
-        max_trades = int(args[0])
-        if max_trades < 1 or max_trades > 10: # Ограничим разумным пределом (от 1 до 10)
-            await update.message.reply_text("❌ Укажите число от 1 до 10.")
-            return
+    # --- Перерисовка меню после toggle_sniper или set_max_trades ---
+    if data == "toggle_sniper" or data.startswith("set_max_trades_"):
+        current_status = chat_settings.get('active', False)
+        current_max_trades = chat_settings.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
+        status_text = "🟢 Активен" if current_status else "🔴 Остановлен"
 
-        if chat_id not in sniper_active:
-             # Если пользователь вводит команду до установки маржи/плеча, создаем структуру
-             sniper_active[chat_id] = {
-                'active': False, 'real_marja': None, 'real_plecho': None,
-                'max_concurrent_trades': max_trades, # Устанавливаем новое значение
-                'ongoing_trades': {},
-            }
-        else:
-            # Если структура уже есть, просто обновляем значение
-            sniper_active[chat_id]['max_concurrent_trades'] = max_trades
+        status_button = InlineKeyboardButton(f"Статус: {status_text}", callback_data="toggle_sniper")
+        top_pairs_button = InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")
 
-        await update.message.reply_text(f"✅ Максимальное количество одновременных сделок установлено: {max_trades}")
+        trade_limit_buttons = []
+        for i in range(1, 6):
+            text = f"[{i}]" if i == current_max_trades else f"{i}"
+            trade_limit_buttons.append(InlineKeyboardButton(text, callback_data=f"set_max_trades_{i}"))
 
-    except (ValueError, TypeError):
-        await update.message.reply_text("❌ Неверный формат. Введите целое число после команды.")
-    except Exception as e:
-         await update.message.reply_text(f"❌ Ошибка установки лимита: {e}")
+        buttons = [
+            [status_button],
+            trade_limit_buttons,
+            [top_pairs_button]
+        ]
+        reply_markup = InlineKeyboardMarkup(buttons)
+
+        menu_text = (
+            f"{action_text}\n\n" # Добавляем результат действия
+            f"📡 Меню управления снайпером:\n\n"
+            f"Лимит одновременных сделок: *{current_max_trades}*\n"
+            f"(Нажмите на цифру ниже, чтобы изменить)"
+        )
+        try:
+            await query.edit_message_text(
+                text=menu_text,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            print(f"Error editing message on callback {data}: {e}")
+            # Если редактирование не удалось, можно отправить новое сообщение с подтверждением
+            await context.bot.send_message(chat_id, action_text + "\n(Не удалось обновить меню)")
 
 # ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
 
@@ -1042,7 +1074,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("^📡 Сигналы$"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback, pattern="^(toggle_sniper|show_top_pairs_inline)$"))
-    app.add_handler(CommandHandler("setmax_trades", set_max_trades))
 
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 Маржа$"), set_real_marja)],
