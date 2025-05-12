@@ -279,7 +279,8 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "toggle_sniper":
         await query.answer()
-    if chat_id not in sniper_active:
+        # Проверяем, существует ли запись для этого чата
+        if chat_id not in sniper_active:
             # Инициализация полной структуры при первом переключении
             sniper_active[chat_id] = {
                 'active': False, # Статус будет сразу инвертирован ниже
@@ -288,6 +289,7 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
                 'ongoing_trades': {},
             }
+        # Эта строка ДОЛЖНА иметь тот же отступ, что и строка "if chat_id not in sniper_active:" выше
         current_status = sniper_active[chat_id].get('active', False)
         new_status = not current_status
         sniper_active[chat_id]['active'] = new_status
@@ -304,7 +306,8 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"{action_text}\n📡 Меню управления снайпером:", reply_markup=reply_markup)
         except Exception as e:
             print(f"Error editing message on toggle: {e}")
-            await context.bot.send_message(chat_id, f"{action_text}\n(Не удалось обновить предыдущее сообщение)")
+            # Сообщение об ошибке можно отправить как ответ на исходное сообщение кнопки
+            await query.message.reply_text(f"{action_text}\n(Не удалось обновить предыдущее сообщение)")
 
     elif data == "show_top_pairs_inline":
         # query.answer() вызывается внутри show_top_funding
