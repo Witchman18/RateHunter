@@ -191,6 +191,36 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Действие отменено.")
     return ConversationHandler.END
 
+async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет итоговое сообщение с настройками."""
+    if chat_id not in sniper_active:
+        return # Нет данных для этого чата
+
+    settings = sniper_active[chat_id]
+    marja = settings.get('real_marja', 'Не установлено')
+    plecho = settings.get('real_plecho', 'Не установлено')
+    max_trades = settings.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
+    is_active = settings.get('active', False)
+    status_text = "🟢 Активен" if is_active else "🔴 Остановлен"
+
+    # Проверяем, установлены ли оба ключевых параметра
+    if marja != 'Не установлено' and plecho != 'Не установлено':
+        summary_text = (
+            f"⚙️ **Текущие настройки RateHunter:**\n\n"
+            f"💰 Маржа (1 сделка): `{marja}` USDT\n"
+            f"⚖️ Плечо: `{plecho}`x\n"
+            f"🔢 Макс. сделок: `{max_trades}`\n"
+            f"🚦 Статус сигналов: *{status_text}*"
+        )
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=summary_text, parse_mode='Markdown')
+        except Exception as e:
+            print(f"Error sending final config message to {chat_id}: {e}")
+    else:
+        # Если одно из значений еще не установлено, можно либо ничего не отправлять,
+        # либо отправить сообщение с просьбой установить недостающее. Пока ничего не отправляем.
+        pass
+
 # ===================== УСТАНОВКА МАРЖИ =====================
 
 async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -219,10 +249,13 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Маржа для сделки установлена: {marja} USDT")
         # Добавить сообщение о текущем лимите сделок
         max_trades = sniper_active[chat_id].get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
-        await update.message.reply_text(f"ℹ️ Макс. одновременных сделок: {max_trades} (можно изменить командой /setmax_trades <кол-во>)")
     except Exception:
         await update.message.reply_text("❌ Неверный формат маржи. Введите число (например, 100 или 55.5).")
         return SET_MARJA
+        await send_final_config_message(chat_id, context)
+    except Exception:
+        await update.message.reply_text("❌ Неверный формат маржи. Введите число (например, 100 или 55.5).")
+        # return SET_MARJA # Если нужно повторить ввод при ошибке
     return ConversationHandler.END
 
 # ===================== УСТАНОВКА ПЛЕЧА =====================
@@ -253,10 +286,13 @@ async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Плечо установлено: {plecho}x")
         # Добавить сообщение о текущем лимите сделок
         max_trades = sniper_active[chat_id].get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
-        await update.message.reply_text(f"ℹ️ Макс. одновременных сделок: {max_trades} (можно изменить командой /setmax_trades <кол-во>)")
     except Exception:
         await update.message.reply_text("❌ Неверный формат плеча. Введите число (например, 10).")
         return SET_PLECHO
+        await send_final_config_message(chat_id, context)
+    except Exception:
+        await update.message.reply_text("❌ Неверный формат плеча. Введите число (например, 10).")
+        # return SET_PLECHO # Если нужно повторить ввод при ошибке
     return ConversationHandler.END
 
 # ===================== МЕНЮ СИГНАЛОВ =====================
