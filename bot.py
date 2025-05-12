@@ -48,6 +48,7 @@ POST_FUNDING_WAIT_SECONDS = 7 # Сколько секунд ждем ПОСЛЕ 
 MAKER_ORDER_WAIT_SECONDS_ENTRY = 7 # Сколько секунд ждем исполнения PostOnly ордера на ВХОД
 MAKER_ORDER_WAIT_SECONDS_EXIT = 5  # Сколько секунд ждем исполнения PostOnly ордера на ВЫХОД
 SNIPER_LOOP_INTERVAL_SECONDS = 5 # Как часто проверяем тикеры в основном цикле
+DEFAULT_MAX_CONCURRENT_TRADES = 1 # Одна сделка дефолт 
 
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
 
@@ -205,9 +206,20 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
              await update.message.reply_text("❌ Маржа должна быть положительным числом.")
              return ConversationHandler.END
         if chat_id not in sniper_active:
-            sniper_active[chat_id] = {}
+            # Инициализация полной структуры
+            sniper_active[chat_id] = {
+                'active': False,
+                'real_marja': None,
+                'real_plecho': None,
+                'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
+                'ongoing_trades': {}, # Словарь для активных сделок {symbol: position_data}
+            }
+        # Теперь устанавливаем маржу
         sniper_active[chat_id]["real_marja"] = marja
         await update.message.reply_text(f"✅ Маржа для сделки установлена: {marja} USDT")
+        # Добавить сообщение о текущем лимите сделок
+        max_trades = sniper_active[chat_id].get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
+        await update.message.reply_text(f"ℹ️ Макс. одновременных сделок: {max_trades} (можно изменить командой /setmax_trades <кол-во>)")
     except Exception:
         await update.message.reply_text("❌ Неверный формат маржи. Введите число (например, 100 или 55.5).")
         return SET_MARJA
@@ -228,9 +240,20 @@ async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
              await update.message.reply_text("❌ Плечо должно быть положительным числом (обычно до 100).")
              return ConversationHandler.END
         if chat_id not in sniper_active:
-            sniper_active[chat_id] = {}
+             # Инициализация полной структуры
+            sniper_active[chat_id] = {
+                'active': False,
+                'real_marja': None,
+                'real_plecho': None,
+                'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
+                'ongoing_trades': {}, # Словарь для активных сделок {symbol: position_data}
+            }
+        # Теперь устанавливаем плечо
         sniper_active[chat_id]["real_plecho"] = plecho
         await update.message.reply_text(f"✅ Плечо установлено: {plecho}x")
+        # Добавить сообщение о текущем лимите сделок
+        max_trades = sniper_active[chat_id].get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
+        await update.message.reply_text(f"ℹ️ Макс. одновременных сделок: {max_trades} (можно изменить командой /setmax_trades <кол-во>)")
     except Exception:
         await update.message.reply_text("❌ Неверный формат плеча. Введите число (например, 10).")
         return SET_PLECHO
@@ -256,9 +279,15 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "toggle_sniper":
         await query.answer()
-        if chat_id not in sniper_active:
-            sniper_active[chat_id] = {'active': False}
-
+    if chat_id not in sniper_active:
+            # Инициализация полной структуры при первом переключении
+            sniper_active[chat_id] = {
+                'active': False, # Статус будет сразу инвертирован ниже
+                'real_marja': None,
+                'real_plecho': None,
+                'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
+                'ongoing_trades': {},
+            }
         current_status = sniper_active[chat_id].get('active', False)
         new_status = not current_status
         sniper_active[chat_id]['active'] = new_status
@@ -280,6 +309,37 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "show_top_pairs_inline":
         # query.answer() вызывается внутри show_top_funding
         await show_top_funding(update, context)
+# Добавим команду для установки лимита
+async def set_max_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    if not args:
+        await update.message.reply_text("⚠️ Укажите количество после команды, например: /setmax_trades 3")
+        return
+
+    try:
+        max_trades = int(args[0])
+        if max_trades < 1 or max_trades > 10: # Ограничим разумным пределом (от 1 до 10)
+            await update.message.reply_text("❌ Укажите число от 1 до 10.")
+            return
+
+        if chat_id not in sniper_active:
+             # Если пользователь вводит команду до установки маржи/плеча, создаем структуру
+             sniper_active[chat_id] = {
+                'active': False, 'real_marja': None, 'real_plecho': None,
+                'max_concurrent_trades': max_trades, # Устанавливаем новое значение
+                'ongoing_trades': {},
+            }
+        else:
+            # Если структура уже есть, просто обновляем значение
+            sniper_active[chat_id]['max_concurrent_trades'] = max_trades
+
+        await update.message.reply_text(f"✅ Максимальное количество одновременных сделок установлено: {max_trades}")
+
+    except (ValueError, TypeError):
+        await update.message.reply_text("❌ Неверный формат. Введите целое число после команды.")
+    except Exception as e:
+         await update.message.reply_text(f"❌ Ошибка установки лимита: {e}")
 
 # ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
 
@@ -979,6 +1039,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("^📡 Сигналы$"), signal_menu))
     app.add_handler(CallbackQueryHandler(signal_callback, pattern="^(toggle_sniper|show_top_pairs_inline)$"))
+    app.add_handler(CommandHandler("setmax_trades", set_max_trades))
 
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 Маржа$"), set_real_marja)],
