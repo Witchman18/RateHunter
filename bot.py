@@ -194,31 +194,41 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Отправляет итоговое сообщение с настройками."""
     if chat_id not in sniper_active:
+        print(f"[send_final_config_message] No data found for chat_id {chat_id}") # Добавим лог
         return # Нет данных для этого чата
 
     settings = sniper_active[chat_id]
-    marja = settings.get('real_marja', 'Не установлено')
-    plecho = settings.get('real_plecho', 'Не установлено')
+    # Получаем значения. Если ключа нет или значение None, будет None.
+    marja = settings.get('real_marja')
+    plecho = settings.get('real_plecho')
     max_trades = settings.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
     is_active = settings.get('active', False)
     status_text = "🟢 Активен" if is_active else "🔴 Остановлен"
 
-    # Проверяем, установлены ли оба ключевых параметра
-    if marja != 'Не установлено' and plecho != 'Не установлено':
+    # Отображаемые значения для сообщения
+    marja_display = marja if marja is not None else 'Не установлено'
+    plecho_display = plecho if plecho is not None else 'Не установлено'
+
+    print(f"[send_final_config_message] Checking for chat {chat_id}: marja={marja}, plecho={plecho}") # Добавим лог
+
+    # *** ИСПРАВЛЕННАЯ ПРОВЕРКА ***
+    # Проверяем, что оба значения больше НЕ None
+    if marja is not None and plecho is not None:
         summary_text = (
             f"⚙️ **Текущие настройки RateHunter:**\n\n"
-            f"💰 Маржа (1 сделка): `{marja}` USDT\n"
-            f"⚖️ Плечо: `{plecho}`x\n"
+            f"💰 Маржа (1 сделка): `{marja_display}` USDT\n" # Используем _display для текста
+            f"⚖️ Плечо: `{plecho_display}`x\n"
             f"🔢 Макс. сделок: `{max_trades}`\n"
             f"🚦 Статус сигналов: *{status_text}*"
         )
         try:
+            print(f"[send_final_config_message] Sending summary to chat {chat_id}") # Добавим лог
             await context.bot.send_message(chat_id=chat_id, text=summary_text, parse_mode='Markdown')
         except Exception as e:
             print(f"Error sending final config message to {chat_id}: {e}")
     else:
-        # Если одно из значений еще не установлено, можно либо ничего не отправлять,
-        # либо отправить сообщение с просьбой установить недостающее. Пока ничего не отправляем.
+        print(f"[send_final_config_message] Condition not met for chat {chat_id}. Not sending summary.") # Добавим лог
+        # Ничего не отправляем, если не все настроено
         pass
 
 # ===================== УСТАНОВКА МАРЖИ =====================
