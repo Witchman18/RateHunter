@@ -275,7 +275,7 @@ async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Создаем кнопки для выбора количества сделок
     trade_limit_buttons = []
     for i in range(1, 6): # Кнопки от 1 до 5
-        text = f"[{i}]" if i == current_max_trades else f"{i}" # Выделяем текущее значение
+        text = f"{i}" if i == current_max_trades else f"{i}" # Выделяем текущее значение
         trade_limit_buttons.append(InlineKeyboardButton(text, callback_data=f"set_max_trades_{i}"))
 
     # Собираем клавиатуру
@@ -349,7 +349,7 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         trade_limit_buttons = []
         for i in range(1, 6):
-            text = f"[{i}]" if i == current_max_trades else f"{i}"
+            text = f"{i}" if i == current_max_trades else f"{i}"
             trade_limit_buttons.append(InlineKeyboardButton(text, callback_data=f"set_max_trades_{i}"))
 
         buttons = [
@@ -1073,7 +1073,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding))
     app.add_handler(MessageHandler(filters.Regex("^📡 Сигналы$"), signal_menu))
-    app.add_handler(CallbackQueryHandler(signal_callback, pattern="^(toggle_sniper|show_top_pairs_inline)$"))
+    app.add_handler(CallbackQueryHandler(signal_callback, pattern="^(toggle_sniper|show_top_pairs_inline|set_max_trades_)"))
 
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 Маржа$"), set_real_marja)],
