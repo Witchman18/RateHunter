@@ -48,7 +48,8 @@ POST_FUNDING_WAIT_SECONDS = 7 # Сколько секунд ждем ПОСЛЕ 
 MAKER_ORDER_WAIT_SECONDS_ENTRY = 7 # Сколько секунд ждем исполнения PostOnly ордера на ВХОД
 MAKER_ORDER_WAIT_SECONDS_EXIT = 5  # Сколько секунд ждем исполнения PostOnly ордера на ВЫХОД
 SNIPER_LOOP_INTERVAL_SECONDS = 5 # Как часто проверяем тикеры в основном цикле
-DEFAULT_MAX_CONCURRENT_TRADES = 1 # Одна сделка дефолт 
+DEFAULT_MAX_CONCURRENT_TRADES = 1 # Одна сделка дефолт
+MAX_PAIRS_TO_CONSIDER_PER_CYCLE = 5 # NEW: How many top pairs to check in each sniper loop
 
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
 
@@ -129,10 +130,10 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result_msg = "📊 Нет подходящих пар с высоким фандингом и ликвидностью."
         else:
             result_msg = "📊 Топ ликвидных пар по фандингу:\n\n"
-            now_ts = datetime.utcnow().timestamp()
+            now_ts_dt = datetime.utcnow().timestamp() # Renamed to avoid conflict
             for symbol, rate, ts in latest_top_pairs:
                 try:
-                    delta_sec = int(ts / 1000 - now_ts)
+                    delta_sec = int(ts / 1000 - now_ts_dt)
                     if delta_sec < 0: delta_sec = 0 # Если время уже прошло
                     h, rem = divmod(delta_sec, 3600)
                     m, s = divmod(rem, 60)
@@ -254,7 +255,7 @@ async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'real_marja': None,
                 'real_plecho': None,
                 'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
-                'ongoing_trades': {},
+                'ongoing_trades': {}, # Ensures 'ongoing_trades' key exists
             }
         # Устанавливаем маржу
         sniper_active[chat_id]["real_marja"] = marja
@@ -302,7 +303,7 @@ async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'real_marja': None,
                 'real_plecho': None,
                 'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
-                'ongoing_trades': {},
+                'ongoing_trades': {}, # Ensures 'ongoing_trades' key exists
             }
         # Устанавливаем плечо
         sniper_active[chat_id]["real_plecho"] = plecho
@@ -343,7 +344,7 @@ async def signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Создаем кнопки для выбора количества сделок
     trade_limit_buttons = []
     for i in range(1, 6): # Кнопки от 1 до 5
-        text = f"{i}" if i == current_max_trades else f"{i}" # Выделяем текущее значение
+        text = f"[{i}]" if i == current_max_trades else f"{i}" # Выделяем текущее значение
         trade_limit_buttons.append(InlineKeyboardButton(text, callback_data=f"set_max_trades_{i}"))
 
     # Собираем клавиатуру
@@ -378,7 +379,7 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'real_marja': None,
             'real_plecho': None,
             'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
-            'ongoing_trades': {},
+            'ongoing_trades': {}, # Ensures 'ongoing_trades' key exists
         }
     chat_settings = sniper_active[chat_id]
     # --- Конец инициализации ---
@@ -389,6 +390,9 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_status = not chat_settings.get('active', False)
         chat_settings['active'] = new_status
         action_text = "🚀 Снайпер запущен!" if new_status else "🛑 Снайпер остановлен."
+        # Send config message after status change to reflect new status
+        await send_final_config_message(chat_id, context)
+
 
     elif data.startswith("set_max_trades_"):
         try:
@@ -396,6 +400,8 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if 1 <= new_max_trades <= 5:
                 chat_settings['max_concurrent_trades'] = new_max_trades
                 action_text = f"✅ Лимит сделок изменен на: {new_max_trades}"
+                # Send config message after limit change
+                await send_final_config_message(chat_id, context)
             else:
                 action_text = "⚠️ Ошибка: Неверное значение лимита."
         except (ValueError, IndexError):
@@ -417,7 +423,7 @@ async def signal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         trade_limit_buttons = []
         for i in range(1, 6):
-            text = f"{i}" if i == current_max_trades else f"{i}"
+            text = f"[{i}]" if i == current_max_trades else f"{i}"
             trade_limit_buttons.append(InlineKeyboardButton(text, callback_data=f"set_max_trades_{i}"))
 
         buttons = [
@@ -517,7 +523,7 @@ async def place_limit_order_with_retry(
         
         if response and response.get("retCode") == 0 and response.get("result", {}).get("orderId"):
             order_id = response["result"]["orderId"]
-            await app.bot.send_message(chat_id, f"⏳ {('Выход' if reduce_only else 'Вход')} Maker @{price} (ID: ...{order_id[-6:]})")
+            await app.bot.send_message(chat_id, f"⏳ {('Выход' if reduce_only else 'Вход')} Maker @{price} (ID: ...{order_id[-6:]}) для {symbol}")
 
             waited_seconds = 0
             while waited_seconds < max_wait_seconds:
@@ -535,18 +541,18 @@ async def place_limit_order_with_retry(
                     cum_exec_fee = Decimal(order_info.get("cumExecFee", "0"))
 
                     if order_status == "Filled":
-                        await app.bot.send_message(chat_id, f"✅ Maker ордер ...{order_id[-6:]} ПОЛНОСТЬЮ исполнен: {cum_exec_qty} {symbol}")
+                        await app.bot.send_message(chat_id, f"✅ Maker ордер ...{order_id[-6:]} ({symbol}) ПОЛНОСТЬЮ исполнен: {cum_exec_qty} {symbol}")
                         return {'status': 'Filled', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': 'Filled'}
                     elif order_status == "PartiallyFilled":
                         # Продолжаем ждать, но запоминаем текущее исполнение
-                        print(f"Maker ордер ...{order_id[-6:]} ЧАСТИЧНО исполнен: {cum_exec_qty}. Ждем дальше.")
+                        print(f"Maker ордер ...{order_id[-6:]} ({symbol}) ЧАСТИЧНО исполнен: {cum_exec_qty}. Ждем дальше.")
                         continue # Не выходим, ждем полного исполнения или таймаута
                     elif order_status in ["Cancelled", "Rejected", "Deactivated", "Expired"]:
-                        msg = f"⚠️ Maker ордер ...{order_id[-6:]} {order_status}. Исполнено: {cum_exec_qty}"
+                        msg = f"⚠️ Maker ордер ...{order_id[-6:]} ({symbol}) {order_status}. Исполнено: {cum_exec_qty}"
                         await app.bot.send_message(chat_id, msg)
                         return {'status': order_status, 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': msg}
                 else:
-                    print(f"Не удалось получить статус для Maker ордера ...{order_id[-6:]}. Попытка {int(waited_seconds/check_interval_seconds)}.")
+                    print(f"Не удалось получить статус для Maker ордера ...{order_id[-6:]} ({symbol}). Попытка {int(waited_seconds/check_interval_seconds)}.")
             
             # Таймаут ожидания
             final_order_info = await get_order_status_robust(session, order_id, symbol)
@@ -560,27 +566,27 @@ async def place_limit_order_with_retry(
 
                 if order_status not in ["Filled", "Cancelled", "Rejected", "Deactivated", "Expired"]:
                     try:
-                        print(f"Отменяю Maker ордер ...{order_id[-6:]} по таймауту.")
+                        print(f"Отменяю Maker ордер ...{order_id[-6:]} ({symbol}) по таймауту.")
                         session.cancel_order(category="linear", symbol=symbol, orderId=order_id)
-                        await app.bot.send_message(chat_id, f"⏳ Maker ордер ...{order_id[-6:]} отменен по таймауту. Исполнено: {cum_exec_qty}")
+                        await app.bot.send_message(chat_id, f"⏳ Maker ордер ...{order_id[-6:]} ({symbol}) отменен по таймауту. Исполнено: {cum_exec_qty}")
                         return {'status': 'CancelledByTimeout', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': 'Cancelled by timeout'}
                     except Exception as cancel_e:
-                        await app.bot.send_message(chat_id, f"❌ Ошибка отмены Maker ордера ...{order_id[-6:]}: {cancel_e}")
+                        await app.bot.send_message(chat_id, f"❌ Ошибка отмены Maker ордера ...{order_id[-6:]} ({symbol}): {cancel_e}")
                         return {'status': 'ErrorCancelling', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': str(cancel_e)}
                 else: # Если он уже сам отменился/исполнился пока мы ждали
                      return {'status': order_status, 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': f'Final status: {order_status}'}
             else:
-                 await app.bot.send_message(chat_id, f"⚠️ Не удалось получить финальный статус для Maker ордера ...{order_id[-6:]} после таймаута.")
+                 await app.bot.send_message(chat_id, f"⚠️ Не удалось получить финальный статус для Maker ордера ...{order_id[-6:]} ({symbol}) после таймаута.")
                  return {'status': 'ErrorNoStatus', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': 'Could not get final status'}
 
         else:
-            err_msg = f"Ошибка размещения Maker ордера: {response.get('retMsg', 'Unknown error') if response else 'No response'}"
+            err_msg = f"Ошибка размещения Maker ордера ({symbol}): {response.get('retMsg', 'Unknown error') if response else 'No response'}"
             print(err_msg)
             await app.bot.send_message(chat_id, f"❌ {err_msg}")
             return {'status': 'ErrorPlacing', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': err_msg}
 
     except Exception as e:
-        error_text = f"КРИТ.ОШИБКА в place_limit_order_with_retry: {e}"
+        error_text = f"КРИТ.ОШИБКА в place_limit_order_with_retry ({symbol}): {e}"
         print(error_text)
         import traceback
         traceback.print_exc()
@@ -625,7 +631,7 @@ async def place_market_order_robust(
 
         if response and response.get("retCode") == 0 and response.get("result", {}).get("orderId"):
             order_id = response["result"]["orderId"]
-            await app.bot.send_message(chat_id, f"🛒 Маркет ордер ({('выход' if reduce_only else 'вход')}) отправлен (ID: ...{order_id[-6:]}). Проверяю исполнение...")
+            await app.bot.send_message(chat_id, f"🛒 Маркет ордер ({('выход' if reduce_only else 'вход')}) для {symbol} отправлен (ID: ...{order_id[-6:]}). Проверяю исполнение...")
             
             await asyncio.sleep(1.5) # Даем бирже время обработать рыночный ордер IOC
 
@@ -639,21 +645,21 @@ async def place_market_order_robust(
                 cum_exec_fee = Decimal(order_info.get("cumExecFee", "0"))
 
                 if order_status == "Filled":
-                    await app.bot.send_message(chat_id, f"✅ Маркет ордер ...{order_id[-6:]} ИСПОЛНЕН: {cum_exec_qty} {symbol}")
+                    await app.bot.send_message(chat_id, f"✅ Маркет ордер ...{order_id[-6:]} ({symbol}) ИСПОЛНЕН: {cum_exec_qty} {symbol}")
                     return {'status': 'Filled', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': 'Market Filled'}
                 elif order_status == "PartiallyFilled" and time_in_force == "ImmediateOrCancel": # Для IOC это частичное исполнение
-                    await app.bot.send_message(chat_id, f"✅ Маркет IOC ордер ...{order_id[-6:]} ЧАСТИЧНО ИСПОЛНЕН: {cum_exec_qty} {symbol}")
+                    await app.bot.send_message(chat_id, f"✅ Маркет IOC ордер ...{order_id[-6:]} ({symbol}) ЧАСТИЧНО ИСПОЛНЕН: {cum_exec_qty} {symbol}")
                     return {'status': 'PartiallyFilled', 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': 'Market IOC PartiallyFilled'}
                 elif cum_exec_qty == Decimal("0") and order_status in ["Cancelled", "Rejected", "Deactivated"]: # IOC не исполнился
-                    msg = f"⚠️ Маркет IOC ордер ...{order_id[-6:]} не исполнил ничего (статус: {order_status})."
+                    msg = f"⚠️ Маркет IOC ордер ...{order_id[-6:]} ({symbol}) не исполнил ничего (статус: {order_status})."
                     await app.bot.send_message(chat_id, msg)
                     return {'status': order_status, 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': msg}
                 else: # Неожиданный статус для рыночного ордера
-                    msg = f"⚠️ Неожиданный статус для Маркет ордера ...{order_id[-6:]}: {order_status}. Исполнено: {cum_exec_qty}"
+                    msg = f"⚠️ Неожиданный статус для Маркет ордера ...{order_id[-6:]} ({symbol}): {order_status}. Исполнено: {cum_exec_qty}"
                     await app.bot.send_message(chat_id, msg)
                     return {'status': order_status, 'executed_qty': cum_exec_qty, 'avg_price': avg_price, 'fee': cum_exec_fee, 'message': msg}
             else:
-                msg = f"⚠️ Не удалось получить статус для Маркет ордера ...{order_id[-6:]}."
+                msg = f"⚠️ Не удалось получить статус для Маркет ордера ...{order_id[-6:]} ({symbol})."
                 await app.bot.send_message(chat_id, msg)
                 # В этом случае мы не знаем, что произошло. Лучше считать, что не исполнился.
                 return {'status': 'ErrorNoStatusMarket', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': msg}
@@ -662,15 +668,15 @@ async def place_market_order_robust(
             ret_msg = response.get('retMsg', 'Unknown error') if response else 'No response'
             error_code = response.get('retCode') if response else None
             if error_code == 110007 or "not enough" in ret_msg.lower() or "insufficient" in ret_msg.lower():
-                 err_msg = f"❌ Ошибка 'Недостаточно средств' при размещении Маркет ордера: {ret_msg}"
+                 err_msg = f"❌ Ошибка 'Недостаточно средств' при размещении Маркет ордера ({symbol}): {ret_msg}"
             else:
-                 err_msg = f"❌ Ошибка размещения Маркет ордера: {ret_msg}"
+                 err_msg = f"❌ Ошибка размещения Маркет ордера ({symbol}): {ret_msg}"
             print(err_msg)
             await app.bot.send_message(chat_id, err_msg)
             return {'status': 'ErrorPlacingMarket', 'executed_qty': Decimal("0"), 'avg_price': Decimal("0"), 'fee': Decimal("0"), 'message': err_msg}
 
     except Exception as e:
-        error_text = f"КРИТ.ОШИБКА в place_market_order_robust: {e}"
+        error_text = f"КРИТ.ОШИБКА в place_market_order_robust ({symbol}): {e}"
         print(error_text)
         import traceback
         traceback.print_exc()
@@ -705,72 +711,130 @@ async def get_current_position_info(session, symbol, category="linear"):
 
 # ===================== ФОНДОВЫЙ СНАЙПЕР (ФАНДИНГ-БОТ) =====================
 
-async def funding_sniper_loop(app: ApplicationBuilder):
+async def funding_sniper_loop(app: ApplicationBuilder): # app is Application, not ApplicationBuilder
     print(" Sniper loop started ".center(50, "="))
     while True:
         await asyncio.sleep(SNIPER_LOOP_INTERVAL_SECONDS)
         try:
-            now_ts = time.time()
-            # (начало цикла, получение тикеров, фильтрация funding_data - как в полной версии)
+            current_time_epoch = time.time() # Renamed from now_ts to avoid conflicts
+            
             response = session.get_tickers(category="linear")
             tickers = response.get("result", {}).get("list", [])
-            if not tickers: print("No tickers."); continue
-            funding_data = []
+            if not tickers:
+                # print("No tickers received in sniper loop.")
+                continue
+
+            funding_data_raw = []
             for t in tickers:
-                symbol, rate_str, next_ts_str, _, turnover_str = t.get("symbol"), t.get("fundingRate"), t.get("nextFundingTime"), t.get("volume24h"), t.get("turnover24h")
-                if not all([symbol, rate_str, next_ts_str, turnover_str]): continue
+                symbol_val = t.get("symbol")
+                rate_str = t.get("fundingRate")
+                next_ts_str = t.get("nextFundingTime")
+                turnover_str = t.get("turnover24h")
+                
+                if not all([symbol_val, rate_str, next_ts_str, turnover_str]):
+                    continue
                 try:
-                    rate_f, next_ts_val, turnover_f = float(rate_str), int(next_ts_str) / 1000, float(turnover_str)
-                    if turnover_f < 1_000_000 or abs(rate_f) < 0.0001: continue
-                    funding_data.append({"symbol": symbol, "rate": rate_f, "next_ts": next_ts_val})
-                except: continue # Пропускаем элемент при ошибке парсинга
-            if not funding_data: print("No suitable pairs."); continue
-            funding_data.sort(key=lambda x: abs(x["rate"]), reverse=True)
-            top_pair = funding_data[0]
-            top_symbol, rate, next_funding_ts = top_pair["symbol"], top_pair["rate"], top_pair["next_ts"]
-            seconds_left = next_funding_ts - now_ts
-            # print(f"Top: {top_symbol}, R: {rate*100:.4f}%, In: {seconds_left:.0f}s")
-
-            if ENTRY_WINDOW_END_SECONDS <= seconds_left <= ENTRY_WINDOW_START_SECONDS:
-                print(f"Entering trade window for {top_symbol} ({seconds_left:.0f}s left)")
-                open_side = get_position_direction(rate)
-                if open_side == "NONE": print("Funding rate is zero, skipping."); continue
-
-                for chat_id, data in list(sniper_active.items()):
-                    if not data.get('active'): continue
-                    if (data.get("last_entry_symbol") == top_symbol and
-                            data.get("last_entry_ts") == next_funding_ts):
-                        continue
-
-                    marja, plecho = data.get('real_marja'), data.get('real_plecho')
-                    if not marja or not plecho: await app.bot.send_message(chat_id, f"⚠️ Пропуск {top_symbol}: Маржа/плечо не установлены."); continue
-
-                    print(f"\n>>> Processing {top_symbol} for chat {chat_id} <<<")
-                    await app.bot.send_message(
-                        chat_id,
-                        f"🎯 Вхожу в окно сделки: *{top_symbol}*\n"
-                        f"Направление: {'📈 LONG' if open_side == 'Buy' else '📉 SHORT'}\n"
-                        f"Фандинг: `{rate * 100:.4f}%`\n"
-                        f"Осталось: `{seconds_left:.0f} сек`",
-                         parse_mode='Markdown'
-                    )
+                    rate_float = float(rate_str)
+                    next_ts_epoch = int(next_ts_str) / 1000 # Convert ms to seconds
+                    turnover_float = float(turnover_str)
                     
-                    position_data = {
-                        "symbol": top_symbol, "open_side": open_side,
-                        "marja": marja, "plecho": plecho,
-                        "funding_rate": Decimal(str(rate)),
-                        "next_funding_ts": next_funding_ts,
+                    if turnover_float < 1_000_000 or abs(rate_float) < 0.0001:
+                        continue
+                    funding_data_raw.append({
+                        "symbol": symbol_val, 
+                        "rate": rate_float, 
+                        "next_ts": next_ts_epoch
+                    })
+                except (ValueError, TypeError):
+                    # print(f"Error parsing ticker data for {symbol_val if symbol_val else 'Unknown'}")
+                    continue
+            
+            if not funding_data_raw:
+                # print("No suitable pairs after filtering in sniper loop.")
+                continue
+            
+            funding_data_raw.sort(key=lambda x: abs(x["rate"]), reverse=True)
+
+            # Iterate through TOP_N_PAIRS_TO_CONSIDER
+            for pair_info in funding_data_raw[:MAX_PAIRS_TO_CONSIDER_PER_CYCLE]:
+                
+                # These are specific to the pair being considered in this iteration
+                symbol_to_trade = pair_info["symbol"]
+                rate_of_trade = pair_info["rate"]
+                funding_timestamp_of_trade = pair_info["next_ts"]
+                seconds_left_for_trade = funding_timestamp_of_trade - current_time_epoch
+
+                # Check if this pair is in the entry window
+                if not (ENTRY_WINDOW_END_SECONDS <= seconds_left_for_trade <= ENTRY_WINDOW_START_SECONDS):
+                    # print(f"Pair {symbol_to_trade} not in entry window ({seconds_left_for_trade:.0f}s left). Will check next pair.")
+                    continue # Move to the next pair in funding_data_raw
+
+                open_side_for_trade = get_position_direction(rate_of_trade)
+                if open_side_for_trade == "NONE":
+                    # print(f"Funding rate for {symbol_to_trade} is zero, skipping.")
+                    continue # Move to the next pair
+
+                # Iterate through active chats
+                for chat_id, chat_config in list(sniper_active.items()): # Use .items() and list() for safe iteration
+                    if not chat_config.get('active'):
+                        continue # This chat is not active, try next chat for this pair
+
+                    # Check if chat has capacity for another trade
+                    max_allowed_trades = chat_config.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
+                    ongoing_trades_for_chat = chat_config.get('ongoing_trades', {}) # This should be initialized
+
+                    if len(ongoing_trades_for_chat) >= max_allowed_trades:
+                        # print(f"Chat {chat_id} at max trades ({len(ongoing_trades_for_chat)}/{max_allowed_trades}). Cannot take {symbol_to_trade}.")
+                        continue # This chat has no capacity, try next chat for this pair
+
+                    # Check if this chat is ALREADY trading THIS specific symbol
+                    if symbol_to_trade in ongoing_trades_for_chat:
+                        # print(f"Chat {chat_id} is already trading {symbol_to_trade}. Skipping.")
+                        continue # This chat is already trading this symbol, try next chat for this pair
+
+                    marja_for_trade, plecho_for_trade = chat_config.get('real_marja'), chat_config.get('real_plecho')
+                    if not marja_for_trade or not plecho_for_trade:
+                        # Consider sending this message less frequently if it becomes spammy
+                        await app.bot.send_message(chat_id, f"⚠️ Пропуск {symbol_to_trade}: Маржа/плечо не установлены.")
+                        continue # This chat is not configured, try next chat for this pair
+                    
+                    # --- If all checks pass, proceed with trade logic for symbol_to_trade and chat_id ---
+                    print(f"\n>>> Processing {symbol_to_trade} for chat {chat_id} (Rate: {rate_of_trade*100:.4f}%, Left: {seconds_left_for_trade:.0f}s) <<<")
+                    
+                    # Prepare position_data for this specific trade attempt
+                    # Ensure all trade-specific variables are used (e.g., symbol_to_trade)
+                    current_trade_position_data = {
+                        "symbol": symbol_to_trade, 
+                        "open_side": open_side_for_trade,
+                        "marja": marja_for_trade, 
+                        "plecho": plecho_for_trade,
+                        "funding_rate": Decimal(str(rate_of_trade)),
+                        "next_funding_ts": funding_timestamp_of_trade, # Critical for funding check
                         "opened_qty": Decimal("0"), "closed_qty": Decimal("0"),
                         "total_open_value": Decimal("0"), "total_close_value": Decimal("0"),
                         "total_open_fee": Decimal("0"), "total_close_fee": Decimal("0"),
-                        "actual_funding_fee": Decimal("0"), # Инициализируем нулем
+                        "actual_funding_fee": Decimal("0"),
                         "target_qty": Decimal("0"),
                     }
+                    
+                    # Add to ongoing_trades for this chat *before* starting async operations for this trade
+                    # This marks the "slot" as taken for this symbol in this chat
+                    chat_config.setdefault('ongoing_trades', {})[symbol_to_trade] = current_trade_position_data
+                    
+                    # Send initial message about entering trade window
+                    await app.bot.send_message(
+                        chat_id,
+                        f"🎯 Вхожу в окно сделки: *{symbol_to_trade}*\n"
+                        f"Направление: {'📈 LONG' if open_side_for_trade == 'Buy' else '📉 SHORT'}\n"
+                        f"Фандинг: `{rate_of_trade * 100:.4f}%`\n"
+                        f"Осталось: `{seconds_left_for_trade:.0f} сек`",
+                         parse_mode='Markdown'
+                    )
 
                     try:
                         # --- Получение инфо и расчет кол-ва ---
-                        print(f"Getting instrument info for {top_symbol}...")
-                        info_resp = session.get_instruments_info(category="linear", symbol=top_symbol)
+                        print(f"Getting instrument info for {symbol_to_trade}...")
+                        info_resp = session.get_instruments_info(category="linear", symbol=symbol_to_trade)
                         instrument_info = info_resp.get("result", {}).get("list", [])[0]
                         lot_filter = instrument_info["lotSizeFilter"]
                         price_filter = instrument_info["priceFilter"]
@@ -778,177 +842,150 @@ async def funding_sniper_loop(app: ApplicationBuilder):
                         qty_step = Decimal(lot_filter["qtyStep"])
                         tick_size = Decimal(price_filter["tickSize"])
                         
-                        print(f"Getting ticker info for {top_symbol}...")
-                        ticker_resp = session.get_tickers(category="linear", symbol=top_symbol)
+                        print(f"Getting ticker info for {symbol_to_trade}...")
+                        ticker_resp = session.get_tickers(category="linear", symbol=symbol_to_trade)
                         last_price = Decimal(ticker_resp["result"]["list"][0]["lastPrice"])
                         
-                        position_size_usdt = marja * plecho
-                        if last_price <= 0: raise ValueError("Invalid last price")
+                        position_size_usdt = marja_for_trade * plecho_for_trade
+                        if last_price <= 0: raise ValueError(f"Invalid last price for {symbol_to_trade}")
                         raw_qty = position_size_usdt / last_price
                         adjusted_qty = quantize_qty(raw_qty, qty_step)
-                        if adjusted_qty < min_qty: await app.bot.send_message(chat_id, f"⚠️ Расчетный объем {adjusted_qty} {top_symbol} < мин. ({min_qty}). Отмена."); continue
-                        position_data["target_qty"] = adjusted_qty
+
+                        if adjusted_qty < min_qty:
+                            await app.bot.send_message(chat_id, f"⚠️ Расчетный объем {adjusted_qty} {symbol_to_trade} < мин. ({min_qty}). Отмена для {symbol_to_trade}.")
+                            # No 'continue' here, 'finally' will clean up ongoing_trades
+                            raise ValueError(f"Calculated qty too small for {symbol_to_trade}") # Raise to go to finally
+
+                        current_trade_position_data["target_qty"] = adjusted_qty
 
                         # --- Установка плеча ---
-                        print(f"Setting leverage {plecho}x for {top_symbol}...")
-                        try: session.set_leverage(category="linear", symbol=top_symbol, buyLeverage=str(plecho), sellLeverage=str(plecho))
+                        print(f"Setting leverage {plecho_for_trade}x for {symbol_to_trade}...")
+                        try:
+                            session.set_leverage(category="linear", symbol=symbol_to_trade, buyLeverage=str(plecho_for_trade), sellLeverage=str(plecho_for_trade))
                         except Exception as e:
-                            if "110043" not in str(e): raise ValueError(f"Не удалось установить плечо: {e}")
-                            else: print(f"Плечо {plecho}x уже установлено.")
-
-                                                # --- НОВАЯ ЛОГИКА ОТКРЫТИЯ ПОЗИЦИИ ---
-                        print(f"Attempting to open position: {open_side} {adjusted_qty} {top_symbol}")
+                            if "110043" not in str(e): # 110043: leverage not modified
+                                raise ValueError(f"Не удалось установить плечо для {symbol_to_trade}: {e}")
+                            else:
+                                print(f"Плечо {plecho_for_trade}x уже установлено для {symbol_to_trade}.")
                         
-                        # Сброс данных о текущей попытке входа в position_data
-                        position_data["opened_qty"] = Decimal("0")
-                        position_data["total_open_value"] = Decimal("0")
-                        position_data["total_open_fee"] = Decimal("0")
+                        # --- НОВАЯ ЛОГИКА ОТКРЫТИЯ ПОЗИЦИИ ---
+                        print(f"Attempting to open position: {open_side_for_trade} {adjusted_qty} {symbol_to_trade}")
                         
-                        # 1. Попытка входа лимитным ордером (Maker)
+                        current_trade_position_data["opened_qty"] = Decimal("0")
+                        current_trade_position_data["total_open_value"] = Decimal("0")
+                        current_trade_position_data["total_open_fee"] = Decimal("0")
+                        
                         maker_price = Decimal("0")
                         try:
-                            ob_resp = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
+                            ob_resp = session.get_orderbook(category="linear", symbol=symbol_to_trade, limit=1)
                             ob = ob_resp['result']
-                            # Для покупки (LONG) берем лучшую цену продажи (ask), для продажи (SHORT) - лучшую цену покупки (bid)
-                            # Чтобы наш PostOnly ордер встал в стакан и не исполнился сразу как Taker.
-                            # НО, так как мы хотим быть Maker, мы должны ставить цену чуть хуже для нас.
-                            # Если Long (Buy), то цена должна быть на bid[0] или чуть ниже.
-                            # Если Short (Sell), то цена должна быть на ask[0] или чуть выше.
-                            # Однако, для PostOnly, если цена пересекает спред, он отменяется.
-                            # Поэтому ставим точно на лучшую цену в "нашу" сторону стакана.
-                            if open_side == "Buy": # LONG
-                                maker_price = quantize_price(Decimal(ob['b'][0][0]), tick_size) # Лучший бид
-                            else: # SHORT
-                                maker_price = quantize_price(Decimal(ob['a'][0][0]), tick_size) # Лучший аск
+                            if open_side_for_trade == "Buy":
+                                maker_price = quantize_price(Decimal(ob['b'][0][0]), tick_size)
+                            else:
+                                maker_price = quantize_price(Decimal(ob['a'][0][0]), tick_size)
                         except Exception as e:
-                            await app.bot.send_message(chat_id, f"⚠️ Не удалось получить ордербук для {top_symbol} для Maker цены: {e}. Пропускаю Maker вход.")
-                            maker_price = Decimal("0") # Не будем пытаться мейкером если нет цены
+                            await app.bot.send_message(chat_id, f"⚠️ Не удалось получить ордербук для {symbol_to_trade} для Maker цены: {e}. Пропускаю Maker вход.")
+                            maker_price = Decimal("0")
 
                         limit_order_result = None
                         if maker_price > 0:
                              limit_order_result = await place_limit_order_with_retry(
-                                session, app, chat_id, top_symbol, open_side, 
-                                adjusted_qty, # Пытаемся весь объем лимиткой
-                                maker_price,
+                                session, app, chat_id, symbol_to_trade, open_side_for_trade, 
+                                adjusted_qty, maker_price,
                                 time_in_force="PostOnly",
-                                max_wait_seconds=MAKER_ORDER_WAIT_SECONDS_ENTRY # Ваша константа
+                                max_wait_seconds=MAKER_ORDER_WAIT_SECONDS_ENTRY
                             )
 
                         if limit_order_result and limit_order_result['executed_qty'] > 0:
-                            position_data["opened_qty"] += limit_order_result['executed_qty']
-                            # Средняя цена считается как общая стоимость / общее количество
-                            position_data["total_open_value"] += limit_order_result['executed_qty'] * limit_order_result['avg_price']
-                            position_data["total_open_fee"] += limit_order_result['fee']
+                            current_trade_position_data["opened_qty"] += limit_order_result['executed_qty']
+                            current_trade_position_data["total_open_value"] += limit_order_result['executed_qty'] * limit_order_result['avg_price']
+                            current_trade_position_data["total_open_fee"] += limit_order_result['fee']
 
-                        remaining_qty_to_open = adjusted_qty - position_data["opened_qty"]
-                        remaining_qty_to_open = quantize_qty(remaining_qty_to_open, qty_step) # Округляем до шага лота
+                        remaining_qty_to_open = adjusted_qty - current_trade_position_data["opened_qty"]
+                        remaining_qty_to_open = quantize_qty(remaining_qty_to_open, qty_step)
 
-                        # 2. "Добивание" рыночным ордером, если не весь объем вошел лимиткой
                         if remaining_qty_to_open >= min_qty:
-                            await app.bot.send_message(chat_id, f"🛒 Добиваю маркетом остаток: {remaining_qty_to_open} {top_symbol}")
+                            await app.bot.send_message(chat_id, f"🛒 Добиваю маркетом остаток для {symbol_to_trade}: {remaining_qty_to_open} {symbol_to_trade}")
                             market_order_result = await place_market_order_robust(
-                                session, app, chat_id, top_symbol, open_side, 
+                                session, app, chat_id, symbol_to_trade, open_side_for_trade, 
                                 remaining_qty_to_open,
-                                time_in_force="ImmediateOrCancel" # Важно для "добивания"
+                                time_in_force="ImmediateOrCancel"
                             )
                             if market_order_result and market_order_result['executed_qty'] > 0:
-                                position_data["opened_qty"] += market_order_result['executed_qty']
-                                position_data["total_open_value"] += market_order_result['executed_qty'] * market_order_result['avg_price']
-                                position_data["total_open_fee"] += market_order_result['fee']
+                                current_trade_position_data["opened_qty"] += market_order_result['executed_qty']
+                                current_trade_position_data["total_open_value"] += market_order_result['executed_qty'] * market_order_result['avg_price']
+                                current_trade_position_data["total_open_fee"] += market_order_result['fee']
                             elif market_order_result and market_order_result['status'] == 'ErrorPlacingMarket' and "not enough" in market_order_result['message'].lower():
-                                await app.bot.send_message(chat_id, f"⚠️ Не хватило средств для добивания маркетом. Возможно, первая часть сделки уже использовала баланс. Проверяю позицию...")
+                                await app.bot.send_message(chat_id, f"⚠️ Не хватило средств для добивания маркетом {symbol_to_trade}. Проверяю позицию...")
 
-
-                        # 3. ФИНАЛЬНАЯ ПРОВЕРКА И СИНХРОНИЗАЦИЯ ПОЗИЦИИ С БИРЖЕЙ
-                        await app.bot.send_message(chat_id, f"🔍 Финальная проверка открытой позиции для {top_symbol}...")
-                        actual_position_on_exchange = await get_current_position_info(session, top_symbol)
-
-                        final_opened_qty_on_bot = position_data["opened_qty"]
+                        await app.bot.send_message(chat_id, f"🔍 Финальная проверка открытой позиции для {symbol_to_trade}...")
+                        actual_position_on_exchange = await get_current_position_info(session, symbol_to_trade)
+                        final_opened_qty_on_bot = current_trade_position_data["opened_qty"]
                         
+                        final_opened_qty_actual = Decimal("0") # Will hold the confirmed qty
+
                         if actual_position_on_exchange:
                             actual_size = actual_position_on_exchange['size']
-                            actual_side = actual_position_on_exchange['side'] # 'Buy' или 'Sell'
+                            actual_side = actual_position_on_exchange['side']
                             actual_avg_price = actual_position_on_exchange['avg_price']
                             
-                            await app.bot.send_message(chat_id, f"   Биржа: {actual_side} {actual_size} @ {actual_avg_price}. Бот думает: {open_side} {final_opened_qty_on_bot}.")
+                            await app.bot.send_message(chat_id, f"   {symbol_to_trade} Биржа: {actual_side} {actual_size} @ {actual_avg_price}. Бот думает: {open_side_for_trade} {final_opened_qty_on_bot}.")
 
-                            if actual_side == open_side and actual_size > 0:
-                                # Позиция на бирже соответствует ожиданиям по направлению
-                                if abs(actual_size - final_opened_qty_on_bot) > qty_step: # Если расхождение больше шага лота
-                                    await app.bot.send_message(chat_id, f"⚠️ Расхождение! Бот насчитал {final_opened_qty_on_bot}, на бирже {actual_size}. Синхронизируюсь с биржей.")
-                                # Синхронизируем данные бота с биржей в любом случае, если позиция есть
-                                position_data["opened_qty"] = actual_size
-                                # Пересчитать total_open_value и total_open_fee сложнее без истории сделок,
-                                # пока что будем доверять средней цене с биржи. Для PNL это будет точнее.
-                                position_data["total_open_value"] = actual_size * actual_avg_price
-                                # Комиссию за открытие по факту сложно вытащить без перебора истории сделок,
-                                # будем использовать то, что насчитали по ордерам, если только не было полного расхождения.
-                                # Если же бот думал 0, а на бирже есть, то комиссию пока не знаем.
+                            if actual_side == open_side_for_trade and actual_size > 0:
+                                if abs(actual_size - final_opened_qty_on_bot) > qty_step:
+                                    await app.bot.send_message(chat_id, f"⚠️ {symbol_to_trade} Расхождение! Бот: {final_opened_qty_on_bot}, Биржа: {actual_size}. Синхронизируюсь.")
+                                current_trade_position_data["opened_qty"] = actual_size
+                                current_trade_position_data["total_open_value"] = actual_size * actual_avg_price
                                 if final_opened_qty_on_bot == Decimal("0") and actual_size > 0:
-                                     position_data["total_open_fee"] = Decimal("0") # Не можем точно знать, ставим 0
-                                     await app.bot.send_message(chat_id, "   (Комиссия открытия неизвестна из-за расхождения, принята за 0)")
-
-                                final_opened_qty = actual_size # Это теперь наш "официальный" открытый объем
-                            elif actual_side != "None" and actual_side != open_side:
-                                await app.bot.send_message(chat_id, f"❌ КРИТИЧЕСКАЯ ОШИБКА: На бирже позиция в ПРОТИВОПОЛОЖНУЮ сторону ({actual_side} {actual_size})! Пропускаю сделку.")
-                                continue # Переходим к следующей итерации цикла по чатам/парам
-                            else: # actual_side == "None" or actual_size == 0
-                                await app.bot.send_message(chat_id, f"   По данным биржи, позиция {open_side} НЕ открыта.")
-                                position_data["opened_qty"] = Decimal("0")
-                                final_opened_qty = Decimal("0")
+                                     current_trade_position_data["total_open_fee"] = Decimal("0")
+                                     await app.bot.send_message(chat_id, f"   ({symbol_to_trade} Комиссия открытия неизвестна, принята за 0)")
+                                final_opened_qty_actual = actual_size
+                            elif actual_side != "None" and actual_side != open_side_for_trade:
+                                await app.bot.send_message(chat_id, f"❌ КРИТ. ОШИБКА: {symbol_to_trade} На бирже позиция ПРОТИВОПОЛОЖНАЯ ({actual_side} {actual_size})! Пропускаю.")
+                                raise ValueError(f"Opposite position exists for {symbol_to_trade}") # Go to finally
+                            else:
+                                await app.bot.send_message(chat_id, f"   {symbol_to_trade} По данным биржи, позиция {open_side_for_trade} НЕ открыта.")
+                                current_trade_position_data["opened_qty"] = Decimal("0")
+                                final_opened_qty_actual = Decimal("0")
                         else:
-                            # get_current_position_info вернул None (нет позиции или ошибка API)
-                            await app.bot.send_message(chat_id, f"   Не удалось получить данные о позиции с биржи или позиция отсутствует.")
+                            await app.bot.send_message(chat_id, f"   {symbol_to_trade} Нет данных о позиции с биржи или позиция отсутствует.")
                             if final_opened_qty_on_bot > 0:
-                                await app.bot.send_message(chat_id, f"   Бот думал, что открыл {final_opened_qty_on_bot}, но на бирже пусто. Считаем, что не открыто.")
-                            position_data["opened_qty"] = Decimal("0") # Синхронизируем - позиции нет
-                            final_opened_qty = Decimal("0")
+                                await app.bot.send_message(chat_id, f"   {symbol_to_trade} Бот думал открыл {final_opened_qty_on_bot}, но на бирже пусто.")
+                            current_trade_position_data["opened_qty"] = Decimal("0")
+                            final_opened_qty_actual = Decimal("0")
 
-                        # Проверка минимального объема после всех синхронизаций
-                        if final_opened_qty < min_qty:
-                            await app.bot.send_message(chat_id, f"❌ Не открыт мин. объем ({min_qty}). Открыто по факту: {final_opened_qty}. Отмена сделки.")
-                            # Тут можно добавить логику принудительного закрытия этого "мусора", если он есть.
-                            # Но для начала просто отменяем сделку в боте.
-                            if final_opened_qty > Decimal("0"):
-                                 await app.bot.send_message(chat_id, f"❗️ ВНИМАНИЕ: На бирже осталась небольшая позиция {final_opened_qty} {top_symbol}. Закройте вручную, если не нужна.")
-                            continue # Переходим к следующей итерации цикла по чатам/парам
+                        if final_opened_qty_actual < min_qty:
+                            await app.bot.send_message(chat_id, f"❌ {symbol_to_trade} Не открыт мин. объем ({min_qty}). Факт: {final_opened_qty_actual}. Отмена.")
+                            if final_opened_qty_actual > Decimal("0"):
+                                 await app.bot.send_message(chat_id, f"❗️ ВНИМАНИЕ: {symbol_to_trade} На бирже осталась позиция {final_opened_qty_actual}. Закройте вручную.")
+                            raise ValueError(f"Min qty not met for {symbol_to_trade}") # Go to finally
 
-                        # Если дошли сюда, значит, позиция успешно открыта (или синхронизирована) и удовлетворяет мин. объему
-                        avg_open_price_display = (position_data['total_open_value'] / final_opened_qty) if final_opened_qty > 0 else Decimal("0")
-                        
-                        # Используем actual_avg_price из позиции, если она есть, для большей точности отображения
+                        avg_open_price_display = (current_trade_position_data['total_open_value'] / final_opened_qty_actual) if final_opened_qty_actual > 0 else Decimal("0")
                         if actual_position_on_exchange and actual_position_on_exchange['avg_price'] > 0:
                              avg_open_price_display = actual_position_on_exchange['avg_price']
 
                         await app.bot.send_message(
                             chat_id,
-                            f"✅ Позиция *{top_symbol}* ({'LONG' if open_side == 'Buy' else 'SHORT'}) открыта/подтверждена.\n"
-                            f"Объем: `{final_opened_qty}`\n"
-                            f"Ср.цена входа (биржа): `{avg_open_price_display:.{price_filter['tickSize'].split('.')[1].__len__()}f}`\n" # Форматируем по tickSize
-                            f"Комиссия откр. (бот): `{position_data['total_open_fee']:.4f}` USDT",
+                            f"✅ Позиция *{symbol_to_trade}* ({'LONG' if open_side_for_trade == 'Buy' else 'SHORT'}) открыта/подтверждена.\n"
+                            f"Объем: `{final_opened_qty_actual}`\n"
+                            f"Ср.цена входа (биржа): `{avg_open_price_display:.{price_filter['tickSize'].split('.')[1].__len__()}f}`\n"
+                            f"Комиссия откр. (бот): `{current_trade_position_data['total_open_fee']:.4f}` USDT",
                             parse_mode='Markdown'
                         )
-                        data["last_entry_symbol"] = top_symbol
-                        data["last_entry_ts"] = next_funding_ts
-                        # ВАЖНО: Сохраняем `position_data` в `data` для этого чата, чтобы использовать при закрытии
-                        data['active_trade_data'] = position_data 
-                        # --- КОНЕЦ НОВОЙ ЛОГИКИ ОТКРЫТИЯ ---
-                        data["last_entry_symbol"], data["last_entry_ts"] = top_symbol, next_funding_ts
-
+                        
                         # --- ОЖИДАНИЕ И ПРОВЕРКА ФАНДИНГА ---
-                        wait_duration = max(0, next_funding_ts - time.time()) + POST_FUNDING_WAIT_SECONDS
-                        await app.bot.send_message(chat_id, f"⏳ Ожидаю выплаты фандинга (~{wait_duration:.0f} сек)...")
+                        wait_duration = max(0, funding_timestamp_of_trade - time.time()) + POST_FUNDING_WAIT_SECONDS
+                        await app.bot.send_message(chat_id, f"⏳ {symbol_to_trade} Ожидаю выплаты фандинга (~{wait_duration:.0f} сек)...")
                         await asyncio.sleep(wait_duration)
 
-                        # === ИСПРАВЛЕНО ЗДЕСЬ: Проверка фандинга через Transaction Log ===
-                        print("Checking actual funding payment using Transaction Log...")
+                        print(f"Checking actual funding payment for {symbol_to_trade} using Transaction Log...")
                         try:
-                            start_ts_ms = int((next_funding_ts - 120) * 1000) 
-                            end_ts_ms = int((next_funding_ts + 120) * 1000)   
+                            start_ts_ms = int((funding_timestamp_of_trade - 120) * 1000) 
+                            end_ts_ms = int((funding_timestamp_of_trade + 120) * 1000)   
                             
                             transaction_log_resp = session.get_transaction_log(
                                 category="linear", 
-                                symbol=top_symbol, 
+                                symbol=symbol_to_trade, 
                                 type="SETTLEMENT",
                                 startTime=start_ts_ms,
                                 endTime=end_ts_ms,
@@ -961,187 +998,163 @@ async def funding_sniper_loop(app: ApplicationBuilder):
                                 for entry in log_list:
                                     change_str = entry.get("change", "0")
                                     exec_time_ms = int(entry.get("transactionTime", "0"))
-                                    if abs(exec_time_ms / 1000 - next_funding_ts) < 60: 
+                                    # Check if settlement is close to the expected funding time
+                                    if abs(exec_time_ms / 1000 - funding_timestamp_of_trade) < 60: 
                                         found_funding_in_log += Decimal(change_str)
-                                        print(f"Found Funding Log: Time {datetime.fromtimestamp(exec_time_ms/1000)}, Change: {change_str}, Symbol: {entry.get('symbol')}")
+                                        print(f"Found Funding Log ({symbol_to_trade}): Time {datetime.fromtimestamp(exec_time_ms/1000)}, Change: {change_str}")
                                 
                                 if found_funding_in_log != Decimal("0"):
-                                    position_data["actual_funding_fee"] = found_funding_in_log
-                                    await app.bot.send_message(chat_id, f"💰 Фандинг (из лога): `{found_funding_in_log:.4f}` USDT", parse_mode='Markdown')
+                                    current_trade_position_data["actual_funding_fee"] = found_funding_in_log
+                                    await app.bot.send_message(chat_id, f"💰 {symbol_to_trade} Фандинг (из лога): `{found_funding_in_log:.4f}` USDT", parse_mode='Markdown')
                                 else:
-                                    await app.bot.send_message(chat_id, f"⚠️ Не найдено SETTLEMENT для {top_symbol} в логе в ожидаемое время.")
+                                    await app.bot.send_message(chat_id, f"⚠️ Не найдено SETTLEMENT для {symbol_to_trade} в логе в ожидаемое время.")
                             else:
-                                await app.bot.send_message(chat_id, f"⚠️ Лог транзакций пуст для {top_symbol} в указ. период.")
+                                await app.bot.send_message(chat_id, f"⚠️ Лог транзакций пуст для {symbol_to_trade} в указ. период.")
                         
-                        except Exception as e:
-                            print(f"Error checking transaction log: {e}"); import traceback; traceback.print_exc()
-                            await app.bot.send_message(chat_id, f"❌ Ошибка при проверке лога транзакций: {e}")
-                        # ==================================================================
+                        except Exception as e_log:
+                            print(f"Error checking transaction log for {symbol_to_trade}: {e_log}"); import traceback; traceback.print_exc()
+                            await app.bot.send_message(chat_id, f"❌ Ошибка при проверке лога транзакций для {symbol_to_trade}: {e_log}")
 
-                                                # --- НОВАЯ ЛОГИКА ЗАКРЫТИЯ ПОЗИЦИИ ---
-                        active_trade = data.get('active_trade_data')
-                        # Убедимся, что есть что закрывать и есть нужные ключи
-                        if not active_trade or \
-                           active_trade.get('opened_qty', Decimal("0")) < min_qty or \
-                           'open_side' not in active_trade:
-                            await app.bot.send_message(chat_id, f"⚠️ Нет активной подтвержденной сделки для {top_symbol} для закрытия, или объем/данные некорректны.")
-                            # Очищаем на всякий случай, если данные неполные
-                            if 'active_trade_data' in data: del data['active_trade_data']
-                            continue # Пропускаем закрытие для этого чата
+                        # --- НОВАЯ ЛОГИКА ЗАКРЫТИЯ ПОЗИЦИИ ---
+                        # active_trade is current_trade_position_data
+                        if current_trade_position_data.get('opened_qty', Decimal("0")) < min_qty:
+                            await app.bot.send_message(chat_id, f"⚠️ Нет активной сделки для {symbol_to_trade} для закрытия (объем {current_trade_position_data.get('opened_qty', Decimal('0'))} < {min_qty}).")
+                            raise ValueError(f"Not enough qty to close for {symbol_to_trade}") # Go to finally
 
-                        qty_to_close = active_trade['opened_qty'] # Объем, который нужно закрыть
-                        original_open_side = active_trade['open_side']
-                        close_side = "Buy" if original_open_side == "Sell" else "Sell"
+                        qty_to_close = current_trade_position_data['opened_qty']
+                        original_open_side_for_closing = current_trade_position_data['open_side']
+                        close_side_for_trade = "Buy" if original_open_side_for_closing == "Sell" else "Sell"
 
-                        # Сбрасываем/инициализируем данные о закрытии в active_trade перед попытками
-                        active_trade["closed_qty"] = Decimal("0")
-                        active_trade["total_close_value"] = Decimal("0")
-                        active_trade["total_close_fee"] = Decimal("0")
+                        current_trade_position_data["closed_qty"] = Decimal("0")
+                        current_trade_position_data["total_close_value"] = Decimal("0")
+                        current_trade_position_data["total_close_fee"] = Decimal("0")
 
-                        await app.bot.send_message(chat_id, f"🎬 Начинаю закрытие позиции {original_open_side} {qty_to_close} {top_symbol}")
+                        await app.bot.send_message(chat_id, f"🎬 Начинаю закрытие {symbol_to_trade}: {original_open_side_for_closing} {qty_to_close}")
 
-                        # 1. Попытка закрытия лимитным ордером (Maker)
                         maker_close_price = Decimal("0")
                         try:
-                            ob_resp = session.get_orderbook(category="linear", symbol=top_symbol, limit=1)
-                            ob = ob_resp['result']
-                            # Для закрытия LONG (Sell) - ставим на лучший Ask
-                            # Для закрытия SHORT (Buy) - ставим на лучший Bid
-                            if close_side == "Buy": 
-                                maker_close_price = quantize_price(Decimal(ob['b'][0][0]), tick_size)
+                            ob_resp_close = session.get_orderbook(category="linear", symbol=symbol_to_trade, limit=1)
+                            ob_close = ob_resp_close['result']
+                            if close_side_for_trade == "Buy": 
+                                maker_close_price = quantize_price(Decimal(ob_close['b'][0][0]), tick_size)
                             else: 
-                                maker_close_price = quantize_price(Decimal(ob['a'][0][0]), tick_size)
-                        except Exception as e:
-                            await app.bot.send_message(chat_id, f"⚠️ Не удалось получить ордербук для {top_symbol} для Maker цены (закрытие): {e}. Пропускаю Maker выход.")
-                            maker_close_price = Decimal("0") # Не будем пытаться мейкером если нет цены
+                                maker_close_price = quantize_price(Decimal(ob_close['a'][0][0]), tick_size)
+                        except Exception as e_ob_close:
+                            await app.bot.send_message(chat_id, f"⚠️ Не удалось получить ордербук для {symbol_to_trade} (закрытие): {e_ob_close}. Пропускаю Maker выход.")
+                            maker_close_price = Decimal("0")
 
-                        limit_close_order_result = None
-                        if maker_close_price > 0 and qty_to_close >= min_qty : # Убедимся, что есть что закрывать и есть цена
+                        if maker_close_price > 0 and qty_to_close >= min_qty:
                             limit_close_order_result = await place_limit_order_with_retry(
-                                session, app, chat_id, top_symbol, close_side,
-                                qty_to_close, # Пытаемся весь объем лимиткой
-                                maker_close_price,
-                                time_in_force="PostOnly", 
-                                reduce_only=True, # Обязательно для закрытия
-                                max_wait_seconds=MAKER_ORDER_WAIT_SECONDS_EXIT # Ваша константа
+                                session, app, chat_id, symbol_to_trade, close_side_for_trade,
+                                qty_to_close, maker_close_price,
+                                time_in_force="PostOnly", reduce_only=True,
+                                max_wait_seconds=MAKER_ORDER_WAIT_SECONDS_EXIT
                             )
+                            if limit_close_order_result and limit_close_order_result.get('executed_qty', Decimal("0")) > 0:
+                                current_trade_position_data["closed_qty"] += limit_close_order_result['executed_qty']
+                                current_trade_position_data["total_close_value"] += limit_close_order_result['executed_qty'] * limit_close_order_result['avg_price']
+                                current_trade_position_data["total_close_fee"] += limit_close_order_result['fee']
                         
-                        if limit_close_order_result and limit_close_order_result.get('executed_qty', Decimal("0")) > 0:
-                            active_trade["closed_qty"] += limit_close_order_result['executed_qty']
-                            active_trade["total_close_value"] += limit_close_order_result['executed_qty'] * limit_close_order_result['avg_price']
-                            active_trade["total_close_fee"] += limit_close_order_result['fee']
+                        remaining_qty_to_close = qty_to_close - current_trade_position_data["closed_qty"]
+                        remaining_qty_to_close = quantize_qty(remaining_qty_to_close, qty_step)
 
-                        remaining_qty_to_close = qty_to_close - active_trade["closed_qty"]
-                        remaining_qty_to_close = quantize_qty(remaining_qty_to_close, qty_step) # Округляем до шага лота
-
-                        # 2. "Добивание" закрытия рыночным ордером
                         if remaining_qty_to_close >= min_qty:
-                            await app.bot.send_message(chat_id, f"🛒 Закрываю маркетом остаток: {remaining_qty_to_close} {top_symbol}")
+                            await app.bot.send_message(chat_id, f"🛒 Закрываю маркетом остаток для {symbol_to_trade}: {remaining_qty_to_close}")
                             market_close_order_result = await place_market_order_robust(
-                                session, app, chat_id, top_symbol, close_side,
+                                session, app, chat_id, symbol_to_trade, close_side_for_trade,
                                 remaining_qty_to_close,
-                                time_in_force="ImmediateOrCancel", # Важно для "добивания"
-                                reduce_only=True # Обязательно для закрытия
+                                time_in_force="ImmediateOrCancel", reduce_only=True
                             )
                             if market_close_order_result and market_close_order_result.get('executed_qty', Decimal("0")) > 0:
-                                active_trade["closed_qty"] += market_close_order_result['executed_qty']
-                                active_trade["total_close_value"] += market_close_order_result['executed_qty'] * market_close_order_result['avg_price']
-                                active_trade["total_close_fee"] += market_close_order_result['fee']
+                                current_trade_position_data["closed_qty"] += market_close_order_result['executed_qty']
+                                current_trade_position_data["total_close_value"] += market_close_order_result['executed_qty'] * market_close_order_result['avg_price']
+                                current_trade_position_data["total_close_fee"] += market_close_order_result['fee']
                         
-                        final_closed_qty_bot = active_trade["closed_qty"]
-
-                        # ФИНАЛЬНАЯ ПРОВЕРКА ПОЗИЦИИ ПОСЛЕ ЗАКРЫТИЯ
-                        await asyncio.sleep(1.5) # Небольшая пауза перед финальной проверкой
-                        final_position_after_close = await get_current_position_info(session, top_symbol)
+                        final_closed_qty_bot = current_trade_position_data["closed_qty"]
+                        await asyncio.sleep(1.5)
+                        final_position_after_close = await get_current_position_info(session, symbol_to_trade)
                         
                         actual_qty_left_on_exchange = Decimal("0")
                         if final_position_after_close:
                             actual_qty_left_on_exchange = final_position_after_close.get('size', Decimal("0"))
                             pos_side_after_close = final_position_after_close.get('side', "None")
-                            await app.bot.send_message(chat_id, f"   Биржа после закрытия: осталось {actual_qty_left_on_exchange} {top_symbol} (Сторона: {pos_side_after_close})")
+                            await app.bot.send_message(chat_id, f"   {symbol_to_trade} Биржа после закрытия: осталось {actual_qty_left_on_exchange} (Сторона: {pos_side_after_close})")
                         else:
-                            await app.bot.send_message(chat_id, f"   Биржа после закрытия: позиция по {top_symbol} отсутствует или не удалось получить инфо.")
+                            await app.bot.send_message(chat_id, f"   {symbol_to_trade} Биржа после закрытия: позиция отсутствует или не удалось получить инфо.")
 
-                        # Сравниваем то, что бот ПЫТАЛСЯ закрыть (qty_to_close), с тем, что ОСТАЛОСЬ на бирже
-                        if actual_qty_left_on_exchange >= min_qty: # Если остался значимый "хвост"
-                             await app.bot.send_message(chat_id, f"⚠️ Позиция *{top_symbol}* НЕ ПОЛНОСТЬЮ ЗАКРЫТА! Остаток на бирже: `{actual_qty_left_on_exchange}`. Бот обработал для закрытия: `{final_closed_qty_bot}`. ПРОВЕРЬТЕ ВРУЧНУЮ!", parse_mode='Markdown')
-                        elif final_closed_qty_bot >= qty_to_close - qty_step: # Если бот считает, что закрыл почти все что должен был
-                             await app.bot.send_message(chat_id, f"✅ Позиция *{top_symbol}* успешно закрыта (бот обработал: {final_closed_qty_bot}, остаток на бирже: {actual_qty_left_on_exchange}).", parse_mode='Markdown')
-                        else: # Бот не смог закрыть то, что должен был, но на бирже почти пусто
-                             await app.bot.send_message(chat_id, f"⚠️ Похоже, позиция *{top_symbol}* закрыта или почти закрыта, но бот не смог подтвердить весь объем закрытия (бот: {final_closed_qty_bot}, на бирже остаток: {actual_qty_left_on_exchange}). Проверьте для уверенности.", parse_mode='Markdown')
-
+                        if actual_qty_left_on_exchange >= min_qty:
+                             await app.bot.send_message(chat_id, f"⚠️ Позиция *{symbol_to_trade}* НЕ ПОЛНОСТЬЮ ЗАКРЫТА! Остаток: `{actual_qty_left_on_exchange}`. Бот: `{final_closed_qty_bot}`. ПРОВЕРЬТЕ ВРУЧНУЮ!", parse_mode='Markdown')
+                        elif final_closed_qty_bot >= qty_to_close - qty_step:
+                             await app.bot.send_message(chat_id, f"✅ Позиция *{symbol_to_trade}* успешно закрыта (бот: {final_closed_qty_bot}, остаток: {actual_qty_left_on_exchange}).", parse_mode='Markdown')
+                        else:
+                             await app.bot.send_message(chat_id, f"⚠️ Похоже, позиция *{symbol_to_trade}* закрыта/почти, но бот не подтвердил весь объем (бот: {final_closed_qty_bot}, остаток: {actual_qty_left_on_exchange}). Проверьте.", parse_mode='Markdown')
 
                         # --- РАСЧЕТ PNL ---
-                        # Убедимся, что все нужные ключи есть в active_trade
-                        total_open_val = active_trade.get("total_open_value", Decimal("0"))
-                        total_close_val = active_trade.get("total_close_value", Decimal("0"))
-                        open_s = active_trade.get("open_side", "Buy") # По умолчанию Buy, если что-то пошло не так
+                        total_open_val = current_trade_position_data.get("total_open_value", Decimal("0"))
+                        total_close_val = current_trade_position_data.get("total_close_value", Decimal("0"))
+                        open_s_pnl = current_trade_position_data.get("open_side", "Buy")
                         
                         price_pnl = total_close_val - total_open_val
-                        if open_s == "Sell": # Если был шорт
-                            price_pnl = -price_pnl
+                        if open_s_pnl == "Sell": price_pnl = -price_pnl
                         
-                        funding_pnl = active_trade.get("actual_funding_fee", Decimal("0"))
-                        total_open_f = active_trade.get("total_open_fee", Decimal("0"))
-                        total_close_f = active_trade.get("total_close_fee", Decimal("0"))
+                        funding_pnl = current_trade_position_data.get("actual_funding_fee", Decimal("0"))
+                        total_open_f = current_trade_position_data.get("total_open_fee", Decimal("0"))
+                        total_close_f = current_trade_position_data.get("total_close_fee", Decimal("0"))
                         total_fees = total_open_f + total_close_f
-                        
                         net_pnl = price_pnl + funding_pnl - total_fees
                         
-                        marja_for_pnl = data.get('real_marja', Decimal("1")) 
-                        if not isinstance(marja_for_pnl, Decimal) or marja_for_pnl <= Decimal("0"): 
-                            marja_for_pnl = Decimal("1") # Защита от некорректной маржи
+                        marja_for_pnl_calc = chat_config.get('real_marja', Decimal("1")) 
+                        if not isinstance(marja_for_pnl_calc, Decimal) or marja_for_pnl_calc <= Decimal("0"): 
+                            marja_for_pnl_calc = Decimal("1")
 
-                        roi_pct = (net_pnl / marja_for_pnl) * 100
-                        
-                        opened_qty_display = active_trade.get('opened_qty', 'N/A')
-                        closed_qty_display = active_trade.get('closed_qty', 'N/A')
+                        roi_pct = (net_pnl / marja_for_pnl_calc) * 100
+                        opened_qty_display = current_trade_position_data.get('opened_qty', 'N/A')
+                        closed_qty_display = current_trade_position_data.get('closed_qty', 'N/A')
 
                         await app.bot.send_message(
                             chat_id, 
-                            f"📊 Результат сделки: *{top_symbol}* ({'LONG' if open_s=='Buy' else 'SHORT'})\n\n"
+                            f"📊 Результат сделки: *{symbol_to_trade}* ({'LONG' if open_s_pnl=='Buy' else 'SHORT'})\n\n"
                             f" Открыто: `{opened_qty_display}` Закрыто: `{closed_qty_display}`\n"
                             f" PNL (цена): `{price_pnl:+.4f}` USDT\n"
                             f" PNL (фандинг): `{funding_pnl:+.4f}` USDT\n"
                             f" Комиссии (откр+закр): `{-total_fees:.4f}` USDT\n"
                             f"💰 *Чистая прибыль: {net_pnl:+.4f} USDT*\n"
-                            f"📈 ROI от маржи ({marja_for_pnl} USDT): `{roi_pct:.2f}%`", 
+                            f"📈 ROI от маржи ({marja_for_pnl_calc} USDT): `{roi_pct:.2f}%`", 
                             parse_mode='Markdown'
                         )
-                        
-                        # Очищаем данные об активной сделке после ее завершения
-                        if 'active_trade_data' in data:
-                            del data['active_trade_data']
-                        
-                        trade_success = True # Это было в вашем коде, оставляю
-                        # --- КОНЕЦ НОВОЙ ЛОГИКИ ЗАКРЫТИЯ И PNL ---
-
-                    except Exception as trade_e:
-                        print(f"\n!!! CRITICAL TRADE ERROR for chat {chat_id}, symbol {top_symbol} !!!")
+                        # Successful completion, no explicit raise, 'finally' will clean up.
+                    
+                    except Exception as trade_e: # Catches exceptions from the trade logic block
+                        print(f"\n!!! TRADE ERROR for chat {chat_id}, symbol {symbol_to_trade} !!!")
                         print(f"Error: {trade_e}"); import traceback; traceback.print_exc()
-                        await app.bot.send_message(chat_id, f"❌ КРИТИЧЕСКАЯ ОШИБКА во время сделки по *{top_symbol}*:\n`{trade_e}`\n\n❗️ *ПРОВЕРЬТЕ СЧЕТ И ПОЗИЦИИ ВРУЧНУЮ!*", parse_mode='Markdown')
+                        await app.bot.send_message(chat_id, f"❌ ОШИБКА во время сделки по *{symbol_to_trade}*:\n`{trade_e}`\n\n❗️ *ПРОВЕРЬТЕ СЧЕТ И ПОЗИЦИИ ВРУЧНУЮ!*", parse_mode='Markdown')
+                        # Exception occurred, 'finally' will handle cleanup of ongoing_trades
                     finally:
-                        print(f">>> Finished processing {top_symbol} for chat {chat_id} <<<")
-            else:
-                # print(f"Not in entry window for {top_symbol} ({seconds_left:.0f}s left).")
-                pass
+                        # ALWAYS remove from ongoing_trades for this chat and symbol after attempt
+                        if symbol_to_trade in chat_config.get('ongoing_trades', {}):
+                            print(f"Cleaning up ongoing_trade for {symbol_to_trade} in chat {chat_id}")
+                            del chat_config['ongoing_trades'][symbol_to_trade]
+                        print(f">>> Finished processing {symbol_to_trade} for chat {chat_id} <<<")
+            # End of loop for funding_data_raw pairs
         except Exception as loop_e:
             print("\n!!! UNHANDLED ERROR IN SNIPER LOOP !!!")
             print(f"Error: {loop_e}"); import traceback; traceback.print_exc()
-            await asyncio.sleep(30)
+            # To prevent spamming telegram on rapid errors, send to a specific admin chat or log differently
+            # For now, just print and sleep
+            await asyncio.sleep(30) # Longer sleep on outer loop error
 
 # ===================== MAIN =====================
 
 if __name__ == "__main__":
     print("Initializing bot...")
-    app_builder = ApplicationBuilder().token(BOT_TOKEN)
-    app = app_builder.build()
+    # The app object is Application, not ApplicationBuilder after build()
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding))
-    app.add_handler(MessageHandler(filters.Regex("^📡 Сигналы$"), signal_menu))
-    app.add_handler(CallbackQueryHandler(signal_callback, pattern="^(toggle_sniper|show_top_pairs_inline|set_max_trades_)"))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding))
+    application.add_handler(MessageHandler(filters.Regex("^📡 Сигналы$"), signal_menu))
+    application.add_handler(CallbackQueryHandler(signal_callback, pattern="^(toggle_sniper|show_top_pairs_inline|set_max_trades_)"))
 
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 Маржа$"), set_real_marja)],
@@ -1149,7 +1162,7 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler("cancel", cancel)],
         conversation_timeout=60.0
     )
-    app.add_handler(conv_marja)
+    application.add_handler(conv_marja)
 
     conv_plecho = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^⚖️ Плечо$"), set_real_plecho)], # Исправлен эмодзи для соответствия клавиатуре
@@ -1157,17 +1170,19 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler("cancel", cancel)],
         conversation_timeout=60.0
     )
-    app.add_handler(conv_plecho)
+    application.add_handler(conv_plecho)
 
-    async def post_init_tasks(passed_app: ApplicationBuilder):
+    async def post_init_tasks(app_passed: type(application)): # type hint for clarity
         print("Running post_init tasks...")
-        asyncio.create_task(funding_sniper_loop(passed_app))
+        # Pass the Application instance, not the builder
+        asyncio.create_task(funding_sniper_loop(app_passed))
         print("Sniper loop task created.")
-    app.post_init = post_init_tasks
+    
+    application.post_init = post_init_tasks
 
     print("Starting bot polling...")
     try:
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         print(f"\nBot polling stopped due to error: {e}")
     finally:
