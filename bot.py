@@ -40,12 +40,12 @@ SET_MARJA = 0
 SET_PLECHO = 1
 
 # Константы для стратегии
-ENTRY_WINDOW_START_SECONDS = 35 # За сколько секунд ДО фандинга начинаем пытаться войти
-ENTRY_WINDOW_END_SECONDS = 7  # За сколько секунд ДО фандинга прекращаем попытки входа
+ENTRY_WINDOW_START_SECONDS = 60 # За сколько секунд ДО фандинга начинаем пытаться войти
+ENTRY_WINDOW_END_SECONDS = 20  # За сколько секунд ДО фандинга прекращаем попытки входа
 # === ИЗМЕНЕНО ЗДЕСЬ ===
 POST_FUNDING_WAIT_SECONDS = 7 # Сколько секунд ждем ПОСЛЕ времени фандинга перед выходом
 # =======================
-MAKER_ORDER_WAIT_SECONDS_ENTRY = 7 # Сколько секунд ждем исполнения PostOnly ордера на ВХОД
+MAKER_ORDER_WAIT_SECONDS_ENTRY = 5 # Сколько секунд ждем исполнения PostOnly ордера на ВХОД
 MAKER_ORDER_WAIT_SECONDS_EXIT = 5  # Сколько секунд ждем исполнения PostOnly ордера на ВЫХОД
 SNIPER_LOOP_INTERVAL_SECONDS = 5 # Как часто проверяем тикеры в основном цикле
 DEFAULT_MAX_CONCURRENT_TRADES = 1 # Одна сделка дефолт
