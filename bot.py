@@ -51,11 +51,10 @@ MAX_PAIRS_TO_CONSIDER_PER_CYCLE = 5
 
 # "Умные" дефолты для параметров, не вынесенных в основные настройки пользователя
 DEFAULT_MIN_TURNOVER_USDT = Decimal("7500000") # Средний уровень ликвидности
-DEFAULT_MIN_EXPECTED_PNL_USDT = Decimal("0.05")
-
+DEFAULT_MIN_EXPECTED_PNL_USDT = Decimal("-10.0")  # ВРЕМЕННО: Очень низкий порог
 # Внутренние константы стратегии
 MIN_FUNDING_RATE_ABS_FILTER = Decimal("0.0001") # 0.01%
-MAX_ALLOWED_SPREAD_PCT_FILTER = Decimal("0.15") # 0.15%
+MAX_ALLOWED_SPREAD_PCT_FILTER = Decimal("2.0")  # ВРЕМЕННО: 2%, очень большой допустимый спред
 MAKER_FEE_RATE = Decimal("0.0002") # Комиссия мейкера (0.02% Bybit non-VIP Derivatives Maker)
 TAKER_FEE_RATE = Decimal("0.00055")# Комиссия тейкера (0.055% Bybit non-VIP Derivatives Taker)
 MIN_QTY_TO_MARKET_FILL_PCT_ENTRY = Decimal("0.20")
@@ -496,28 +495,46 @@ async def get_orderbook_snapshot_and_spread(session, symbol, category="linear", 
     return None
 
 async def calculate_pre_trade_pnl_estimate(
-    app, chat_id, symbol: str, funding_rate: Decimal, position_size_usdt: Decimal, target_qty: Decimal,
-    best_bid: Decimal, best_ask: Decimal, open_side: str ): # app и chat_id тут не используются, можно убрать
-    if not all([position_size_usdt > 0, target_qty > 0, best_bid > 0, best_ask > 0, funding_rate is not None]): return None, "Недостаточно данных для оценки PnL."
-    entry_price = best_bid if open_side == "Buy" else best_ask
-    # Для пессимистичной оценки считаем выход по Taker цене
-    exit_price_taker = best_bid if open_side == "Buy" else best_ask # Если лонг - продаем по биду, если шорт - покупаем по аску
+    symbol: str, funding_rate: Decimal, position_size_usdt: Decimal, target_qty: Decimal,
+    best_bid: Decimal, best_ask: Decimal, open_side: str 
+):
+    if not all([position_size_usdt > 0, target_qty > 0, best_bid > 0, best_ask > 0, funding_rate is not None]): 
+        return None, "Недостаточно данных для оценки PnL (входные параметры)."
     
-    funding_pnl = position_size_usdt * funding_rate # funding_rate уже в долях (0.001 для 0.1%)
+    actual_funding_gain = Decimal("0")
+    if open_side == "Buy": 
+        actual_funding_gain = position_size_usdt * abs(funding_rate)
+    elif open_side == "Sell": 
+        actual_funding_gain = position_size_usdt * funding_rate
     
-    price_pnl_taker_exit = (exit_price_taker - entry_price) * target_qty
-    if open_side == "Sell": price_pnl_taker_exit = -price_pnl_taker_exit # Инвертируем для шорта
-        
-    # Комиссии: вход Maker, выход Taker
-    fees_entry_maker = entry_price * target_qty * MAKER_FEE_RATE
-    fees_exit_taker = exit_price_taker * target_qty * TAKER_FEE_RATE
-    total_fees_pessimistic = fees_entry_maker + fees_exit_taker
+    pessimistic_entry_price = best_ask if open_side == "Buy" else best_bid
+    pessimistic_exit_price = best_bid if open_side == "Buy" else best_ask
     
-    net_pnl_pessimistic = funding_pnl + price_pnl_taker_exit - total_fees_pessimistic
+    price_pnl_component = Decimal("0")
+    if open_side == "Buy":
+        price_pnl_component = (pessimistic_exit_price - pessimistic_entry_price) * target_qty
+    elif open_side == "Sell":
+        price_pnl_component = (pessimistic_entry_price - pessimistic_exit_price) * target_qty
+
+    fees_entry_pessimistic = pessimistic_entry_price * target_qty * TAKER_FEE_RATE 
+    fees_exit_pessimistic = pessimistic_exit_price * target_qty * TAKER_FEE_RATE
+    total_fees_pessimistic = fees_entry_pessimistic + fees_exit_pessimistic
     
-    pnl_info_msg = (f"*{symbol}* Оценка PnL (пессим.): `{net_pnl_pessimistic:+.4f}` USDT\n"
-                    f"  (Фандинг: `{funding_pnl:+.3f}`, Цена: `{price_pnl_taker_exit:+.3f}`, Комиссии: `{-total_fees_pessimistic:.3f}`)")
-    return net_pnl_pessimistic, pnl_info_msg
+    net_pnl_pessimistic = actual_funding_gain + price_pnl_component - total_fees_pessimistic
+    
+    pnl_calc_details_msg = (
+        f"  Символ: *{symbol}*\n"
+        f"  Напр.: {open_side}, Объем: {target_qty}\n"
+        f"  Ставка фандинга (API): {funding_rate*100:.4f}%\n"
+        f"  Bid/Ask на момент расчета: {best_bid}/{best_ask}\n"
+        f"  Расч. пессим. вход: {pessimistic_entry_price}\n"
+        f"  Расч. пессим. выход: {pessimistic_exit_price}\n"
+        f"  Фандинг (ожид. доход): `{actual_funding_gain:+.4f}` USDT\n"
+        f"  Цена (ожид. PnL от спреда): `{price_pnl_component:+.4f}` USDT\n"
+        f"  Комиссии (Taker/Taker): `{-total_fees_pessimistic:.4f}` USDT\n"
+        f"  ИТОГО (пессим.): `{net_pnl_pessimistic:+.4f}` USDT"
+    )
+    return net_pnl_pessimistic, pnl_calc_details_msg
 
 async def get_order_status_robust(session, order_id, symbol, category="linear", max_retries=3, delay=0.5):
     for _ in range(max_retries):
@@ -660,7 +677,7 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
             if not globally_candidate_pairs: continue
             globally_candidate_pairs.sort(key=lambda x: abs(x["rate"]), reverse=True)
 
-            for pair_info in globally_candidate_pairs[:MAX_PAIRS_TO_CONSIDER_PER_CYCLE]: # Берем топ N для детальной проверки
+            for pair_info in globally_candidate_pairs[:1]: # ВРЕМЕННО: Тестируем только на ОДНОЙ топовой паре
                 s_sym, s_rate, s_ts, s_sec_left, s_turnover = pair_info["symbol"], pair_info["rate"], pair_info["next_ts"], pair_info["seconds_left"], pair_info["turnover"]
                 s_open_side = get_position_direction(s_rate)
                 if s_open_side == "NONE": continue
@@ -682,6 +699,74 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                     if s_turnover < chat_min_turnover: continue 
                     
                     orderbook_data = await get_orderbook_snapshot_and_spread(session, s_sym)
+                                        # Этот блок вставляется ПОСЛЕ orderbook_data = ... и ПЕРЕД if not orderbook_data:
+                    log_prefix_tg = f"🔍 {s_sym} ({chat_id}):" 
+
+                    if not orderbook_data: # Эта проверка останется, но лог перед ней
+                        await app.bot.send_message(chat_id, f"{log_prefix_tg} Нет данных стакана. Пропуск.") 
+                        print(f"[{s_sym}][{chat_id}] No orderbook data.")
+                        continue
+                    
+                    s_bid, s_ask, s_mid, s_spread_pct = orderbook_data['best_bid'], orderbook_data['best_ask'], orderbook_data['mid_price'], orderbook_data['spread_rel_pct']
+                    
+                    # --- ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ СТАКА НА ---
+                    spread_debug_msg = (
+                        f"{log_prefix_tg} Стакан:\n"
+                        f"  Best Bid: {s_bid}\n"
+                        f"  Best Ask: {s_ask}\n"
+                        f"  Mid Price: {s_mid}\n"
+                        f"  Спред Abs: {s_ask - s_bid}\n"
+                        f"  Спред %: {s_spread_pct:.4f}%\n"
+                        f"  Лимит спреда % (временно): {MAX_ALLOWED_SPREAD_PCT_FILTER}%"
+                    )
+                    await app.bot.send_message(chat_id, spread_debug_msg)
+                    print(f"[{s_sym}][{chat_id}] OB Data: Bid={s_bid}, Ask={s_ask}, SpreadPct={s_spread_pct:.4f}%, SpreadLimit(temp)={MAX_ALLOWED_SPREAD_PCT_FILTER}%")
+                    # --- КОНЕЦ ЛОГИРОВАНИЯ СТАКА НА ---
+
+                    # Фильтр по спреду теперь будет очень мягким (2%)
+                    if s_spread_pct > MAX_ALLOWED_SPREAD_PCT_FILTER: 
+                        await app.bot.send_message(chat_id, f"{log_prefix_tg} ФИЛЬТР: Спред ({s_spread_pct:.3f}%) > временного лимита ({MAX_ALLOWED_SPREAD_PCT_FILTER}%). Пропуск.")
+                        print(f"[{s_sym}][{chat_id}] Skipped due to spread ({s_spread_pct:.3f}%) > TEMP LIMIT {MAX_ALLOWED_SPREAD_PCT_FILTER}%")
+                        continue
+                    
+                    # ... (далее ваш код: получение инфо об инструменте, расчет target_qty) ...
+                    # Убедитесь, что этот код находится ПЕРЕД вызовом calculate_pre_trade_pnl_estimate
+                    
+                    print(f"[{s_sym}][{chat_id}] Pre-PNL Calc: Rate={s_rate}, PosSize={s_pos_size_usdt}, TargetQty={s_target_q}, Bid={s_bid}, Ask={s_ask}, Side={s_open_side}")
+                    
+                    est_pnl, pnl_calc_details_msg = await calculate_pre_trade_pnl_estimate(
+                        s_sym, s_rate, s_pos_size_usdt, s_target_q, 
+                        s_bid, s_ask, 
+                        s_open_side
+                    )
+                    
+                    print(f"[{s_sym}][{chat_id}] Post-PNL Calc: EstPNL={est_pnl}, Details='{pnl_calc_details_msg}'")
+
+                    if est_pnl is None:
+                        error_msg_pnl = pnl_calc_details_msg if pnl_calc_details_msg else "Неизвестная ошибка."
+                        await app.bot.send_message(chat_id, f"{log_prefix_tg} Ошибка оценки PnL: {error_msg_pnl}. Пропуск.")
+                        print(f"[{s_sym}][{chat_id}] Skipped due to PnL calculation error: {error_msg_pnl}")
+                        continue
+
+                    current_min_pnl_filter_for_chat = chat_config.get('min_expected_pnl_usdt', DEFAULT_MIN_EXPECTED_PNL_USDT)
+
+                    if est_pnl < current_min_pnl_filter_for_chat:
+                        await app.bot.send_message(
+                            chat_id, 
+                            f"{log_prefix_tg} Ожид. PnL ({est_pnl:.4f}) < временного порога ({current_min_pnl_filter_for_chat}). Пропуск.\n"
+                            f"Детали оценки:\n{pnl_calc_details_msg}", 
+                            parse_mode='Markdown'
+                        )
+                        print(f"[{s_sym}][{chat_id}] Skipped due to EstPNL ({est_pnl:.4f}) < TEMP MinPNL ({current_min_pnl_filter_for_chat})")
+                        continue
+                    
+                    await app.bot.send_message(
+                        chat_id, 
+                        f"✅ {s_sym} ({chat_id}): Прошел ВРЕМЕННЫЕ мягкие проверки. Ожид. PnL: {est_pnl:.4f} USDT. Начинаю СДЕЛКУ ДЛЯ ТЕСТА.\n"
+                        f"Детали оценки:\n{pnl_calc_details_msg}", 
+                        parse_mode='Markdown'
+                    )
+                    
                     if not orderbook_data: await app.bot.send_message(chat_id, f"⚠️ {s_sym}: Нет данных стакана. Пропуск."); continue
                     
                     s_bid, s_ask, s_mid, s_spread_pct = orderbook_data['best_bid'], orderbook_data['best_ask'], orderbook_data['mid_price'], orderbook_data['spread_rel_pct']
