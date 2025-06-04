@@ -675,7 +675,23 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                 except (ValueError, TypeError): continue
             
             if not globally_candidate_pairs: continue
-            globally_candidate_pairs.sort(key=lambda x: abs(x["rate"]), reverse=True)
+
+            # Новая сортировка: сначала по времени до фандинга (меньше = лучше), потом по модулю ставки (больше = лучше)
+            globally_candidate_pairs.sort(key=lambda x: (x["seconds_left"], -abs(x["rate"])))
+            
+            # Возьмем, например, топ-1 ближайшую и выгодную для теста. 
+            # Если хотите 2, измените [:1] на [:2]
+            # MAX_PAIRS_FOR_DETAILED_TEST = 1 
+            MAX_PAIRS_FOR_DETAILED_TEST = 2 # Давайте попробуем 2, чтобы было больше шансов на сделку
+
+            print(f"[SniperLoop] Top {len(globally_candidate_pairs)} candidates after initial filter. Sorted by time then rate.")
+            if globally_candidate_pairs:
+                for i, p_info_debug in enumerate(globally_candidate_pairs[:5]): # Логируем топ-5 для информации
+                     print(f"  Candidate {i+1}: {p_info_debug['symbol']}, TimeLeft: {p_info_debug['seconds_left']:.0f}s, Rate: {p_info_debug['rate']*100:.4f}%")
+
+            for pair_info in globally_candidate_pairs[:MAX_PAIRS_FOR_DETAILED_TEST]: 
+                s_sym, s_rate, s_ts, s_sec_left, s_turnover = pair_info["symbol"], pair_info["rate"], pair_info["next_ts"], pair_info["seconds_left"], pair_info["turnover"]
+                # ... остальная часть цикла (начиная с s_open_side = get_position_direction(s_rate)) остается как была ...
 
             for pair_info in globally_candidate_pairs[:1]: # ВРЕМЕННО: Тестируем только на ОДНОЙ топовой паре
                 s_sym, s_rate, s_ts, s_sec_left, s_turnover = pair_info["symbol"], pair_info["rate"], pair_info["next_ts"], pair_info["seconds_left"], pair_info["turnover"]
