@@ -341,136 +341,121 @@ async def sniper_control_callback(update: Update, context: ContextTypes.DEFAULT_
     # Если никакое действие не меняло состояние (например, нажали на текущий лимит сделок),
     # то меню можно не перерисовывать, чтобы избежать "моргания".
 
-
 # --- Настройка Мин. Оборота ---
 async def ask_min_turnover(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await query.answer() # Отвечаем сразу!
     chat_id = query.message.chat_id
     ensure_chat_settings(chat_id)
     current_val = sniper_active[chat_id].get('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
-    # Сохраняем ID сообщения с меню, чтобы потом его можно было попытаться обновить или удалить
-    context.user_data['config_menu_message_id'] = query.message.message_id 
     
+    # Удаляем сообщение с кнопками (старое меню настроек)
+    try:
+        await query.delete_message()
+    except Exception as e:
+        print(f"Error deleting old menu message in ask_min_turnover: {e}")
+        # Если удалить не удалось, ничего страшного, просто отправим новый промпт.
+        # Главное, что мы не будем пытаться его редактировать.
+        
     # Отправляем новое сообщение с запросом ввода
-    sent_message = await context.bot.send_message(chat_id, f"💧 Введите мин. суточный оборот в USDT (тек.: {current_val:,.0f}).\nПример: 5000000\nДля отмены /cancel")
-    context.user_data['prompt_message_id'] = sent_message.message_id # Сохраняем ID сообщения с промптом
+    sent_message = await context.bot.send_message(
+        chat_id, 
+        f"💧 Введите мин. суточный оборот в USDT (текущее: {current_val:,.0f}).\nПример: 5000000\n\nДля отмены введите /cancel"
+    )
+    context.user_data['prompt_message_id'] = sent_message.message_id 
     return SET_MIN_TURNOVER_CONFIG
 
 async def save_min_turnover(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id; ensure_chat_settings(chat_id)
-    config_menu_message_id = context.user_data.pop('config_menu_message_id', None)
+    chat_id = update.effective_chat.id
+    ensure_chat_settings(chat_id)
     prompt_message_id = context.user_data.pop('prompt_message_id', None)
+    user_input_message_id = update.message.message_id
     
+    should_send_new_menu = True # Флаг, чтобы отправить меню, даже если была ошибка (но не требующая повторного ввода)
+
     try:
-        value_str = update.message.text.strip().replace(",", "") # Убираем запятые, если пользователь их ввел
+        value_str = update.message.text.strip().replace(",", "")
         value = Decimal(value_str)
         if value < 0: 
-            await update.message.reply_text("❌ Оборот должен быть положительным числом. Попробуйте снова или /cancel"); 
-            # Восстанавливаем ID для следующей попытки, если нужно
-            context.user_data['config_menu_message_id'] = config_menu_message_id
-            context.user_data['prompt_message_id'] = prompt_message_id
-            return SET_MIN_TURNOVER_CONFIG
+            await update.message.reply_text("❌ Оборот должен быть положительным числом. Нажмите кнопку настройки в меню снова.");
+            should_send_new_menu = False # Пользователь должен сам нажать кнопку в новом меню
+        else:
+            sniper_active[chat_id]['min_turnover_usdt'] = value
+            await update.message.reply_text(f"✅ Мин. оборот установлен: {value:,.0f} USDT")
             
-        sniper_active[chat_id]['min_turnover_usdt'] = value
-        await update.message.reply_text(f"✅ Мин. оборот установлен: {value:,.0f} USDT")
     except (ValueError, TypeError): 
-        await update.message.reply_text("❌ Неверный формат. Введите число. Попробуйте снова или /cancel"); 
-        context.user_data['config_menu_message_id'] = config_menu_message_id
-        context.user_data['prompt_message_id'] = prompt_message_id
-        return SET_MIN_TURNOVER_CONFIG
+        await update.message.reply_text("❌ Неверный формат. Введите число. Нажмите кнопку настройки в меню снова.");
+        should_send_new_menu = False
     except Exception as e: 
-        await update.message.reply_text(f"❌ Произошла ошибка: {e}")
-        # Не возвращаем состояние, завершаем диалог при неожиданной ошибке
-        if config_menu_message_id: # Если было исходное меню, лучше его обновить
-            fake_update = Update(update_id=0) # Создаем фейковый Update для передачи
-            fake_update.callback_query = type('obj', (object,), {'message' : type('obj', (object,), {'message_id': config_menu_message_id, 'chat_id': chat_id})})
-            await send_final_config_message(chat_id, context, message_to_edit=fake_update)
-        return ConversationHandler.END
+        await update.message.reply_text(f"❌ Произошла ошибка: {e}. Нажмите кнопку настройки в меню снова.")
+        should_send_new_menu = False
     
     # Удаляем сообщения диалога (сообщение с вводом пользователя и сообщение с промптом)
-    try: await context.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+    try: 
+        await context.bot.delete_message(chat_id=chat_id, message_id=user_input_message_id)
     except Exception as e: print(f"Error deleting user input message: {e}")
+    
     if prompt_message_id:
-        try: await context.bot.delete_message(chat_id=chat_id, message_id=prompt_message_id)
+        try: 
+            await context.bot.delete_message(chat_id=chat_id, message_id=prompt_message_id)
         except Exception as e: print(f"Error deleting prompt message: {e}")
 
-    # Обновляем или отправляем новое главное меню снайпера
-    if config_menu_message_id:
-        # Создаем "фейковый" Update объект для редактирования старого сообщения меню
-        # Это немного хак, но позволяет использовать send_final_config_message для редактирования
-        # message_to_edit ожидает объект Update, у которого есть callback_query.message.message_id
-        fake_update_for_edit = Update(update_id=0) # update_id не важен
-        # Создаем мок для callback_query и message
-        class MockMessage:
-            def __init__(self, msg_id, chat_id_val):
-                self.message_id = msg_id
-                self.chat_id = chat_id_val
-        class MockCallbackQuery:
-            def __init__(self, msg):
-                self.message = msg
-        
-        mock_msg = MockMessage(config_menu_message_id, chat_id)
-        mock_cb_query = MockCallbackQuery(mock_msg)
-        fake_update_for_edit.callback_query = mock_cb_query
-        
-        await send_final_config_message(chat_id, context, message_to_edit=fake_update_for_edit)
-    else: # Если ID исходного меню не был сохранен, просто отправляем новое
-        await send_final_config_message(chat_id, context)
+    if should_send_new_menu:
+        await send_final_config_message(chat_id, context) # Отправляем новое актуальное меню
         
     return ConversationHandler.END
 # --- Настройка Мин. Профита ---
 async def ask_min_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    chat_id = query.message.chat_id; ensure_chat_settings(chat_id)
+    query = update.callback_query
+    await query.answer() # Отвечаем сразу!
+    chat_id = query.message.chat_id
+    ensure_chat_settings(chat_id)
     current_val = sniper_active[chat_id].get('min_expected_pnl_usdt', DEFAULT_MIN_EXPECTED_PNL_USDT)
-    context.user_data['config_menu_message_id'] = query.message.message_id
     
-    sent_message = await context.bot.send_message(chat_id, f"💰 Введите мин. ожидаемый профит в USDT (тек.: {current_val}).\nПример: 0.05\nДля отмены /cancel")
+    try:
+        await query.delete_message()
+    except Exception as e:
+        print(f"Error deleting old menu message in ask_min_profit: {e}")
+        
+    sent_message = await context.bot.send_message(
+        chat_id, 
+        f"💰 Введите мин. ожидаемый профит в USDT (текущее: {current_val}).\nПример: 0.05\n\nДля отмены введите /cancel"
+    )
     context.user_data['prompt_message_id'] = sent_message.message_id
     return SET_MIN_PROFIT_CONFIG
 
 async def save_min_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id; ensure_chat_settings(chat_id)
-    config_menu_message_id = context.user_data.pop('config_menu_message_id', None)
+    chat_id = update.effective_chat.id
+    ensure_chat_settings(chat_id)
     prompt_message_id = context.user_data.pop('prompt_message_id', None)
+    user_input_message_id = update.message.message_id
     
+    should_send_new_menu = True
+
     try:
         value_str = update.message.text.strip().replace(",", ".")
         value = Decimal(value_str)
-        # Профит может быть и нулевым, если пользователь так хочет (хотя и не рекомендуется)
         sniper_active[chat_id]['min_expected_pnl_usdt'] = value
         await update.message.reply_text(f"✅ Мин. профит установлен: {value} USDT")
+            
     except (ValueError, TypeError): 
-        await update.message.reply_text("❌ Неверный формат. Введите число (например, 0.05). Попробуйте снова или /cancel"); 
-        context.user_data['config_menu_message_id'] = config_menu_message_id
-        context.user_data['prompt_message_id'] = prompt_message_id
-        return SET_MIN_PROFIT_CONFIG
+        await update.message.reply_text("❌ Неверный формат. Введите число (например, 0.05). Нажмите кнопку настройки в меню снова.");
+        should_send_new_menu = False
     except Exception as e: 
-        await update.message.reply_text(f"❌ Произошла ошибка: {e}")
-        if config_menu_message_id:
-            fake_update = Update(update_id=0)
-            fake_update.callback_query = type('obj', (object,), {'message' : type('obj', (object,), {'message_id': config_menu_message_id, 'chat_id': chat_id})})
-            await send_final_config_message(chat_id, context, message_to_edit=fake_update)
-        return ConversationHandler.END
-
-    try: await context.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+        await update.message.reply_text(f"❌ Произошла ошибка: {e}. Нажмите кнопку настройки в меню снова.")
+        should_send_new_menu = False
+    
+    try: 
+        await context.bot.delete_message(chat_id=chat_id, message_id=user_input_message_id)
     except Exception as e: print(f"Error deleting user input message for profit: {e}")
+    
     if prompt_message_id:
-        try: await context.bot.delete_message(chat_id=chat_id, message_id=prompt_message_id)
+        try: 
+            await context.bot.delete_message(chat_id=chat_id, message_id=prompt_message_id)
         except Exception as e: print(f"Error deleting prompt message for profit: {e}")
 
-    if config_menu_message_id:
-        class MockMessage:
-            def __init__(self, msg_id, chat_id_val): self.message_id = msg_id; self.chat_id = chat_id_val
-        class MockCallbackQuery:
-            def __init__(self, msg): self.message = msg
-        mock_msg = MockMessage(config_menu_message_id, chat_id)
-        mock_cb_query = MockCallbackQuery(mock_msg)
-        fake_update_for_edit = Update(update_id=0); fake_update_for_edit.callback_query = mock_cb_query
-        await send_final_config_message(chat_id, context, message_to_edit=fake_update_for_edit)
-    else:
-        await send_final_config_message(chat_id, context)
+    if should_send_new_menu:
+        await send_final_config_message(chat_id, context) 
         
     return ConversationHandler.END
 
