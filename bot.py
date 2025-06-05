@@ -516,10 +516,10 @@ async def calculate_pre_trade_pnl_estimate(
     elif open_side == "Sell":
         price_pnl_component = (pessimistic_entry_price - pessimistic_exit_price) * target_qty
 
-    fees_entry_pessimistic = pessimistic_entry_price * target_qty * TAKER_FEE_RATE 
-    fees_exit_pessimistic = pessimistic_exit_price * target_qty * TAKER_FEE_RATE
-    total_fees_pessimistic = fees_entry_pessimistic + fees_exit_pessimistic
-    
+    fees_entry_optimistic = pessimistic_entry_price * target_qty * MAKER_FEE_RATE 
+    fees_exit_optimistic = pessimistic_exit_price * target_qty * MAKER_FEE_RATE
+    total_fees_pessimistic = fees_entry_optimistic + fees_exit_optimistic # Переменную лучше переименовать в total_fees_optimistic
+     # И в лог тоже вывести, что это Maker/Maker    
     net_pnl_pessimistic = actual_funding_gain + price_pnl_component - total_fees_pessimistic
     
     pnl_calc_details_msg = (
