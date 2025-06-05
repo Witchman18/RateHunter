@@ -531,8 +531,8 @@ async def calculate_pre_trade_pnl_estimate(
         f"  Расч. пессим. выход: {pessimistic_exit_price}\n"
         f"  Фандинг (ожид. доход): `{actual_funding_gain:+.4f}` USDT\n"
         f"  Цена (ожид. PnL от спреда): `{price_pnl_component:+.4f}` USDT\n"
-        f"  Комиссии (Taker/Taker): `{-total_fees_pessimistic:.4f}` USDT\n"
-        f"  ИТОГО (пессим.): `{net_pnl_pessimistic:+.4f}` USDT"
+        f"  Комиссии (Maker/Maker - ТЕСТ): `{-total_fees_optimistic:.4f}` USDT\n" # Изменили здесь
+        f"  ИТОГО (пессим. с M/M ком.): `{net_pnl_optimistic:+.4f}` USDT" # И здесь
     )
     return net_pnl_pessimistic, pnl_calc_details_msg
 
