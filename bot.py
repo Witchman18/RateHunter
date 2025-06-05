@@ -47,7 +47,7 @@ MAKER_ORDER_WAIT_SECONDS_ENTRY = 7
 MAKER_ORDER_WAIT_SECONDS_EXIT = 2
 SNIPER_LOOP_INTERVAL_SECONDS = 5
 DEFAULT_MAX_CONCURRENT_TRADES = 1
-MAX_PAIRS_TO_CONSIDER_PER_CYCLE = 5 # Это MAX_PAIRS_FOR_DETAILED_TEST из старой логики
+MAX_PAIRS_TO_CONSIDER_PER_CYCLE = 1 # Это MAX_PAIRS_FOR_DETAILED_TEST из старой логики
 
 # "Умные" дефолты для параметров, не вынесенных в основные настройки пользователя
 DEFAULT_MIN_TURNOVER_USDT = Decimal("7500000") # Средний уровень ликвидности
