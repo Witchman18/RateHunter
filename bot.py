@@ -988,153 +988,94 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                     }
                     chat_config.setdefault('ongoing_trades', {})[s_sym] = trade_data # Добавляем сделку в активные для этого чата
                     
-                    # --- НАЧАЛО ТОРГОВОЙ ЛОГИКИ (вход, ожидание фандинга, выход, отчет) ---
-                    try: # try для всей торговой операции по этой паре в этом чате
-                        await app.bot.send_message(chat_id, f"🎯 Вхожу в сделку: *{s_sym}* ({'📈 LONG' if s_open_side == 'Buy' else '📉 SHORT'}), Ф: `{s_rate*100:.4f}%`, Осталось: `{actual_seconds_left:.0f}с`", parse_mode='Markdown')
+                                            # ... (предыдущий код, заканчивающийся на await app.bot.send_message с подтверждением открытия позиции) ...
                         
-                        try: session.set_leverage(category="linear", symbol=s_sym, buyLeverage=str(s_plecho), sellLeverage=str(s_plecho))
-                        except Exception as e_lev:
-                            if "110043" not in str(e_lev): raise ValueError(f"Не удалось уст. плечо {s_sym}: {e_lev}")
-                        
-                        op_qty, op_val, op_fee = Decimal("0"), Decimal("0"), Decimal("0")
-                        maker_entry_p = quantize_price(s_bid if s_open_side == "Buy" else s_ask, s_tick_size)
-                        
-                        limit_res = await place_limit_order_with_retry(session, app, chat_id, s_sym, s_open_side, s_target_q, maker_entry_p, max_wait_seconds=MAKER_ORDER_WAIT_SECONDS_ENTRY)
-                        if limit_res and limit_res['executed_qty'] > 0: 
-                            op_qty += limit_res['executed_qty']; op_val += limit_res['executed_qty'] * limit_res['avg_price']; op_fee += limit_res['fee']
-                        
-                        rem_q_open = quantize_qty(s_target_q - op_qty, s_q_step)
-                        if rem_q_open >= s_min_q_instr: 
-                            proceed_market = not (op_qty >= s_min_q_instr and (rem_q_open / s_target_q) < MIN_QTY_TO_MARKET_FILL_PCT_ENTRY)
-                            if proceed_market:
-                                await app.bot.send_message(chat_id, f"🛒 {s_sym}: Добиваю рынком: {rem_q_open}")
-                                market_res = await place_market_order_robust(session, app, chat_id, s_sym, s_open_side, rem_q_open)
-                                if market_res and market_res['executed_qty'] > 0: 
-                                    op_qty += market_res['executed_qty']; op_val += market_res['executed_qty'] * market_res['avg_price']; op_fee += market_res['fee']
-                            else: await app.bot.send_message(chat_id, f"ℹ️ {s_sym}: Maker исполнил {op_qty}. Остаток {rem_q_open} мал, не добиваю.")
-                        
-                        await asyncio.sleep(0.5) 
-                        actual_pos = await get_current_position_info(session, s_sym)
-                        final_op_q, final_avg_op_p = Decimal("0"), Decimal("0")
-
-                        if actual_pos and actual_pos['side'] == s_open_side:
-                            final_op_q, final_avg_op_p = actual_pos['size'], actual_pos['avg_price']
-                            if abs(final_op_q - op_qty) > s_q_step / 2: await app.bot.send_message(chat_id, f"ℹ️ {s_sym}: Синхр. объема. Бот: {op_qty}, Биржа: {final_op_q}.")
-                            if op_fee == Decimal("0") and final_op_q > 0: op_fee = Decimal("-1") 
-                        elif op_qty > 0 and not actual_pos: 
-                            await app.bot.send_message(chat_id, f"⚠️ {s_sym}: Бот думал открыл {op_qty}, на бирже позиция не найдена! Считаем 0."); final_op_q = Decimal("0")
-                        elif actual_pos and actual_pos['side'] != s_open_side and actual_pos['size'] > 0: 
-                            raise ValueError(f"КРИТ! {s_sym}: На бирже ПРОТИВОПОЛОЖНАЯ позиция {actual_pos['side']} {actual_pos['size']}. Ручное вмешательство!")
-                        else: final_op_q = op_qty 
-
-                        trade_data["opened_qty"] = final_op_q
-                        trade_data["total_open_value"] = final_op_q * final_avg_op_p if final_avg_op_p > 0 else op_val
-                        trade_data["total_open_fee"] = op_fee
-
-                        if final_op_q < s_min_q_instr: 
-                            msg_err_qty = f"❌ {s_sym}: Финал. откр. объем ({final_op_q}) < мин. ({s_min_q_instr}). Отмена."
-                            if final_op_q > Decimal("0"): msg_err_qty += " Пытаюсь закрыть остаток..." 
-                            raise ValueError(msg_err_qty)
-                        
-                        avg_op_p_disp = final_avg_op_p if final_avg_op_p > 0 else ((op_val / op_qty) if op_qty > 0 else Decimal("0"))
-                        num_decimals_price = trade_data['price_decimals']
-                        await app.bot.send_message(chat_id, f"✅ Позиция *{s_sym}* ({'LONG' if s_open_side == 'Buy' else 'SHORT'}) откр./подтв.\nОбъем: `{final_op_q}`\nСр.цена входа: `{avg_op_p_disp:.{num_decimals_price}f}`\nКом. откр.: `{op_fee:.4f}` USDT", parse_mode='Markdown')
                         # --- НАЧАЛО БЛОКА УСТАНОВКИ TP/SL НА БИРЖЕ ---
                         if final_op_q > Decimal("0"): # Устанавливаем TP/SL только если позиция действительно открыта
-                        # Получаем сохраненные целевые PnL значения из trade_data
-                        tp_target_net_profit_usdt = trade_data.get('tp_target_net_profit_usdt', Decimal("0"))
-                        sl_max_net_loss_usdt = trade_data.get('sl_max_net_loss_usdt', Decimal("0"))
-                        expected_funding_usdt_on_trade_open = trade_data.get('expected_funding_usdt_on_trade_open', Decimal("0"))
+                            # ВЕСЬ КОД НИЖЕ ДОЛЖЕН ИМЕТЬ ОТСТУП ОТНОСИТЕЛЬНО ЭТОГО IF
+                            # Получаем сохраненные целевые PnL значения из trade_data
+                            tp_target_net_profit_usdt = trade_data.get('tp_target_net_profit_usdt', Decimal("0"))
+                            sl_max_net_loss_usdt = trade_data.get('sl_max_net_loss_usdt', Decimal("0"))
+                            expected_funding_usdt_on_trade_open = trade_data.get('expected_funding_usdt_on_trade_open', Decimal("0"))
 
-                        # Оценка общих комиссий (пессимистичный вариант: 2 Taker комиссии на ВЕСЬ объем позиции)
-                        # position_size_usdt_for_tpsl_calc был рассчитан ранее, это s_marja * s_plecho
-                        # Используем его, так как это первоначальный целевой размер позиции
-                        _position_size_usdt = trade_data.get('marja', Decimal("0")) * trade_data.get('plecho', Decimal("0"))
-                        expected_total_fees_usdt = _position_size_usdt * (TAKER_FEE_RATE + TAKER_FEE_RATE) 
+                            # Оценка общих комиссий (пессимистичный вариант: 2 Taker комиссии на ВЕСЬ объем позиции)
+                            _position_size_usdt = trade_data.get('marja', Decimal("0")) * trade_data.get('plecho', Decimal("0"))
+                            expected_total_fees_usdt = _position_size_usdt * (TAKER_FEE_RATE + TAKER_FEE_RATE) 
 
-                        # PnL от изменения цены, необходимый для достижения чистой прибыли TP
-                        # ЧистаяПрибыльTP = PnL_от_Цены_TP + ОжидаемыйФандинг - ОжидаемыеКомиссии
-                        # PnL_от_Цены_TP = ЧистаяПрибыльTP - ОжидаемыйФандинг + ОжидаемыеКомиссии
-                        price_pnl_needed_for_tp = tp_target_net_profit_usdt - expected_funding_usdt_on_trade_open + expected_total_fees_usdt
-                        
-                        # PnL от изменения цены, который вызовет срабатывание SL (достижение макс. чистого убытка)
-                        # МаксЧистыйУбытокSL = PnL_от_Цены_SL + ОжидаемыйФандинг - ОжидаемыеКомиссии (где МаксЧистыйУбытокSL - отрицательное или 0)
-                        # PnL_от_Цены_SL = -МаксЧистыйУбытокSL - ОжидаемыйФандинг - ОжидаемыеКомиссии
-                        price_pnl_triggering_sl = -sl_max_net_loss_usdt - expected_funding_usdt_on_trade_open - expected_total_fees_usdt
+                            price_pnl_needed_for_tp = tp_target_net_profit_usdt - expected_funding_usdt_on_trade_open + expected_total_fees_usdt
+                            price_pnl_triggering_sl = -sl_max_net_loss_usdt - expected_funding_usdt_on_trade_open - expected_total_fees_usdt
 
-                        price_change_for_tp_per_unit = price_pnl_needed_for_tp / final_op_q
-                        price_change_for_sl_per_unit = price_pnl_triggering_sl / final_op_q 
+                            # Деление на final_op_q здесь безопасно, так как мы уже проверили if final_op_q > Decimal("0")
+                            price_change_for_tp_per_unit = price_pnl_needed_for_tp / final_op_q
+                            price_change_for_sl_per_unit = price_pnl_triggering_sl / final_op_q 
 
-                        take_profit_price_raw = Decimal("0")
-                        stop_loss_price_raw = Decimal("0")
+                            take_profit_price_raw = Decimal("0")
+                            stop_loss_price_raw = Decimal("0")
 
-                        if s_open_side == "Buy": # Для LONG
-                            take_profit_price_raw = final_avg_op_p + price_change_for_tp_per_unit
-                            stop_loss_price_raw = final_avg_op_p + price_change_for_sl_per_unit 
-                        elif s_open_side == "Sell": # Для SHORT
-                            take_profit_price_raw = final_avg_op_p - price_change_for_tp_per_unit
-                            stop_loss_price_raw = final_avg_op_p - price_change_for_sl_per_unit
-                        
-                        s_tick_size = trade_data['tick_size_instr']
-                        take_profit_price = quantize_price(take_profit_price_raw, s_tick_size)
-                        stop_loss_price = quantize_price(stop_loss_price_raw, s_tick_size)
-
-                        print(f"[{s_sym}][{chat_id}] Calculated TP price: {take_profit_price}, SL price: {stop_loss_price}")
-                        await app.bot.send_message(chat_id, f"ℹ️ {s_sym}: Расчетные цены для биржи:\nTP: `{take_profit_price}`\nSL: `{stop_loss_price}`")
-
-                        # Проверка на разумность цен перед отправкой
-                        can_place_tp = False
-                        if s_open_side == "Buy" and take_profit_price > final_avg_op_p: can_place_tp = True
-                        elif s_open_side == "Sell" and take_profit_price < final_avg_op_p and take_profit_price > 0: can_place_tp = True
-                        
-                        can_place_sl = False
-                        if s_open_side == "Buy" and stop_loss_price < final_avg_op_p and stop_loss_price > 0: can_place_sl = True
-                        elif s_open_side == "Sell" and stop_loss_price > final_avg_op_p: can_place_sl = True
-
-                        # Проверка, не пересеклись ли TP и SL
-                        if can_place_tp and can_place_sl and \
-                           ((s_open_side == "Buy" and take_profit_price <= stop_loss_price) or \
-                            (s_open_side == "Sell" and take_profit_price >= stop_loss_price)):
-                            await app.bot.send_message(chat_id, f"⚠️ {s_sym}: Логическая ошибка TP/SL цен: TP {take_profit_price}, SL {stop_loss_price}. Установка отменена.")
-                            print(f"[{s_sym}][{chat_id}] Logical error in TP/SL prices. TP: {take_profit_price}, SL: {stop_loss_price}. Cancelling TP/SL setup.")
-                            can_place_tp = False
-                            can_place_sl = False
-                        
-                        if can_place_tp or can_place_sl:
-                            params_trading_stop = {
-                                "category": "linear", "symbol": s_sym, "tpslMode": "Full",
-                                "tpTriggerBy": "LastPrice", "slTriggerBy": "LastPrice", # Используем последнюю цену для триггера
-                                # "positionIdx" : 0 # Для One-Way mode
-                            }
-                            if can_place_tp:
-                                params_trading_stop["takeProfit"] = str(take_profit_price)
-                                # Для TP можно использовать Limit ордер для лучшего исполнения, но Market проще и надежнее
-                                params_trading_stop["tpOrderType"] = "Market" 
+                            if s_open_side == "Buy": # Для LONG
+                                take_profit_price_raw = final_avg_op_p + price_change_for_tp_per_unit
+                                stop_loss_price_raw = final_avg_op_p + price_change_for_sl_per_unit 
+                            elif s_open_side == "Sell": # Для SHORT
+                                take_profit_price_raw = final_avg_op_p - price_change_for_tp_per_unit
+                                stop_loss_price_raw = final_avg_op_p - price_change_for_sl_per_unit
                             
-                            if can_place_sl:
-                                params_trading_stop["stopLoss"] = str(stop_loss_price)
-                                params_trading_stop["slOrderType"] = "Market" # SL всегда Market для гарантированного выхода
+                            s_tick_size = trade_data['tick_size_instr']
+                            take_profit_price = quantize_price(take_profit_price_raw, s_tick_size)
+                            stop_loss_price = quantize_price(stop_loss_price_raw, s_tick_size)
 
-                            try:
-                                print(f"[{s_sym}][{chat_id}] Attempting to set trading stop: {params_trading_stop}")
-                                response_tpsl = session.set_trading_stop(**params_trading_stop)
-                                print(f"[{s_sym}][{chat_id}] Set_trading_stop response: {response_tpsl}")
-                                if response_tpsl and response_tpsl.get("retCode") == 0:
-                                    await app.bot.send_message(chat_id, f"✅ {s_sym}: TP/SL ордера успешно установлены/обновлены на бирже.")
-                                    if can_place_tp: trade_data['tp_order_price_set_on_exchange'] = take_profit_price
-                                    if can_place_sl: trade_data['sl_order_price_set_on_exchange'] = stop_loss_price
-                                else:
-                                    err_msg_tpsl = response_tpsl.get('retMsg', 'Unknown error') if response_tpsl else "No response"
-                                    await app.bot.send_message(chat_id, f"⚠️ {s_sym}: Не удалось установить TP/SL на бирже: {err_msg_tpsl}")
-                                    print(f"[{s_sym}][{chat_id}] Failed to set TP/SL on exchange: {err_msg_tpsl}")
-                            except Exception as e_tpsl:
-                                await app.bot.send_message(chat_id, f"❌ {s_sym}: Ошибка при установке TP/SL на бирже: {e_tpsl}")
-                                print(f"[{s_sym}][{chat_id}] Exception while setting TP/SL on exchange: {e_tpsl}")
-                        else:
-                            await app.bot.send_message(chat_id, f"ℹ️ {s_sym}: Не удалось рассчитать корректные или безопасные цены для установки TP/SL.")
-                    else:
-                        print(f"[{s_sym}][{chat_id}] Position quantity is zero (final_op_q = {final_op_q}). Skipping TP/SL setup.")
-                    # --- КОНЕЦ БЛОКА УСТАНОВКИ TP/SL НА БИРЖЕ ---
+                            print(f"[{s_sym}][{chat_id}] Calculated TP price: {take_profit_price}, SL price: {stop_loss_price}")
+                            await app.bot.send_message(chat_id, f"ℹ️ {s_sym}: Расчетные цены для биржи:\nTP: `{take_profit_price}`\nSL: `{stop_loss_price}`")
+
+                            can_place_tp = False
+                            if s_open_side == "Buy" and take_profit_price > final_avg_op_p: can_place_tp = True
+                            elif s_open_side == "Sell" and take_profit_price < final_avg_op_p and take_profit_price > 0: can_place_tp = True
+                            
+                            can_place_sl = False
+                            if s_open_side == "Buy" and stop_loss_price < final_avg_op_p and stop_loss_price > 0: can_place_sl = True
+                            elif s_open_side == "Sell" and stop_loss_price > final_avg_op_p: can_place_sl = True
+
+                            if can_place_tp and can_place_sl and \
+                               ((s_open_side == "Buy" and take_profit_price <= stop_loss_price) or \
+                                (s_open_side == "Sell" and take_profit_price >= stop_loss_price)):
+                                await app.bot.send_message(chat_id, f"⚠️ {s_sym}: Логическая ошибка TP/SL цен: TP {take_profit_price}, SL {stop_loss_price}. Установка отменена.")
+                                print(f"[{s_sym}][{chat_id}] Logical error in TP/SL prices. TP: {take_profit_price}, SL: {stop_loss_price}. Cancelling TP/SL setup.")
+                                can_place_tp = False
+                                can_place_sl = False
+                            
+                            if can_place_tp or can_place_sl:
+                                params_trading_stop = {
+                                    "category": "linear", "symbol": s_sym, "tpslMode": "Full",
+                                    "tpTriggerBy": "LastPrice", "slTriggerBy": "LastPrice",
+                                    "positionIdx" : 0 # Для One-Way mode (0), для Hedge Mode (1 для Buy, 2 для Sell)
+                                }
+                                if can_place_tp:
+                                    params_trading_stop["takeProfit"] = str(take_profit_price)
+                                    params_trading_stop["tpOrderType"] = "Market" 
+                                
+                                if can_place_sl:
+                                    params_trading_stop["stopLoss"] = str(stop_loss_price)
+                                    params_trading_stop["slOrderType"] = "Market"
+
+                                try:
+                                    print(f"[{s_sym}][{chat_id}] Attempting to set trading stop: {params_trading_stop}")
+                                    response_tpsl = session.set_trading_stop(**params_trading_stop)
+                                    print(f"[{s_sym}][{chat_id}] Set_trading_stop response: {response_tpsl}")
+                                    if response_tpsl and response_tpsl.get("retCode") == 0:
+                                        await app.bot.send_message(chat_id, f"✅ {s_sym}: TP/SL ордера успешно установлены/обновлены на бирже.")
+                                        if can_place_tp: trade_data['tp_order_price_set_on_exchange'] = take_profit_price
+                                        if can_place_sl: trade_data['sl_order_price_set_on_exchange'] = stop_loss_price
+                                    else:
+                                        err_msg_tpsl = response_tpsl.get('retMsg', 'Unknown error') if response_tpsl else "No response"
+                                        await app.bot.send_message(chat_id, f"⚠️ {s_sym}: Не удалось установить TP/SL на бирже: {err_msg_tpsl}")
+                                        print(f"[{s_sym}][{chat_id}] Failed to set TP/SL on exchange: {err_msg_tpsl}")
+                                except Exception as e_tpsl:
+                                    await app.bot.send_message(chat_id, f"❌ {s_sym}: Ошибка при установке TP/SL на бирже: {e_tpsl}")
+                                    print(f"[{s_sym}][{chat_id}] Exception while setting TP/SL on exchange: {e_tpsl}")
+                            else:
+                                await app.bot.send_message(chat_id, f"ℹ️ {s_sym}: Не удалось рассчитать корректные или безопасные цены для установки TP/SL.")
+                        else: # Этот else относится к if final_op_q > Decimal("0"):
+                            print(f"[{s_sym}][{chat_id}] Position quantity is zero (final_op_q = {final_op_q}). Skipping TP/SL setup.")
+                        # --- КОНЕЦ БЛОКА УСТАНОВКИ TP/SL НА БИРЖЕ ---
                 
                         current_wait_time = time.time()
                         wait_dur = max(0, s_ts - current_wait_time) + POST_FUNDING_WAIT_SECONDS 
