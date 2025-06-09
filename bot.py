@@ -826,6 +826,18 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                     ensure_chat_settings(chat_id) # Убеждаемся, что настройки чата существуют
                     if not chat_config.get('active'): continue # Если снайпер в этом чате не активен, пропускаем
                     # Если уже есть максимальное количество одновременных сделок для этого чата, пропускаем
+                        # ... (другие проверки чата: active, ongoing_trades, etc.) ...
+    
+    # --- НОВАЯ ПРОВЕРКА: Фильтр по минимальной ставке фандинга для ДАННОГО ЧАТА ---
+                    current_chat_min_fr_threshold = chat_config.get('min_funding_rate_threshold', MIN_FUNDING_RATE_ABS_FILTER) # MIN_FUNDING_RATE_ABS_FILTER - глобальный дефолт, если в чате нет
+                    if abs(s_rate) < current_chat_min_fr_threshold:
+        # print(f"[{s_sym}][{chat_id}] Skipped. Pair funding rate {abs(s_rate)*100:.4f}% < chat threshold {current_chat_min_fr_threshold*100:.1f}%.")
+                    continue # Пропускаем эту пару ДЛЯ ЭТОГО ЧАТА
+                        # --- КОНЕЦ НОВОЙ ПРОВЕРКИ ---
+
+    # Получаем настройки маржи и плеча для этого чата (этот код у вас уже есть)
+    s_marja = chat_config.get('real_marja')
+    # ... и так далее ...
                     if len(chat_config.get('ongoing_trades', {})) >= chat_config.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES):
                         # print(f"[SniperLoop][{s_sym}][{chat_id}] Skipped. Max concurrent trades reached for this chat.")
                         continue
@@ -937,7 +949,50 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                     )
                     
                     print(f"\n>>> Processing {s_sym} for chat {chat_id} (Rate: {s_rate*100:.4f}%, Actual Left: {actual_seconds_left:.0f}s) <<<")
-                    
+                    # ... (код выше, после всех фильтров и успешной предварительной оценки PnL) ...
+# ... строка с print(f"\n>>> Processing {s_sym} ... <<<")
+
+# --- НОВЫЙ БЛОК: Расчет целевых TP/SL в USDT на основе настроек чата ---
+# s_marja, s_plecho, s_rate уже должны быть определены для этого чата и пары
+position_size_usdt_for_tpsl_calc = s_marja * s_plecho 
+expected_funding_usdt = position_size_usdt_for_tpsl_calc * abs(s_rate) # s_rate уже десятичное
+
+tp_ratio = chat_config.get('tp_target_profit_ratio_of_funding', Decimal('0.75'))
+tp_target_net_profit_usdt = expected_funding_usdt * tp_ratio
+
+sl_ratio_of_tp = chat_config.get('sl_max_loss_ratio_to_tp_target', Decimal('0.6'))
+sl_max_net_loss_usdt = tp_target_net_profit_usdt * sl_ratio_of_tp
+
+# Коррекция SL, чтобы он не был больше ~95% от ожидаемого фандинга
+# Это гарантирует, что мы не рискуем чистым убытком больше, чем почти весь ожидаемый фандинг
+if sl_max_net_loss_usdt > expected_funding_usdt * Decimal('0.95'):
+    sl_max_net_loss_usdt = expected_funding_usdt * Decimal('0.95')
+    print(f"[{s_sym}][{chat_id}] SL_max_net_loss_usdt corrected to 95% of expected funding: {sl_max_net_loss_usdt:.4f} USDT")
+
+print(f"[{s_sym}][{chat_id}] Calculated for TP/SL: ExpectedFunding={expected_funding_usdt:.4f}, TP_TargetNetProfit={tp_target_net_profit_usdt:.4f}, SL_MaxNetLoss={sl_max_net_loss_usdt:.4f}")
+# --- КОНЕЦ НОВОГО БЛОКА ---
+
+# Готовим данные для отслеживания сделки
+                    # Готовим данные для отслеживания сделки
+trade_data = {
+                        "symbol": s_sym, "open_side": s_open_side, "marja": s_marja, "plecho": s_plecho,
+                        "funding_rate": s_rate, "next_funding_ts": s_ts,
+                        "opened_qty": Decimal("0"), "closed_qty": Decimal("0"),
+                        "total_open_value": Decimal("0"), "total_close_value": Decimal("0"),
+                        "total_open_fee": Decimal("0"), "total_close_fee": Decimal("0"),
+                        "actual_funding_fee": Decimal("0"), "target_qty": s_target_q,
+                        "min_qty_instr": s_min_q_instr, "qty_step_instr": s_q_step, "tick_size_instr": s_tick_size,
+                        "best_bid_at_entry": s_bid, "best_ask_at_entry": s_ask,
+                        "price_decimals": len(price_f.get('tickSize', '0.1').split('.')[1]) if '.' in price_f.get('tickSize', '0.1') else 0,
+                        # --- НОВЫЕ ПОЛЯ В trade_data ---
+                        'tp_target_net_profit_usdt': tp_target_net_profit_usdt,
+                        'sl_max_net_loss_usdt': sl_max_net_loss_usdt,
+                        'expected_funding_usdt_on_trade_open': expected_funding_usdt 
+}
+chat_config.setdefault('ongoing_trades', {})[s_sym] = trade_data 
+
+# --- НАЧАЛО ТОРГОВОЙ ЛОГИКИ (вход, ожидание фандинга, выход, отчет) ---
+try: # try для всей торговой операции
                     # Готовим данные для отслеживания сделки
                     trade_data = {
                         "symbol": s_sym, "open_side": s_open_side, "marja": s_marja, "plecho": s_plecho,
