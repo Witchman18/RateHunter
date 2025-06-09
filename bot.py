@@ -278,7 +278,7 @@ buttons.append(sl_buttons_row)
 buttons.append([InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")])
 reply_markup = InlineKeyboardMarkup(buttons)
 
-    try:
+try:
         if message_to_edit and message_to_edit.callback_query and message_to_edit.callback_query.message:
             await message_to_edit.callback_query.edit_message_text(text=summary_text, reply_markup=reply_markup, parse_mode='Markdown')
         else:
