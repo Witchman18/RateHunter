@@ -1074,7 +1074,7 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                             else: # Этот else относится к if can_place_tp or can_place_sl
                                 await app.bot.send_message(chat_id, f"ℹ️ {s_sym}: Не удалось рассчитать корректные или безопасные цены для установки TP/SL.")
                         # Конец блока if final_op_q > Decimal("0")
-                        else: # Этот else относится к if final_op_q > Decimal("0"): и должен быть на том же уровне отступа
+                            else: # Этот else относится к if final_op_q > Decimal("0"): и должен быть на том же уровне отступа
                             print(f"[{s_sym}][{chat_id}] Position quantity is zero (final_op_q = {final_op_q}). Skipping TP/SL setup.")
                         # --- КОНЕЦ БЛОКА УСТАНОВКИ TP/SL НА БИРЖЕ ---
                 
