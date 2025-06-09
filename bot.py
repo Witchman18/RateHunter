@@ -891,7 +891,7 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                         continue
                     
                     # Получаем информацию об инструменте (шаг лота, тика и т.д.)
-try: 
+                    try: 
                         instr_info_resp = session.get_instruments_info(category="linear", symbol=s_sym)
                         instr_info = instr_info_resp["result"]["list"][0]
                     except Exception as e_instr: 
