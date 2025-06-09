@@ -1073,7 +1073,7 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                                     print(f"[{s_sym}][{chat_id}] Exception while setting TP/SL on exchange: {e_tpsl}")
                             else:
                                 await app.bot.send_message(chat_id, f"ℹ️ {s_sym}: Не удалось рассчитать корректные или безопасные цены для установки TP/SL.")
-                        else: # Этот else относится к if final_op_q > Decimal("0"):
+                            else: # Этот else относится к if final_op_q > Decimal("0"):
                             print(f"[{s_sym}][{chat_id}] Position quantity is zero (final_op_q = {final_op_q}). Skipping TP/SL setup.")
                         # --- КОНЕЦ БЛОКА УСТАНОВКИ TP/SL НА БИРЖЕ ---
                 
