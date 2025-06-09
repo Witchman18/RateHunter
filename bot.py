@@ -334,77 +334,104 @@ async def sniper_control_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_final_config_message(chat_id, context, message_to_edit=update if update.callback_query else None)
 async def sniper_control_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() 
+    await query.answer() # Отвечаем на callback сразу, чтобы кнопка не "висела"
     chat_id = query.message.chat_id
     data = query.data
     ensure_chat_settings(chat_id)
     chat_settings = sniper_active[chat_id]
 
-    action_taken = False 
+    action_taken = False # Флаг, что какое-то действие было выполнено и меню нужно обновить
 
     if data == "toggle_sniper":
-        # ... (код для toggle_sniper) ...
-        action_taken = True
+        if chat_settings.get('real_marja') is None or chat_settings.get('real_plecho') is None:
+            # Отправляем всплывающее уведомление вместо сообщения в чат, чтобы не замусоривать
+            await context.bot.answer_callback_query(query.id, text="‼️ Не установлены маржа и/или плечо!", show_alert=True)
+        else:
+            new_status = not chat_settings.get('active', False)
+            chat_settings['active'] = new_status
+            # Сообщение о запуске/остановке лучше отправить отдельно, а меню обновить.
+            # Для answer_callback_query текст короткий, основное изменение будет в меню.
+            await context.bot.answer_callback_query(query.id, text="🚀 Снайпер запущен!" if new_status else "🛑 Снайпер остановлен.")
+            action_taken = True # Статус всегда меняется, так что меню нужно обновить
+    
     elif data.startswith("set_max_trades_"):
-        # ... (код для set_max_trades) ...
-        # action_taken = True (если значение изменилось)
-        pass # Заглушка, чтобы показать структуру
+        try:
+            new_max_trades = int(data.split("_")[-1])
+            current_max_trades = chat_settings.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
+            if 1 <= new_max_trades <= 5:
+                if current_max_trades != new_max_trades:
+                    chat_settings['max_concurrent_trades'] = new_max_trades
+                    action_taken = True
+                    await context.bot.answer_callback_query(query.id, text=f"Лимит сделок: {new_max_trades}")
+                else:
+                    # Значение не изменилось, просто отвечаем на callback
+                    await context.bot.answer_callback_query(query.id, text="Лимит сделок не изменен.")
+            else: 
+                 # Это условие не должно срабатывать, если кнопки генерируются правильно
+                 await context.bot.answer_callback_query(query.id, text="⚠️ Ошибка: Неверное значение лимита.", show_alert=True)
+        except (ValueError, IndexError): 
+             await context.bot.answer_callback_query(query.id, text="⚠️ Ошибка обработки лимита.", show_alert=True)
 
-    # --- НАЧАЛО НОВЫХ БЛОКОВ ELIF ---
-    # Убедитесь, что этот ELIF на том же уровне отступа, что и предыдущий ELIF или IF
     elif data.startswith("set_min_fr_"): 
-        try: # Этот try сдвинут вправо относительно elif
+        try:
             rate_val_str = data.split("_")[-1] 
             new_val = Decimal(rate_val_str)
-            if chat_settings.get('min_funding_rate_threshold', Decimal("0.001")) != new_val:
+            current_val = chat_settings.get('min_funding_rate_threshold', Decimal("0.001"))
+            if current_val != new_val:
                 chat_settings['min_funding_rate_threshold'] = new_val
                 action_taken = True
                 await context.bot.answer_callback_query(query.id, text=f"Мин. ставка фандинга: {new_val*100:.1f}%")
             else:
                 await context.bot.answer_callback_query(query.id, text="Значение не изменилось")
-        except Exception as e: # Этот except на том же уровне, что и try
+        except Exception as e:
             print(f"Error setting min_funding_rate_threshold: {e}")
-            await context.bot.answer_callback_query(query.id, text="Ошибка установки значения")
+            await context.bot.answer_callback_query(query.id, text="Ошибка установки значения", show_alert=True)
 
-    # Этот ELIF на том же уровне отступа, что и предыдущий ELIF
     elif data.startswith("set_tp_rf_"): 
-        try: # Этот try сдвинут вправо
+        try:
             val_str = data.split("_")[-1] 
             new_val = Decimal(val_str)
-            if chat_settings.get('tp_target_profit_ratio_of_funding', Decimal("0.75")) != new_val:
+            current_val = chat_settings.get('tp_target_profit_ratio_of_funding', Decimal("0.75"))
+            if current_val != new_val:
                 chat_settings['tp_target_profit_ratio_of_funding'] = new_val
                 action_taken = True
                 await context.bot.answer_callback_query(query.id, text=f"TP (доля от фандинга): {new_val*100:.0f}%")
             else:
                 await context.bot.answer_callback_query(query.id, text="Значение не изменилось")
-        except Exception as e: # Этот except на том же уровне, что и try
+        except Exception as e:
             print(f"Error setting tp_target_profit_ratio_of_funding: {e}")
-            await context.bot.answer_callback_query(query.id, text="Ошибка установки значения")
+            await context.bot.answer_callback_query(query.id, text="Ошибка установки значения", show_alert=True)
 
-    # Этот ELIF на том же уровне отступа, что и предыдущий ELIF
     elif data.startswith("set_sl_rtp_"): 
-        try: # Этот try сдвинут вправо
+        try:
             val_str = data.split("_")[-1]
             new_val = Decimal(val_str)
-            if chat_settings.get('sl_max_loss_ratio_to_tp_target', Decimal("0.6")) != new_val:
+            current_val = chat_settings.get('sl_max_loss_ratio_to_tp_target', Decimal("0.6"))
+            if current_val != new_val:
                 chat_settings['sl_max_loss_ratio_to_tp_target'] = new_val
                 action_taken = True
                 await context.bot.answer_callback_query(query.id, text=f"SL (доля от TP): {new_val*100:.0f}%")
             else:
                 await context.bot.answer_callback_query(query.id, text="Значение не изменилось")
-        except Exception as e: # Этот except на том же уровне, что и try
+        except Exception as e:
             print(f"Error setting sl_max_loss_ratio_to_tp_target: {e}")
-            await context.bot.answer_callback_query(query.id, text="Ошибка установки значения")
-    # --- КОНЕЦ НОВЫХ БЛОКОВ ELIF ---
+            await context.bot.answer_callback_query(query.id, text="Ошибка установки значения", show_alert=True)
             
     elif data == "show_top_pairs_inline":
+        # Эта функция сама управляет сообщением (редактирует или отправляет новое)
         await show_top_funding(update, context) 
-        return 
-    elif data == "noop":
-        return 
+        # После показа топа, мы НЕ хотим перерисовывать меню настроек поверх него.
+        return # Важно! Выходим, чтобы не вызывать send_final_config_message ниже
     
+    elif data == "noop":
+        # Ничего не делаем, на callback уже ответили в начале функции
+        return # Важно! Выходим, чтобы не вызывать send_final_config_message
+    
+    # Только если action_taken is True, обновляем сообщение с конфигурацией
     if action_taken:
         await send_final_config_message(chat_id, context, message_to_edit=update)
+    # Если action_taken is False (например, нажали на уже активную кнопку или noop),
+    # то меню не перерисовываем, чтобы избежать ошибки "Message is not modified".
 
 # --- Настройка Мин. Оборота ---
 async def ask_min_turnover(update: Update, context: ContextTypes.DEFAULT_TYPE):
