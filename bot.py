@@ -991,7 +991,7 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                                             # ... (предыдущий код, заканчивающийся на await app.bot.send_message с подтверждением открытия позиции) ...
                         
                         # --- НАЧАЛО БЛОКА УСТАНОВКИ TP/SL НА БИРЖЕ ---
-                        if final_op_q > Decimal("0"): # Устанавливаем TP/SL только если позиция действительно открыта
+                    if final_op_q > Decimal("0"): # Устанавливаем TP/SL только если позиция действительно открыта
                             # ВЕСЬ КОД НИЖЕ ДОЛЖЕН ИМЕТЬ ОТСТУП ОТНОСИТЕЛЬНО ЭТОГО IF
                             # Получаем сохраненные целевые PnL значения из trade_data
                             tp_target_net_profit_usdt = trade_data.get('tp_target_net_profit_usdt', Decimal("0"))
