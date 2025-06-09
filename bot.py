@@ -1056,7 +1056,7 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                                     params_trading_stop["stopLoss"] = str(stop_loss_price)
                                     params_trading_stop["slOrderType"] = "Market"
 
-                                try:
+                                try: # Этот try находится внутри if can_place_tp or can_place_sl
                                     print(f"[{s_sym}][{chat_id}] Attempting to set trading stop: {params_trading_stop}")
                                     response_tpsl = session.set_trading_stop(**params_trading_stop)
                                     print(f"[{s_sym}][{chat_id}] Set_trading_stop response: {response_tpsl}")
@@ -1064,16 +1064,17 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                                         await app.bot.send_message(chat_id, f"✅ {s_sym}: TP/SL ордера успешно установлены/обновлены на бирже.")
                                         if can_place_tp: trade_data['tp_order_price_set_on_exchange'] = take_profit_price
                                         if can_place_sl: trade_data['sl_order_price_set_on_exchange'] = stop_loss_price
-                                    else:
+                                    else: # Этот else относится к if response_tpsl and ...
                                         err_msg_tpsl = response_tpsl.get('retMsg', 'Unknown error') if response_tpsl else "No response"
                                         await app.bot.send_message(chat_id, f"⚠️ {s_sym}: Не удалось установить TP/SL на бирже: {err_msg_tpsl}")
                                         print(f"[{s_sym}][{chat_id}] Failed to set TP/SL on exchange: {err_msg_tpsl}")
-                                except Exception as e_tpsl:
+                                except Exception as e_tpsl: # Этот except относится к try для set_trading_stop
                                     await app.bot.send_message(chat_id, f"❌ {s_sym}: Ошибка при установке TP/SL на бирже: {e_tpsl}")
                                     print(f"[{s_sym}][{chat_id}] Exception while setting TP/SL on exchange: {e_tpsl}")
-                            else:
+                            else: # Этот else относится к if can_place_tp or can_place_sl
                                 await app.bot.send_message(chat_id, f"ℹ️ {s_sym}: Не удалось рассчитать корректные или безопасные цены для установки TP/SL.")
-                            else: # Этот else относится к if final_op_q > Decimal("0"):
+                        # Конец блока if final_op_q > Decimal("0")
+                        else: # Этот else относится к if final_op_q > Decimal("0"): и должен быть на том же уровне отступа
                             print(f"[{s_sym}][{chat_id}] Position quantity is zero (final_op_q = {final_op_q}). Skipping TP/SL setup.")
                         # --- КОНЕЦ БЛОКА УСТАНОВКИ TP/SL НА БИРЖЕ ---
                 
