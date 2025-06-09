@@ -831,12 +831,12 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
     # --- НОВАЯ ПРОВЕРКА: Фильтр по минимальной ставке фандинга для ДАННОГО ЧАТА ---
                     current_chat_min_fr_threshold = chat_config.get('min_funding_rate_threshold', MIN_FUNDING_RATE_ABS_FILTER) # MIN_FUNDING_RATE_ABS_FILTER - глобальный дефолт, если в чате нет
                     if abs(s_rate) < current_chat_min_fr_threshold:
-        # print(f"[{s_sym}][{chat_id}] Skipped. Pair funding rate {abs(s_rate)*100:.4f}% < chat threshold {current_chat_min_fr_threshold*100:.1f}%.")
-                    continue # Пропускаем эту пару ДЛЯ ЭТОГО ЧАТА
+                        # print(f"[{s_sym}][{chat_id}] Skipped. Pair funding rate {abs(s_rate)*100:.4f}% < chat threshold {current_chat_min_fr_threshold*100:.1f}%.")
+                      continue # Пропускаем эту пару ДЛЯ ЭТОГО ЧАТА
                         # --- КОНЕЦ НОВОЙ ПРОВЕРКИ ---
 
     # Получаем настройки маржи и плеча для этого чата (этот код у вас уже есть)
-    s_marja = chat_config.get('real_marja')
+                    s_marja = chat_config.get('real_marja')
     # ... и так далее ...
                     if len(chat_config.get('ongoing_trades', {})) >= chat_config.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES):
                         # print(f"[SniperLoop][{s_sym}][{chat_id}] Skipped. Max concurrent trades reached for this chat.")
