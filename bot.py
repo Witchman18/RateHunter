@@ -275,7 +275,7 @@ for text, val_str in sl_options.items():
     button_text = f"[{text}%]" if sl_ratio_tp == val_decimal else f"{text}%"
     sl_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_sl_rtp_{val_str}"))
 buttons.append(sl_buttons_row)
-    buttons.append([InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")])
+buttons.append([InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")])
     reply_markup = InlineKeyboardMarkup(buttons)
 
     try:
