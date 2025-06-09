@@ -283,7 +283,7 @@ try:
             await message_to_edit.callback_query.edit_message_text(text=summary_text, reply_markup=reply_markup, parse_mode='Markdown')
         else:
             await context.bot.send_message(chat_id=chat_id, text=summary_text, reply_markup=reply_markup, parse_mode='Markdown')
-    except Exception as e:
+except Exception as e:
         print(f"Error sending/editing final config message to {chat_id}: {e}")
         if message_to_edit: # Если редактирование не удалось, пробуем отправить новое
              await context.bot.send_message(chat_id=chat_id, text=summary_text + "\n(Не удалось обновить предыдущее меню)", reply_markup=reply_markup, parse_mode='Markdown')
