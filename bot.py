@@ -972,25 +972,8 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                     print(f"[{s_sym}][{chat_id}] Calculated for TP/SL: ExpectedFunding={expected_funding_usdt:.4f}, TP_TargetNetProfit={tp_target_net_profit_usdt:.4f}, SL_MaxNetLoss={sl_max_net_loss_usdt:.4f}")
                     # --- КОНЕЦ НОВОГО БЛОКА ---
                     # Готовим данные для отслеживания сделки
-trade_data = {
-                        "symbol": s_sym, "open_side": s_open_side, "marja": s_marja, "plecho": s_plecho,
-                        "funding_rate": s_rate, "next_funding_ts": s_ts,
-                        "opened_qty": Decimal("0"), "closed_qty": Decimal("0"),
-                        "total_open_value": Decimal("0"), "total_close_value": Decimal("0"),
-                        "total_open_fee": Decimal("0"), "total_close_fee": Decimal("0"),
-                        "actual_funding_fee": Decimal("0"), "target_qty": s_target_q,
-                        "min_qty_instr": s_min_q_instr, "qty_step_instr": s_q_step, "tick_size_instr": s_tick_size,
-                        "best_bid_at_entry": s_bid, "best_ask_at_entry": s_ask,
-                        "price_decimals": len(price_f.get('tickSize', '0.1').split('.')[1]) if '.' in price_f.get('tickSize', '0.1') else 0,
-                        # --- НОВЫЕ ПОЛЯ В trade_data ---
-                        'tp_target_net_profit_usdt': tp_target_net_profit_usdt,
-                        'sl_max_net_loss_usdt': sl_max_net_loss_usdt,
-                        'expected_funding_usdt_on_trade_open': expected_funding_usdt 
-}
-chat_config.setdefault('ongoing_trades', {})[s_sym] = trade_data 
 
 # --- НАЧАЛО ТОРГОВОЙ ЛОГИКИ (вход, ожидание фандинга, выход, отчет) ---
-try: # try для всей торговой операции
                     # Готовим данные для отслеживания сделки
                     trade_data = {
                         "symbol": s_sym, "open_side": s_open_side, "marja": s_marja, "plecho": s_plecho,
