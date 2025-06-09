@@ -899,12 +899,14 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                         print(f"[{s_sym}][{chat_id}] Error getting instrument info: {e_instr}. Skipping.")
                         continue
                         
+                                            # ... (код try...except для get_instruments_info успешно завершен, или был continue)
+                        
                     lot_f, price_f = instr_info["lotSizeFilter"], instr_info["priceFilter"]
                     s_min_q_instr, s_q_step, s_tick_size = Decimal(lot_f["minOrderQty"]), Decimal(lot_f["qtyStep"]), Decimal(price_f["tickSize"])
                     
                     # Рассчитываем размер позиции и целевое количество
-                    s_pos_size_usdt = s_marja * s_plecho
-                    if s_mid <= 0: # s_mid из orderbook_data
+                    s_pos_size_usdt = s_marja * s_plecho # s_marja и s_plecho берутся из chat_config
+                    if s_mid <= 0: # s_mid из orderbook_data, полученного ранее
                         await app.bot.send_message(chat_id, f"⚠️ {s_sym}: Неверная mid_price ({s_mid}). Пропуск.")
                         print(f"[{s_sym}][{chat_id}] Invalid mid_price ({s_mid}). Skipping.")
                         continue
@@ -919,17 +921,18 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                     print(f"[{s_sym}][{chat_id}] Pre-PNL Calc: Rate={s_rate*100:.4f}%, PosSize={s_pos_size_usdt}, TargetQty={s_target_q}, Bid={s_bid}, Ask={s_ask}, Side={s_open_side}, ActualTimeLeft={actual_seconds_left:.0f}s")
                     est_pnl, pnl_calc_details_msg = await calculate_pre_trade_pnl_estimate(
                         s_sym, s_rate, s_pos_size_usdt, s_target_q, 
-                        s_bid, s_ask, s_open_side
+                        s_bid, s_ask, s_open_side # s_bid и s_ask из orderbook_data
                     )
                     print(f"[{s_sym}][{chat_id}] Post-PNL Calc: EstPNL={est_pnl}, Details='{pnl_calc_details_msg if est_pnl is not None else 'Error in PNL calc'}'")
 
-                    if est_pnl is None: # Если PnL не удалось рассчитать
+                    if est_pnl is None: 
                         error_msg_pnl = pnl_calc_details_msg if pnl_calc_details_msg else "Неизвестная ошибка при расчете PnL."
                         await app.bot.send_message(chat_id, f"{log_prefix_tg} Ошибка оценки PnL: {error_msg_pnl}. Пропуск.")
                         print(f"[{s_sym}][{chat_id}] Skipped due to PnL calculation error: {error_msg_pnl}")
                         continue
 
                     # Проверяем, соответствует ли ожидаемый PnL минимальному порогу пользователя
+                    # chat_min_pnl_user должен быть уже определен из chat_config
                     if est_pnl < chat_min_pnl_user: 
                         await app.bot.send_message(
                             chat_id, 
@@ -949,30 +952,25 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                     )
                     
                     print(f"\n>>> Processing {s_sym} for chat {chat_id} (Rate: {s_rate*100:.4f}%, Actual Left: {actual_seconds_left:.0f}s) <<<")
-                    # ... (код выше, после всех фильтров и успешной предварительной оценки PnL) ...
-# ... строка с print(f"\n>>> Processing {s_sym} ... <<<")
+                    
+                    # --- НОВЫЙ БЛОК: Расчет целевых TP/SL в USDT на основе настроек чата ---
+                    # s_marja, s_plecho, s_rate уже должны быть определены для этого чата и пары
+                    position_size_usdt_for_tpsl_calc = s_marja * s_plecho 
+                    expected_funding_usdt = position_size_usdt_for_tpsl_calc * abs(s_rate) # s_rate уже десятичное
 
-# --- НОВЫЙ БЛОК: Расчет целевых TP/SL в USDT на основе настроек чата ---
-# s_marja, s_plecho, s_rate уже должны быть определены для этого чата и пары
-position_size_usdt_for_tpsl_calc = s_marja * s_plecho 
-expected_funding_usdt = position_size_usdt_for_tpsl_calc * abs(s_rate) # s_rate уже десятичное
+                    tp_ratio = chat_config.get('tp_target_profit_ratio_of_funding', Decimal('0.75'))
+                    tp_target_net_profit_usdt = expected_funding_usdt * tp_ratio
 
-tp_ratio = chat_config.get('tp_target_profit_ratio_of_funding', Decimal('0.75'))
-tp_target_net_profit_usdt = expected_funding_usdt * tp_ratio
+                    sl_ratio_of_tp = chat_config.get('sl_max_loss_ratio_to_tp_target', Decimal('0.6'))
+                    sl_max_net_loss_usdt = tp_target_net_profit_usdt * sl_ratio_of_tp
 
-sl_ratio_of_tp = chat_config.get('sl_max_loss_ratio_to_tp_target', Decimal('0.6'))
-sl_max_net_loss_usdt = tp_target_net_profit_usdt * sl_ratio_of_tp
+                    # Коррекция SL, чтобы он не был больше ~95% от ожидаемого фандинга
+                    if sl_max_net_loss_usdt > expected_funding_usdt * Decimal('0.95'):
+                        sl_max_net_loss_usdt = expected_funding_usdt * Decimal('0.95')
+                        print(f"[{s_sym}][{chat_id}] SL_max_net_loss_usdt corrected to 95% of expected funding: {sl_max_net_loss_usdt:.4f} USDT")
 
-# Коррекция SL, чтобы он не был больше ~95% от ожидаемого фандинга
-# Это гарантирует, что мы не рискуем чистым убытком больше, чем почти весь ожидаемый фандинг
-if sl_max_net_loss_usdt > expected_funding_usdt * Decimal('0.95'):
-    sl_max_net_loss_usdt = expected_funding_usdt * Decimal('0.95')
-    print(f"[{s_sym}][{chat_id}] SL_max_net_loss_usdt corrected to 95% of expected funding: {sl_max_net_loss_usdt:.4f} USDT")
-
-print(f"[{s_sym}][{chat_id}] Calculated for TP/SL: ExpectedFunding={expected_funding_usdt:.4f}, TP_TargetNetProfit={tp_target_net_profit_usdt:.4f}, SL_MaxNetLoss={sl_max_net_loss_usdt:.4f}")
-# --- КОНЕЦ НОВОГО БЛОКА ---
-
-# Готовим данные для отслеживания сделки
+                    print(f"[{s_sym}][{chat_id}] Calculated for TP/SL: ExpectedFunding={expected_funding_usdt:.4f}, TP_TargetNetProfit={tp_target_net_profit_usdt:.4f}, SL_MaxNetLoss={sl_max_net_loss_usdt:.4f}")
+                    # --- КОНЕЦ НОВОГО БЛОКА ---
                     # Готовим данные для отслеживания сделки
 trade_data = {
                         "symbol": s_sym, "open_side": s_open_side, "marja": s_marja, "plecho": s_plecho,
