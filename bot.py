@@ -211,6 +211,7 @@ async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_
     status_text = "🟢 Активен" if is_active else "🔴 Остановлен"
     min_turnover = settings.get('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
     min_pnl = settings.get('min_expected_pnl_usdt', DEFAULT_MIN_EXPECTED_PNL_USDT)
+    # Получаем новые настройки с дефолтами
     min_fr_thresh = settings.get('min_funding_rate_threshold', Decimal("0.001"))
     tp_ratio_funding = settings.get('tp_target_profit_ratio_of_funding', Decimal("0.75"))
     sl_ratio_tp = settings.get('sl_max_loss_ratio_to_tp_target', Decimal("0.6"))
@@ -224,18 +225,18 @@ async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_
         f"⚖️ Плечо: `{plecho_display}`x",
         f"🔢 Макс. сделок: `{max_trades}`",
         f"💧 Мин. оборот: `{min_turnover:,.0f}` USDT",
-        f"🎯 Мин. профит: `{min_pnl}` USDT",
-        f" минимальной абсолютной ставки фандинга.",
         f"📊 Мин. ставка фандинга: `{min_fr_thresh*100:.1f}%`",
-        f"📈 TP (доля от фандинга): `{tp_ratio_funding*100:.0f}%`",
-        f"📉 SL (доля от TP): `{sl_ratio_tp*100:.0f}%`",
+        f"🎯 Мин. профит (предв. оценка): `{min_pnl}` USDT",
+        f"📈 TP (цель от фандинга): `{tp_ratio_funding*100:.0f}%`",
+        f"📉 SL (риск от TP): `{sl_ratio_tp*100:.0f}%`",
         f"🚦 Статус снайпера: *{status_text}*"
     ]
     
     if marja is None or plecho is None:
-          summary_parts.append("\n‼️ *Для запуска снайпера установите маржу и плечо!*")
+        summary_parts.append("\n‼️ *Для запуска снайпера установите маржу и плечо!*")
     
-      summary_text = "\n\n".join(summary_parts) # <--- ПРАВИЛЬНЫЙ ОТСТУП
+    summary_text = "\n\n".join(summary_parts) # ИСПРАВЛЕН ОТСТУП
+
     buttons = []
     status_button_text = "Остановить снайпер" if is_active else "Запустить снайпер"
     buttons.append([InlineKeyboardButton(f"{'🔴' if is_active else '🟢'} {status_button_text}", callback_data="toggle_sniper")])
@@ -248,45 +249,48 @@ async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_
 
     buttons.append([InlineKeyboardButton(f"💧 Мин. оборот: {min_turnover:,.0f} USDT", callback_data="set_min_turnover_config")])
     buttons.append([InlineKeyboardButton(f"🎯 Мин. профит: {min_pnl} USDT", callback_data="set_min_profit_config")])
+    
+    # --- ИСПРАВЛЕНЫ ОТСТУПЫ ДЛЯ НОВЫХ КНОПОК ---
     # Кнопки для Мин. ставки фандинга
-fr_buttons_row = [InlineKeyboardButton("Мин.Фанд%:", callback_data="noop")]
-fr_options = {"0.1": "0.001", "0.3": "0.003", "0.5": "0.005", "1.0": "0.01"} # Текст кнопки: значение для callback
-for text, val_str in fr_options.items():
-    val_decimal = Decimal(val_str)
-    button_text = f"[{text}%]" if min_fr_thresh == val_decimal else f"{text}%"
-    fr_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_min_fr_{val_str}"))
-buttons.append(fr_buttons_row)
+    fr_buttons_row = [InlineKeyboardButton("Мин.Фанд%:", callback_data="noop")]
+    fr_options = {"0.1": "0.001", "0.3": "0.003", "0.5": "0.005", "1.0": "0.01"} 
+    for text, val_str in fr_options.items():
+        val_decimal = Decimal(val_str)
+        button_text = f"[{text}%]" if min_fr_thresh == val_decimal else f"{text}%"
+        fr_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_min_fr_{val_str}"))
+    buttons.append(fr_buttons_row)
 
-# Кнопки для TP (доля от фандинга)
-tp_buttons_row = [InlineKeyboardButton("TP% от Ф:", callback_data="noop")]
-tp_options = {"50": "0.50", "65": "0.65", "75": "0.75", "90": "0.90"}
-for text, val_str in tp_options.items():
-    val_decimal = Decimal(val_str)
-    button_text = f"[{text}%]" if tp_ratio_funding == val_decimal else f"{text}%"
-    tp_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_tp_rf_{val_str}"))
-buttons.append(tp_buttons_row)
+    # Кнопки для TP (доля от фандинга)
+    tp_buttons_row = [InlineKeyboardButton("TP% от Ф:", callback_data="noop")]
+    tp_options = {"50": "0.50", "65": "0.65", "75": "0.75", "90": "0.90"}
+    for text, val_str in tp_options.items():
+        val_decimal = Decimal(val_str)
+        button_text = f"[{text}%]" if tp_ratio_funding == val_decimal else f"{text}%"
+        tp_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_tp_rf_{val_str}"))
+    buttons.append(tp_buttons_row)
+    
+    # Кнопки для SL (доля от TP)
+    sl_buttons_row = [InlineKeyboardButton("SL% от TP:", callback_data="noop")]
+    sl_options = {"40": "0.40", "50": "0.50", "60": "0.60", "75": "0.75"}
+    for text, val_str in sl_options.items():
+        val_decimal = Decimal(val_str)
+        button_text = f"[{text}%]" if sl_ratio_tp == val_decimal else f"{text}%"
+        sl_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_sl_rtp_{val_str}"))
+    buttons.append(sl_buttons_row)
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ОТСТУПОВ ДЛЯ НОВЫХ КНОПОК ---
+    
+    buttons.append([InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")])
+    reply_markup = InlineKeyboardMarkup(buttons)
 
-# Кнопки для SL (доля от TP)
-sl_buttons_row = [InlineKeyboardButton("SL% от TP:", callback_data="noop")]
-sl_options = {"40": "0.40", "50": "0.50", "60": "0.60", "75": "0.75"}
-for text, val_str in sl_options.items():
-    val_decimal = Decimal(val_str)
-    button_text = f"[{text}%]" if sl_ratio_tp == val_decimal else f"{text}%"
-    sl_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_sl_rtp_{val_str}"))
-buttons.append(sl_buttons_row)
-buttons.append([InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")])
-reply_markup = InlineKeyboardMarkup(buttons)
-
-try:
+    try:
         if message_to_edit and message_to_edit.callback_query and message_to_edit.callback_query.message:
             await message_to_edit.callback_query.edit_message_text(text=summary_text, reply_markup=reply_markup, parse_mode='Markdown')
         else:
             await context.bot.send_message(chat_id=chat_id, text=summary_text, reply_markup=reply_markup, parse_mode='Markdown')
-except Exception as e:
+    except Exception as e:
         print(f"Error sending/editing final config message to {chat_id}: {e}")
         if message_to_edit: # Если редактирование не удалось, пробуем отправить новое
              await context.bot.send_message(chat_id=chat_id, text=summary_text + "\n(Не удалось обновить предыдущее меню)", reply_markup=reply_markup, parse_mode='Markdown')
-
 
 # ===================== УСТАНОВКА МАРЖИ/ПЛЕЧА =====================
 async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
