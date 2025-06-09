@@ -276,7 +276,7 @@ for text, val_str in sl_options.items():
     sl_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_sl_rtp_{val_str}"))
 buttons.append(sl_buttons_row)
 buttons.append([InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")])
-    reply_markup = InlineKeyboardMarkup(buttons)
+reply_markup = InlineKeyboardMarkup(buttons)
 
     try:
         if message_to_edit and message_to_edit.callback_query and message_to_edit.callback_query.message:
