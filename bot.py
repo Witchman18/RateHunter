@@ -1040,7 +1040,7 @@ async def funding_sniper_loop(app: ApplicationBuilder): # app is Application
                         num_decimals_price = trade_data['price_decimals']
                         await app.bot.send_message(chat_id, f"✅ Позиция *{s_sym}* ({'LONG' if s_open_side == 'Buy' else 'SHORT'}) откр./подтв.\nОбъем: `{final_op_q}`\nСр.цена входа: `{avg_op_p_disp:.{num_decimals_price}f}`\nКом. откр.: `{op_fee:.4f}` USDT", parse_mode='Markdown')
                                             # --- НАЧАЛО БЛОКА УСТАНОВКИ TP/SL НА БИРЖЕ ---
-                    if final_op_q > Decimal("0"): # Устанавливаем TP/SL только если позиция действительно открыта
+                        if final_op_q > Decimal("0"): # Устанавливаем TP/SL только если позиция действительно открыта
                         # Получаем сохраненные целевые PnL значения из trade_data
                         tp_target_net_profit_usdt = trade_data.get('tp_target_net_profit_usdt', Decimal("0"))
                         sl_max_net_loss_usdt = trade_data.get('sl_max_net_loss_usdt', Decimal("0"))
