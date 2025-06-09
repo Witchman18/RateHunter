@@ -69,15 +69,22 @@ def ensure_chat_settings(chat_id: int):
             'real_plecho': None,
             'max_concurrent_trades': DEFAULT_MAX_CONCURRENT_TRADES,
             'ongoing_trades': {},
-            # Новые настраиваемые параметры с дефолтными значениями
             'min_turnover_usdt': DEFAULT_MIN_TURNOVER_USDT,
             'min_expected_pnl_usdt': DEFAULT_MIN_EXPECTED_PNL_USDT,
+            # --- НОВЫЕ НАСТРОЙКИ ДЛЯ TP/SL и ФАНДИНГА ---
+            'min_funding_rate_threshold': Decimal("0.001"), # Дефолт 0.1%
+            'tp_target_profit_ratio_of_funding': Decimal("0.75"), # Дефолт 75% от ожид. фандинга как чистая прибыль
+            'sl_max_loss_ratio_to_tp_target': Decimal("0.6"), # Дефолт SL = 60% от целевого TP
         }
     # Убедимся, что все ключи существуют, даже если чат уже был создан ранее
     sniper_active[chat_id].setdefault('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
     sniper_active[chat_id].setdefault('min_expected_pnl_usdt', DEFAULT_MIN_EXPECTED_PNL_USDT)
     sniper_active[chat_id].setdefault('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
     sniper_active[chat_id].setdefault('ongoing_trades', {})
+    # --- ДОБАВЛЯЕМ setdefault ДЛЯ НОВЫХ НАСТРОЕК ---
+    sniper_active[chat_id].setdefault('min_funding_rate_threshold', Decimal("0.001"))
+    sniper_active[chat_id].setdefault('tp_target_profit_ratio_of_funding', Decimal("0.75"))
+    sniper_active[chat_id].setdefault('sl_max_loss_ratio_to_tp_target', Decimal("0.6"))
 
 
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
@@ -204,6 +211,9 @@ async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_
     status_text = "🟢 Активен" if is_active else "🔴 Остановлен"
     min_turnover = settings.get('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
     min_pnl = settings.get('min_expected_pnl_usdt', DEFAULT_MIN_EXPECTED_PNL_USDT)
+    min_fr_thresh = settings.get('min_funding_rate_threshold', Decimal("0.001"))
+    tp_ratio_funding = settings.get('tp_target_profit_ratio_of_funding', Decimal("0.75"))
+    sl_ratio_tp = settings.get('sl_max_loss_ratio_to_tp_target', Decimal("0.6"))
 
     marja_display = marja if marja is not None else 'Не уст.'
     plecho_display = plecho if plecho is not None else 'Не уст.'
@@ -215,6 +225,10 @@ async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_
         f"🔢 Макс. сделок: `{max_trades}`",
         f"💧 Мин. оборот: `{min_turnover:,.0f}` USDT",
         f"🎯 Мин. профит: `{min_pnl}` USDT",
+        f" минимальной абсолютной ставки фандинга.",
+        f"📊 Мин. ставка фандинга: `{min_fr_thresh*100:.1f}%`",
+        f"📈 TP (доля от фандинга): `{tp_ratio_funding*100:.0f}%`",
+        f"📉 SL (доля от TP): `{sl_ratio_tp*100:.0f}%`",
         f"🚦 Статус снайпера: *{status_text}*"
     ]
     
@@ -235,6 +249,32 @@ async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_
 
     buttons.append([InlineKeyboardButton(f"💧 Мин. оборот: {min_turnover:,.0f} USDT", callback_data="set_min_turnover_config")])
     buttons.append([InlineKeyboardButton(f"🎯 Мин. профит: {min_pnl} USDT", callback_data="set_min_profit_config")])
+    # Кнопки для Мин. ставки фандинга
+fr_buttons_row = [InlineKeyboardButton("Мин.Фанд%:", callback_data="noop")]
+fr_options = {"0.1": "0.001", "0.3": "0.003", "0.5": "0.005", "1.0": "0.01"} # Текст кнопки: значение для callback
+for text, val_str in fr_options.items():
+    val_decimal = Decimal(val_str)
+    button_text = f"[{text}%]" if min_fr_thresh == val_decimal else f"{text}%"
+    fr_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_min_fr_{val_str}"))
+buttons.append(fr_buttons_row)
+
+# Кнопки для TP (доля от фандинга)
+tp_buttons_row = [InlineKeyboardButton("TP% от Ф:", callback_data="noop")]
+tp_options = {"50": "0.50", "65": "0.65", "75": "0.75", "90": "0.90"}
+for text, val_str in tp_options.items():
+    val_decimal = Decimal(val_str)
+    button_text = f"[{text}%]" if tp_ratio_funding == val_decimal else f"{text}%"
+    tp_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_tp_rf_{val_str}"))
+buttons.append(tp_buttons_row)
+
+# Кнопки для SL (доля от TP)
+sl_buttons_row = [InlineKeyboardButton("SL% от TP:", callback_data="noop")]
+sl_options = {"40": "0.40", "50": "0.50", "60": "0.60", "75": "0.75"}
+for text, val_str in sl_options.items():
+    val_decimal = Decimal(val_str)
+    button_text = f"[{text}%]" if sl_ratio_tp == val_decimal else f"{text}%"
+    sl_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_sl_rtp_{val_str}"))
+buttons.append(sl_buttons_row)
     buttons.append([InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")])
     reply_markup = InlineKeyboardMarkup(buttons)
 
@@ -325,6 +365,50 @@ async def sniper_control_callback(update: Update, context: ContextTypes.DEFAULT_
                  await context.bot.send_message(chat_id, "⚠️ Ошибка: Неверное значение лимита сделок.")
         except (ValueError, IndexError): 
              await context.bot.send_message(chat_id, "⚠️ Ошибка обработки лимита сделок.")
+     # ... другие elif ...
+   elif data.startswith("set_min_fr_"):
+    try:
+        rate_val_str = data.split("_")[-1] # "0.001"
+        new_val = Decimal(rate_val_str)
+        if chat_settings.get('min_funding_rate_threshold', Decimal("0.001")) != new_val:
+            chat_settings['min_funding_rate_threshold'] = new_val
+            action_taken = True
+            await context.bot.answer_callback_query(query.id, text=f"Мин. ставка фандинга: {new_val*100:.1f}%")
+        else:
+            await context.bot.answer_callback_query(query.id, text="Значение не изменилось")
+    except Exception as e:
+        print(f"Error setting min_funding_rate_threshold: {e}")
+        await context.bot.answer_callback_query(query.id, text="Ошибка установки значения")
+
+   elif data.startswith("set_tp_rf_"): # tp_target_profit_ratio_of_funding
+    try:
+        val_str = data.split("_")[-1] # "0.75"
+        new_val = Decimal(val_str)
+        if chat_settings.get('tp_target_profit_ratio_of_funding', Decimal("0.75")) != new_val:
+            chat_settings['tp_target_profit_ratio_of_funding'] = new_val
+            action_taken = True
+            await context.bot.answer_callback_query(query.id, text=f"TP (доля от фандинга): {new_val*100:.0f}%")
+        else:
+            await context.bot.answer_callback_query(query.id, text="Значение не изменилось")
+    except Exception as e:
+        print(f"Error setting tp_target_profit_ratio_of_funding: {e}")
+        await context.bot.answer_callback_query(query.id, text="Ошибка установки значения")
+
+   elif data.startswith("set_sl_rtp_"): # sl_max_loss_ratio_to_tp_target
+    try:
+        val_str = data.split("_")[-1] # "0.6"
+        new_val = Decimal(val_str)
+        if chat_settings.get('sl_max_loss_ratio_to_tp_target', Decimal("0.6")) != new_val:
+            chat_settings['sl_max_loss_ratio_to_tp_target'] = new_val
+            action_taken = True
+            await context.bot.answer_callback_query(query.id, text=f"SL (доля от TP): {new_val*100:.0f}%")
+        else:
+            await context.bot.answer_callback_query(query.id, text="Значение не изменилось")
+    except Exception as e:
+        print(f"Error setting sl_max_loss_ratio_to_tp_target: {e}")
+        await context.bot.answer_callback_query(query.id, text="Ошибка установки значения")
+        
+# Теперь уже идет: elif data == "show_top_pairs_inline":       
     elif data == "show_top_pairs_inline":
         # Эта функция сама редактирует сообщение, и оно отличается от меню настроек
         await show_top_funding(update, context) 
@@ -1023,7 +1107,7 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding))
     application.add_handler(MessageHandler(filters.Regex("^📡 Управление Снайпером$"), sniper_control_menu))
     
-    application.add_handler(CallbackQueryHandler(sniper_control_callback, pattern="^(toggle_sniper|show_top_pairs_inline|set_max_trades_|noop)"))
+    application.add_handler(CallbackQueryHandler(sniper_control_callback, pattern="^(toggle_sniper|show_top_pairs_inline|set_max_trades_|noop|set_min_fr_|set_tp_rf_|set_sl_rtp_)"))
 
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 Маржа$"), set_real_marja)], 
