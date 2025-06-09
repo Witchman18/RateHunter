@@ -233,10 +233,9 @@ async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_
     ]
     
     if marja is None or plecho is None:
-      summary_parts.append("\n‼️ *Для запуска снайпера установите маржу и плечо!*")
+          summary_parts.append("\n‼️ *Для запуска снайпера установите маржу и плечо!*")
     
-      summary_text = "\n\n".join(summary_parts) # Используем двойной перенос для лучшего разделения
-
+      summary_text = "\n\n".join(summary_parts) # <--- ПРАВИЛЬНЫЙ ОТСТУП
     buttons = []
     status_button_text = "Остановить снайпер" if is_active else "Запустить снайпер"
     buttons.append([InlineKeyboardButton(f"{'🔴' if is_active else '🟢'} {status_button_text}", callback_data="toggle_sniper")])
