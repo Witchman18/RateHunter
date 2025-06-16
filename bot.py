@@ -266,10 +266,6 @@ await query.edit_message_text(
     parse_mode='Markdown', 
     disable_web_page_preview=True
 )
-
-        if loading_message_id:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
-
     except Exception as e:
         # === ИЗМЕНЕНИЕ ЗДЕСЬ ===
         # Теперь мы будем печатать ПОЛЕЗНУЮ ошибку в лог, а не все подряд
