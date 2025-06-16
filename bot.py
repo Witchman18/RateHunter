@@ -17,7 +17,6 @@ from mexc_funding import get_funding_rates_mexc
 from dotenv import load_dotenv
 
 load_dotenv()
-
 # Конфигурация
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
