@@ -1385,7 +1385,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel)) 
     
-    application.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding_menu))
+    application.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), funding_menu_handler))
     
     application.add_handler(MessageHandler(filters.Regex("^📡 Управление Снайпером$"), sniper_control_menu))
     
