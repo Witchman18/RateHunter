@@ -14,7 +14,6 @@ from telegram.ext import (
 from pybit.unified_trading import HTTP
 from mexc_funding import get_funding_rates_mexc
 
-
 from dotenv import load_dotenv
 
 load_dotenv()
