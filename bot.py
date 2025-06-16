@@ -142,42 +142,66 @@ async def get_mexc_funding_data(min_turnover_filter: Decimal):
         
     return funding_data
 
-# Эта функция будет создавать меню с кнопками-фильтрами
-async def show_top_funding_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# === НОВЫЙ ЕДИНЫЙ ОБРАБОТЧИК МЕНЮ "ТОП-ПАРЫ" ===
+async def funding_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = update.effective_chat.id
     ensure_chat_settings(chat_id)
+
+    # Если есть query, значит, было нажатие на кнопку
+    if query:
+        await query.answer() # Сразу отвечаем, чтобы убрать "часики"
+        data = query.data
+
+        # Если нажали "Показать", то запускаем поиск и выходим из функции
+        if data == "fetch_top_pairs_filtered":
+            await fetch_and_display_top_pairs(update, context)
+            return
+        
+        # Если нажали "Назад", то просто показываем меню (код ниже)
+        if data == "back_to_funding_menu":
+            pass # Просто даем коду дойти до секции отображения меню
+
+        # Если это кнопки-переключатели
+        else:
+            active_exchanges = sniper_active[chat_id]['active_exchanges']
+            if data.startswith("toggle_exchange_"):
+                exchange = data.split("_")[-1]
+                if exchange in active_exchanges:
+                    active_exchanges.remove(exchange)
+                else:
+                    active_exchanges.append(exchange)
+            elif data == "select_all_exchanges":
+                active_exchanges = ['BYBIT', 'MEXC']
+            elif data == "deselect_all_exchanges":
+                active_exchanges = []
+            sniper_active[chat_id]['active_exchanges'] = active_exchanges
     
-    active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
+    # --- Секция отображения/перерисовки меню ---
+    # Этот код выполнится в любом случае, кроме нажатия "Показать"
     
+    active_exchanges = sniper_active[chat_id]['active_exchanges']
     bybit_text = "✅ BYBIT" if "BYBIT" in active_exchanges else "⬜️ BYBIT"
     mexc_text = "✅ MEXC" if "MEXC" in active_exchanges else "⬜️ MEXC"
     
     keyboard = [
-        [
-            InlineKeyboardButton(bybit_text, callback_data="toggle_exchange_BYBIT"),
-            InlineKeyboardButton(mexc_text, callback_data="toggle_exchange_MEXC")
-        ],
-        [
-            InlineKeyboardButton("✅ Выбрать все", callback_data="select_all_exchanges"),
-            InlineKeyboardButton("⬜️ Снять все", callback_data="deselect_all_exchanges")
-        ],
-        [
-            InlineKeyboardButton("🚀 Показать Топ-5 Пар", callback_data="fetch_top_pairs_filtered")
-        ]
+        [InlineKeyboardButton(bybit_text, callback_data="toggle_exchange_BYBIT"), InlineKeyboardButton(mexc_text, callback_data="toggle_exchange_MEXC")],
+        [InlineKeyboardButton("✅ Выбрать все", callback_data="select_all_exchanges"), InlineKeyboardButton("⬜️ Снять все", callback_data="deselect_all_exchanges")],
+        [InlineKeyboardButton("🚀 Показать Топ-5 Пар", callback_data="fetch_top_pairs_filtered")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     menu_text = "Выберите биржи для поиска и нажмите 'Показать'."
-    
+
+    # Если это было нажатие кнопки, редактируем сообщение
     if query:
         try:
             await query.edit_message_text(text=menu_text, reply_markup=reply_markup)
         except Exception as e:
-            if "Message is not modified" not in str(e):
-                print(f"Error editing message in show_top_funding_menu: {e}")
+            if "Message is not modified" not in str(e): 
+                print(f"Error editing message, but it's not a 'not modified' error: {e}")
+    # Если это была текстовая команда, отправляем новое
     else:
         await update.message.reply_text(text=menu_text, reply_markup=reply_markup)
-
 # ==============================================================================
 # === ЭТО ПОЛНЫЙ И ОКОНЧАТЕЛЬНЫЙ КОД ФУНКЦИИ. ЗАМЕНИТЕ ВАШУ ВЕРСИЮ ЦЕЛИКОМ ===
 # ==============================================================================
@@ -314,42 +338,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # await send_final_config_message(chat_id, context) # Показываем актуальное меню
     # Лучше, чтобы cancel просто завершал, а пользователь сам вызывал меню снова, если нужно.
     return ConversationHandler.END
-
-# Этот обработчик будет управлять меню "Топ-пар"
-async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer() # Сразу отвечаем на нажатие
-    
-    chat_id = query.message.chat_id
-    data = query.data
-    ensure_chat_settings(chat_id)
-    
-    if data == "fetch_top_pairs_filtered":
-        await fetch_and_display_top_pairs(update, context)
-        return
-        
-    if data == "back_to_funding_menu":
-        await show_top_funding_menu(update, context)
-        return
-
-    # Логика для кнопок-переключателей
-    active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
-    
-    if data.startswith("toggle_exchange_"):
-        exchange = data.split("_")[-1]
-        if exchange in active_exchanges:
-            active_exchanges.remove(exchange)
-        else:
-            active_exchanges.append(exchange)
-    elif data == "select_all_exchanges":
-        active_exchanges = ['BYBIT', 'MEXC']
-    elif data == "deselect_all_exchanges":
-        active_exchanges = []
-        
-    sniper_active[chat_id]['active_exchanges'] = active_exchanges
-    # После любого изменения настроек - перерисовываем меню
-    await show_top_funding_menu(update, context)
-
 
 async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_to_edit: Update = None):
     ensure_chat_settings(chat_id)
