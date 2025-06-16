@@ -188,18 +188,18 @@ async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAUL
     
     # Если это команда на поиск, вызываем соответствующую функцию и выходим
     if data == "fetch_top_pairs_filtered":
-        await fetch_and_display_top_pairs(update, context)
-        return
-    
-    # Если это кнопка "Назад", просто показываем меню
-    if data == "back_to_funding_menu":
-        await show_top_funding_menu(update, context)
-        return
+    await fetch_and_display_top_pairs(update, context)
+    return
 
-    # Если это любая другая кнопка (переключатели)
-    active_exchanges = sniper_active[chat_id]['active_exchanges']
-    
-    if data.startswith("toggle_exchange_"):
+# Если это кнопка "Назад", просто показываем меню
+if data == "back_to_funding_menu":
+    await show_top_funding_menu(update, context)
+    return
+
+# Если это любая другая кнопка (переключатели)
+active_exchanges = sniper_active[chat_id]['active_exchanges']
+
+if data.startswith("toggle_exchange_"):
     exchange = data.split("_")[-1]
     # Получаем оригинальный список (важно, чтобы это был list, а не копия!)
     active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
@@ -209,14 +209,15 @@ async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAUL
         active_exchanges.append(exchange)
     # Убираем дубликаты (на всякий случай)
     sniper_active[chat_id]['active_exchanges'] = list(set(active_exchanges))
-    elif data == "select_all_exchanges":
+
+elif data == "select_all_exchanges":
     sniper_active[chat_id]['active_exchanges'] = ['BYBIT', 'MEXC']
-    elif data == "deselect_all_exchanges":
+
+elif data == "deselect_all_exchanges":
     sniper_active[chat_id]['active_exchanges'] = []
 
-    
-    # После изменения настроек - ВСЕГДА вызываем функцию для перерисовки меню
-    await show_top_funding_menu(update, context)
+# После изменения настроек - ВСЕГДА вызываем функцию для перерисовки меню
+await show_top_funding_menu(update, context)
 
 # === ШАГ 2: ЗАМЕНИТЕ ЭТУ ФУНКЦИЮ ===
 async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
