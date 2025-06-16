@@ -145,7 +145,6 @@ async def get_mexc_funding_data(min_turnover_filter: Decimal):
         
     return funding_data
 
-# Эта функция будет создавать меню с кнопками-фильтрами
 async def show_top_funding_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = update.effective_chat.id
@@ -153,7 +152,7 @@ async def show_top_funding_menu(update: Update, context: ContextTypes.DEFAULT_TY
     
     active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
     
-    # Создаем кнопки с галочками
+    # Создаем кнопки с актуальными галочками
     bybit_text = "✅ BYBIT" if "BYBIT" in active_exchanges else "⬜️ BYBIT"
     mexc_text = "✅ MEXC" if "MEXC" in active_exchanges else "⬜️ MEXC"
     
@@ -174,12 +173,17 @@ async def show_top_funding_menu(update: Update, context: ContextTypes.DEFAULT_TY
     
     menu_text = "Выберите биржи для поиска и нажмите 'Показать'."
     
-    if query:
-        # Если мы пришли из колбэка (нажали на кнопку), то редактируем сообщение
-        await query.answer()
-        await query.edit_message_text(text=menu_text, reply_markup=reply_markup)
+    # query.message будет None, если это первая отправка, а не редактирование
+    if query and query.message:
+        await query.answer() # Отвечаем на нажатие кнопки
+        # Пытаемся отредактировать. Если не получится (сообщение то же), ничего страшного
+        try:
+            await query.edit_message_text(text=menu_text, reply_markup=reply_markup)
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                print(f"Error editing message in show_top_funding_menu: {e}")
     else:
-        # Если мы пришли из главного меню, отправляем новое сообщение
+        # Если это первый вызов (от текстовой команды), отправляем новое сообщение
         await update.message.reply_text(text=menu_text, reply_markup=reply_markup)
 
 # ==============================================================================
@@ -322,12 +326,15 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Этот обработчик будет управлять меню "Топ-пар"
 async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    chat_id = update.effective_chat.id
+    await query.answer() # Сразу отвечаем на нажатие, чтобы кнопка не "висела"
+    
+    chat_id = query.message.chat_id
     data = query.data
     ensure_chat_settings(chat_id)
     
     active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
-
+    
+    # Логика переключения
     if data.startswith("toggle_exchange_"):
         exchange = data.split("_")[-1]
         if exchange in active_exchanges:
@@ -335,23 +342,22 @@ async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAUL
         else:
             active_exchanges.append(exchange)
         sniper_active[chat_id]['active_exchanges'] = active_exchanges
-        # Обновляем меню, чтобы показать изменения
-        await show_top_funding_menu(update, context)
+        await show_top_funding_menu(update, context) # Перерисовываем меню
 
     elif data == "select_all_exchanges":
         sniper_active[chat_id]['active_exchanges'] = ['BYBIT', 'MEXC']
-        await show_top_funding_menu(update, context)
+        await show_top_funding_menu(update, context) # Перерисовываем меню
 
     elif data == "deselect_all_exchanges":
         sniper_active[chat_id]['active_exchanges'] = []
-        await show_top_funding_menu(update, context)
+        await show_top_funding_menu(update, context) # Перерисовываем меню
         
     elif data == "fetch_top_pairs_filtered":
+        # Вызываем функцию поиска
         await fetch_and_display_top_pairs(update, context)
-    
-# ДОБАВЬТЕ ЭТОТ БЛОК
+        
     elif data == "back_to_funding_menu":
-    # Эта команда просто снова покажет пользователю меню выбора бирж
+        # Возвращаемся к меню
         await show_top_funding_menu(update, context)
 
 
