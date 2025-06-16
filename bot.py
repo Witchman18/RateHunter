@@ -12,7 +12,6 @@ from telegram.ext import (
     ConversationHandler, CallbackQueryHandler, filters
 )
 from pybit.unified_trading import HTTP
-from mexc_funding import get_funding_rates_mexc
 
 from dotenv import load_dotenv
 
