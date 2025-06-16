@@ -253,9 +253,19 @@ async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFA
                  result_msg += f"🏦 *{exchange}* | 🎟️ *{symbol}* - _ошибка отображения_\n\n"
     
     await query.edit_message_text(text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
-    # Можно добавить кнопку "Назад к меню", если хотите
-     #reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")]])
-    #await query.edit_message_text(..., reply_markup=reply_markup)
+    # ПРАВИЛЬНЫЙ БЛОК ДЛЯ ВСТАВКИ
+# Создаем клавиатуру с одной кнопкой "Назад"
+reply_markup = InlineKeyboardMarkup([[
+    InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")
+]])
+
+# Редактируем сообщение, передавая ему и новый текст, и новую клавиатуру
+await query.edit_message_text(
+    text=result_msg.strip(), 
+    reply_markup=reply_markup,
+    parse_mode='Markdown', 
+    disable_web_page_preview=True
+)
 
         if loading_message_id:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
@@ -334,6 +344,11 @@ async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAUL
         
     elif data == "fetch_top_pairs_filtered":
         await fetch_and_display_top_pairs(update, context)
+    
+# ДОБАВЬТЕ ЭТОТ БЛОК
+    elif data == "back_to_funding_menu":
+    # Эта команда просто снова покажет пользователю меню выбора бирж
+        await show_top_funding_menu(update, context)
 
 
 async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_to_edit: Update = None):
@@ -1388,7 +1403,7 @@ if __name__ == "__main__":
     
     application.add_handler(CallbackQueryHandler(sniper_control_callback, pattern="^(toggle_sniper|show_top_pairs_inline|set_max_trades_|noop|set_min_fr_|set_tp_rf_|set_sl_rtp_)"))
 
-    application.add_handler(CallbackQueryHandler(top_funding_menu_callback, pattern="^(toggle_exchange_|select_all_exchanges|deselect_all_exchanges|fetch_top_pairs_filtered)$"))
+    application.add_handler(CallbackQueryHandler(top_funding_menu_callback, pattern="^(toggle_exchange_|select_all_exchanges|deselect_all_exchanges|fetch_top_pairs_filtered|back_to_funding_menu)$"))
 
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 Маржа$"), set_real_marja)], 
