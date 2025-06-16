@@ -88,6 +88,7 @@ def ensure_chat_settings(chat_id: int):
     sniper_active[chat_id].setdefault('min_funding_rate_threshold', Decimal("0.001"))
     sniper_active[chat_id].setdefault('tp_target_profit_ratio_of_funding', Decimal("0.75"))
     sniper_active[chat_id].setdefault('sl_max_loss_ratio_to_tp_target', Decimal("0.6"))
+    sniper_active[chat_id].setdefault('active_exchanges', ['BYBIT', 'MEXC'])
 
 
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
@@ -145,80 +146,117 @@ async def get_mexc_funding_data(min_turnover_filter: Decimal):
         
     return funding_data
 
-# ЗАМЕНИТЕ СТАРУЮ ВЕРСИЮ ЭТОЙ ФУНКЦИИ НА ЭТУ
-async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Эта функция будет создавать меню с кнопками-фильтрами
+async def show_top_funding_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    message = update.message
     chat_id = update.effective_chat.id
     ensure_chat_settings(chat_id)
     
-    loading_message_id = None
+    active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
+    
+    # Создаем кнопки с галочками
+    bybit_text = "✅ BYBIT" if "BYBIT" in active_exchanges else "⬜️ BYBIT"
+    mexc_text = "✅ MEXC" if "MEXC" in active_exchanges else "⬜️ MEXC"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(bybit_text, callback_data="toggle_exchange_BYBIT"),
+            InlineKeyboardButton(mexc_text, callback_data="toggle_exchange_MEXC")
+        ],
+        [
+            InlineKeyboardButton("✅ Выбрать все", callback_data="select_all_exchanges"),
+            InlineKeyboardButton("⬜️ Снять все", callback_data="deselect_all_exchanges")
+        ],
+        [
+            InlineKeyboardButton("🚀 Показать Топ-5 Пар", callback_data="fetch_top_pairs_filtered")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    menu_text = "Выберите биржи для поиска и нажмите 'Показать'."
+    
+    if query:
+        # Если мы пришли из колбэка (нажали на кнопку), то редактируем сообщение
+        await query.answer()
+        await query.edit_message_text(text=menu_text, reply_markup=reply_markup)
+    else:
+        # Если мы пришли из главного меню, отправляем новое сообщение
+        await update.message.reply_text(text=menu_text, reply_markup=reply_markup)
+
+# Эта функция будет ВЫПОЛНЯТЬ поиск по выбранным биржам
+async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+    ensure_chat_settings(chat_id)
+    
+    # Получаем настройки из памяти
+    active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
     current_min_turnover_filter = sniper_active[chat_id].get('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
+    
+    if not active_exchanges:
+        await query.answer(text="⚠️ Выберите хотя бы одну биржу!", show_alert=True)
+        return
 
-    try:
-        if query:
-            await query.answer()
-            sent_message = await query.edit_message_text("🔄 Получаю топ пар с Bybit и MEXC...")
-        elif message:
-            sent_message = await message.reply_text("🔄 Получаю топ пар с Bybit и MEXC...")
-        else:
-            return
-        loading_message_id = sent_message.message_id
+    await query.edit_message_text(f"🔄 Ищу топ-5 пар на {', '.join(active_exchanges)}...")
 
-        bybit_task = asyncio.create_task(session.get_tickers(category="linear"))
-        mexc_task = asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter))
+    # --- Асинхронный сбор данных только с ВЫБРАННЫХ бирж ---
+    tasks = []
+    if 'BYBIT' in active_exchanges:
+        tasks.append(asyncio.create_task(session.get_tickers(category="linear")))
+    if 'MEXC' in active_exchanges:
+        tasks.append(asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter)))
         
-        results = await asyncio.gather(bybit_task, mexc_task, return_exceptions=True)
-        
-        bybit_response, mexc_funding_data = results[0], results[1]
-
-        all_funding_data = []
-
-        if isinstance(bybit_response, dict) and bybit_response.get("result", {}).get("list"):
-            tickers = bybit_response["result"]["list"]
-            for t in tickers:
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    all_funding_data = []
+    
+    # Обрабатываем результаты
+    for res in results:
+        if isinstance(res, Exception):
+            print(f"[Data Fetch Error] Task failed: {res}")
+            continue
+        # Обработка Bybit
+        if res.get("result") and res.get("result", {}).get("list"):
+            for t in res["result"]["list"]:
                 symbol, rate_str, next_time_str, turnover_str = t.get("symbol"), t.get("fundingRate"), t.get("nextFundingTime"), t.get("turnover24h")
                 if not all([symbol, rate_str, next_time_str, turnover_str]): continue
                 try:
                     rate_d, next_time_int, turnover_d = Decimal(rate_str), int(next_time_str), Decimal(turnover_str)
                     if turnover_d < current_min_turnover_filter: continue
                     if abs(rate_d) < MIN_FUNDING_RATE_ABS_FILTER: continue
-                    all_funding_data.append({
-                        "exchange": "BYBIT", "symbol": symbol, "rate": rate_d, "next_ts": next_time_int
-                    })
-                except (ValueError, TypeError, decimal.InvalidOperation):
-                    continue
-        elif isinstance(bybit_response, Exception):
-            print(f"[Bybit Data Error] Failed to fetch data: {bybit_response}")
+                    all_funding_data.append({"exchange": "BYBIT", "symbol": symbol, "rate": rate_d, "next_ts": next_time_int})
+                except (ValueError, TypeError, decimal.InvalidOperation): continue
+        # Обработка MEXC (он возвращает уже готовый список словарей)
+        elif isinstance(res, list):
+            all_funding_data.extend(res)
 
-        if isinstance(mexc_funding_data, list):
-            all_funding_data.extend(mexc_funding_data)
-        elif isinstance(mexc_funding_data, Exception):
-             print(f"[MEXC Data Error] Task failed: {mexc_funding_data}")
+    all_funding_data.sort(key=lambda x: abs(x['rate']), reverse=True)
+    
+    # === ИЗМЕНЕНИЕ ЗДЕСЬ ===
+    top_pairs = all_funding_data[:5] # Берем топ-5, как вы и просили
 
-        all_funding_data.sort(key=lambda x: abs(x['rate']), reverse=True)
-        global latest_top_pairs
-        latest_top_pairs = all_funding_data[:7] 
-
-        if not latest_top_pairs:
-            result_msg = f"📊 Нет подходящих пар на Bybit и MEXC (фильтр оборота: {current_min_turnover_filter:,.0f} USDT)."
-        else:
-            result_msg = f"📊 Топ пар (Bybit & MEXC, оборот > {current_min_turnover_filter:,.0f} USDT):\n\n"
-            now_ts_dt = datetime.utcnow().timestamp()
-            for item in latest_top_pairs:
-                exchange, symbol, rate, ts_ms = item['exchange'], item['symbol'], item['rate'], item['next_ts']
-                try:
-                    delta_sec = int(ts_ms / 1000 - now_ts_dt)
-                    if delta_sec < 0: delta_sec = 0
-                    h, rem = divmod(delta_sec, 3600); m, s = divmod(rem, 60)
-                    time_left = f"{h:01d}ч {m:02d}м {s:02d}с"
-                    direction = "📈 LONG (шорты платят)" if rate < 0 else "📉 SHORT (лонги платят)"
-                    result_msg += (f"🏦 *{exchange}* | 🎟️ *{symbol}*\n"
-                                   f"{direction}\n"
-                                   f"💹 Фандинг: `{rate * 100:.4f}%`\n"
-                                   f"⌛ Выплата через: `{time_left}`\n\n")
-                except Exception as e:
-                     result_msg += f"🏦 *{exchange}* | 🎟️ *{symbol}* - _ошибка отображения_\n\n"
+    if not top_pairs:
+        result_msg = f"📊 Нет подходящих пар на выбранных биржах."
+    else:
+        result_msg = f"📊 Топ-5 пар ({', '.join(active_exchanges)}):\n\n"
+        now_ts_dt = datetime.utcnow().timestamp()
+        for item in top_pairs:
+            exchange, symbol, rate, ts_ms = item['exchange'], item['symbol'], item['rate'], item['next_ts']
+            try:
+                delta_sec = int(ts_ms / 1000 - now_ts_dt)
+                if delta_sec < 0: delta_sec = 0
+                h, rem = divmod(delta_sec, 3600); m, s = divmod(rem, 60)
+                time_left = f"{h:01d}ч {m:02d}м {s:02d}с"
+                direction = "📈 LONG (шорты платят)" if rate < 0 else "📉 SHORT (лонги платят)"
+                result_msg += (f"🏦 *{exchange}* | 🎟️ *{symbol}*\n{direction}\n"
+                               f"💹 Фандинг: `{rate * 100:.4f}%`\n⌛ Выплата через: `{time_left}`\n\n")
+            except Exception:
+                 result_msg += f"🏦 *{exchange}* | 🎟️ *{symbol}* - _ошибка отображения_\n\n"
+    
+    await query.edit_message_text(text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
+    # Можно добавить кнопку "Назад к меню", если хотите
+     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")]])
+    await query.edit_message_text(..., reply_markup=reply_markup)
 
         if loading_message_id:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
@@ -267,6 +305,36 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # await send_final_config_message(chat_id, context) # Показываем актуальное меню
     # Лучше, чтобы cancel просто завершал, а пользователь сам вызывал меню снова, если нужно.
     return ConversationHandler.END
+
+# Этот обработчик будет управлять меню "Топ-пар"
+async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+    data = query.data
+    ensure_chat_settings(chat_id)
+    
+    active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
+
+    if data.startswith("toggle_exchange_"):
+        exchange = data.split("_")[-1]
+        if exchange in active_exchanges:
+            active_exchanges.remove(exchange)
+        else:
+            active_exchanges.append(exchange)
+        sniper_active[chat_id]['active_exchanges'] = active_exchanges
+        # Обновляем меню, чтобы показать изменения
+        await show_top_funding_menu(update, context)
+
+    elif data == "select_all_exchanges":
+        sniper_active[chat_id]['active_exchanges'] = ['BYBIT', 'MEXC']
+        await show_top_funding_menu(update, context)
+
+    elif data == "deselect_all_exchanges":
+        sniper_active[chat_id]['active_exchanges'] = []
+        await show_top_funding_menu(update, context)
+        
+    elif data == "fetch_top_pairs_filtered":
+        await fetch_and_display_top_pairs(update, context)
 
 
 async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_to_edit: Update = None):
@@ -1315,10 +1383,13 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel)) 
     
-    application.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding))
+    application.add_handler(MessageHandler(filters.Regex("^📊 Топ-пары$"), show_top_funding_menu))
+    
     application.add_handler(MessageHandler(filters.Regex("^📡 Управление Снайпером$"), sniper_control_menu))
     
     application.add_handler(CallbackQueryHandler(sniper_control_callback, pattern="^(toggle_sniper|show_top_pairs_inline|set_max_trades_|noop|set_min_fr_|set_tp_rf_|set_sl_rtp_)"))
+
+    application.add_handler(CallbackQueryHandler(top_funding_menu_callback, pattern="^(toggle_exchange_|select_all_exchanges|deselect_all_exchanges|fetch_top_pairs_filtered)$"))
 
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 Маржа$"), set_real_marja)], 
