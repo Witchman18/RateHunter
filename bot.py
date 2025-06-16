@@ -200,17 +200,20 @@ async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAUL
     active_exchanges = sniper_active[chat_id]['active_exchanges']
     
     if data.startswith("toggle_exchange_"):
-        exchange = data.split("_")[-1]
-        if exchange in active_exchanges:
-            active_exchanges.remove(exchange)
-        else:
-            active_exchanges.append(exchange)
+    exchange = data.split("_")[-1]
+    # Получаем оригинальный список (важно, чтобы это был list, а не копия!)
+    active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
+    if exchange in active_exchanges:
+        active_exchanges.remove(exchange)
+    else:
+        active_exchanges.append(exchange)
+    # Убираем дубликаты (на всякий случай)
+    sniper_active[chat_id]['active_exchanges'] = list(set(active_exchanges))
     elif data == "select_all_exchanges":
-        active_exchanges = ['BYBIT', 'MEXC']
+    sniper_active[chat_id]['active_exchanges'] = ['BYBIT', 'MEXC']
     elif data == "deselect_all_exchanges":
-        active_exchanges = []
-        
-    sniper_active[chat_id]['active_exchanges'] = active_exchanges
+    sniper_active[chat_id]['active_exchanges'] = []
+
     
     # После изменения настроек - ВСЕГДА вызываем функцию для перерисовки меню
     await show_top_funding_menu(update, context)
