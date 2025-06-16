@@ -1391,7 +1391,7 @@ if __name__ == "__main__":
     
     application.add_handler(CallbackQueryHandler(sniper_control_callback, pattern="^(toggle_sniper|show_top_pairs_inline|set_max_trades_|noop|set_min_fr_|set_tp_rf_|set_sl_rtp_)"))
 
-    application.add_handler(CallbackQueryHandler(top_funding_menu_callback, pattern="^(toggle_exchange_|select_all_exchanges|deselect_all_exchanges|fetch_top_pairs_filtered|back_to_funding_menu)$"))
+    application.add_handler(CallbackQueryHandler(funding_menu_handler, pattern="^(toggle_exchange_|select_all_exchanges|deselect_all_exchanges|fetch_top_pairs_filtered|back_to_funding_menu)$"))
 
     conv_marja = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 Маржа$"), set_real_marja)], 
