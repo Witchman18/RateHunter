@@ -188,8 +188,8 @@ async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAUL
     
     # Если это команда на поиск, вызываем соответствующую функцию и выходим
     if data == "fetch_top_pairs_filtered":
-    await fetch_and_display_top_pairs(update, context)
-    return
+        await fetch_and_display_top_pairs(update, context)
+        return
 
 # Если это кнопка "Назад", просто показываем меню
 if data == "back_to_funding_menu":
@@ -203,7 +203,7 @@ if data.startswith("toggle_exchange_"):
     exchange = data.split("_")[-1]
     # Получаем оригинальный список (важно, чтобы это был list, а не копия!)
     active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
-    if exchange in active_exchanges:
+if exchange in active_exchanges:
         active_exchanges.remove(exchange)
     else:
         active_exchanges.append(exchange)
