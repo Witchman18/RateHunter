@@ -15,21 +15,12 @@ from pybit.unified_trading import HTTP
 
 from dotenv import load_dotenv
 
-
-import aiohttp # Для асинхронных HTTP запросов
-import json    # Для работы с JSON
-from decimal import Decimal # Для точной работы с числами
-
-# Эту константу нужно определить где-то в начале твоего файла, если еще не определена
-MEXC_API_BASE_URL = "https://contract.mexc.com" 
-
 load_dotenv()
 
 # Конфигурация
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
-
 
 # Инициализация
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET, recv_window=20000)
@@ -57,7 +48,6 @@ MAKER_ORDER_WAIT_SECONDS_EXIT = 2
 SNIPER_LOOP_INTERVAL_SECONDS = 5
 DEFAULT_MAX_CONCURRENT_TRADES = 1
 MAX_PAIRS_TO_CONSIDER_PER_CYCLE = 1 # Это MAX_PAIRS_FOR_DETAILED_TEST из старой логики
-
 
 # "Умные" дефолты для параметров, не вынесенных в основные настройки пользователя
 DEFAULT_MIN_TURNOVER_USDT = Decimal("7500000") # Средний уровень ликвидности
@@ -95,127 +85,6 @@ def ensure_chat_settings(chat_id: int):
     sniper_active[chat_id].setdefault('min_funding_rate_threshold', Decimal("0.001"))
     sniper_active[chat_id].setdefault('tp_target_profit_ratio_of_funding', Decimal("0.75"))
     sniper_active[chat_id].setdefault('sl_max_loss_ratio_to_tp_target', Decimal("0.6"))
-
-
-
-
-async def fetch_mexc_funding_info():
-    """
-    Асинхронно получает данные о фандинге с MEXC.
-    Возвращает список кортежей, где каждый кортеж: 
-    (symbol_mexc, rate_decimal, next_funding_timestamp_ms, turnover_decimal)
-    Например: ('BTC_USDT_MEXC', Decimal('-0.000123'), 1678886400000, Decimal('1234567.89'))
-    Или возвращает пустой список в случае ошибки.
-    """
-    funding_data_mexc = [] # Здесь будем хранить результаты
-    
-    # Эндпоинт API MEXC для получения информации о всех фьючерсных тикерах.
-    # Он должен возвращать список контрактов с их fundingRate, nextFundingTime, quoteVolume.
-    endpoint = "/api/v1/contract/ticker" 
-
-    try:
-        # Создаем асинхронную HTTP сессию с помощью aiohttp.
-        # 'async with' гарантирует, что сессия будет правильно закрыта после использования.
-        async with aiohttp.ClientSession() as session_http:
-            # Выполняем GET-запрос к API MEXC.
-            # 'async with' также для объекта ответа, чтобы он был правильно обработан.
-            # print(f"[MEXC Debug] Requesting: {MEXC_API_BASE_URL + endpoint}") # Раскомментируй для отладки URL запроса
-            async with session_http.get(MEXC_API_BASE_URL + endpoint) as response:
-                # print(f"[MEXC Debug] Status: {response.status}") # Раскомментируй для отладки статуса ответа
-
-                # Проверяем, успешен ли запрос (статус код 200 OK)
-                if response.status == 200:
-                    try:
-                        # Пытаемся декодировать ответ из JSON формата в Python словарь/список.
-                        data = await response.json()
-                        # print(f"[MEXC Debug] Raw data: {json.dumps(data, indent=2)}") # Раскомментируй для детальной отладки структуры ответа
-                    except json.JSONDecodeError as e_json:
-                        # Если ответ не является валидным JSON
-                        print(f"[MEXC JSON Error] Failed to decode JSON. Status: {response.status}. Error: {e_json}")
-                        response_text = await response.text(errors='ignore') # Пытаемся получить текст ответа
-                        print(f"[MEXC JSON Error] Response text: {response_text[:500]}") # Показать часть текста для анализа
-                        return [] # Возвращаем пустой список, так как данные не получены
-
-                    # Проверяем ожидаемую структуру успешного ответа от MEXC:
-                    # Словарь с ключом 'success' равным True и ключом 'data', содержащим список тикеров.
-                    if isinstance(data, dict) and data.get('success') == True and isinstance(data.get('data'), list):
-                        tickers = data['data'] # Получаем список тикеров
-                        # print(f"[MEXC Debug] Processing {len(tickers)} tickers from 'data' list.")
-                        for t in tickers: # Итерируем по каждому тикеру
-                            # Извлекаем нужные поля. Используем .get() с дефолтным значением "0"
-                            # на случай, если какое-то поле отсутствует в ответе для конкретного тикера.
-                            # Затем приводим к строке, чтобы единообразно обрабатывать None или числа.
-                            symbol = t.get("symbol") 
-                            rate_str = str(t.get("fundingRate", "0")) 
-                            next_time_ms_str = str(t.get("nextFundingTime", "0")) 
-                            turnover_str = str(t.get("quoteVolume", "0")) 
-
-                            if not symbol: # Символ является обязательным, если его нет, пропускаем тикер
-                                # print(f"[MEXC Debug] Skipping ticker with no symbol: {t}")
-                                continue
-                            
-                            # Дополнительная проверка и приведение к "0", если строка "None" или пустая,
-                            # чтобы избежать ошибок при конвертации в Decimal/int.
-                            if rate_str == "None" or not rate_str: rate_str = "0"
-                            if next_time_ms_str == "None" or not next_time_ms_str: next_time_ms_str = "0"
-                            if turnover_str == "None" or not turnover_str: turnover_str = "0"
-                                
-                            try:
-                                # Конвертируем строковые значения в нужные типы данных (Decimal, int)
-                                rate_d = Decimal(rate_str)
-                                next_time_ms = int(next_time_ms_str) # Время уже в миллисекундах
-                                turnover_d = Decimal(turnover_str)
-
-                                # Добавляем обработанные данные в наш список.
-                                # Добавляем суффикс _MEXC к символу, чтобы отличать от пар с Bybit.
-                                funding_data_mexc.append((f"{symbol}_MEXC", rate_d, next_time_ms, turnover_d))
-                            except (ValueError, TypeError) as e_parse:
-                                # Если произошла ошибка при конвертации типов для какого-то тикера,
-                                # логируем ее и пропускаем этот тикер.
-                                # print(f"[MEXC Funding Data Parse Error] Symbol: {symbol}, Rate: '{rate_str}', NextTime: '{next_time_ms_str}', Turnover: '{turnover_str}'. Error: {e_parse}")
-                                continue 
-                    elif isinstance(data, list): 
-                        # Альтернативный сценарий: API вернул список тикеров напрямую (без обертки success/data).
-                        # Это менее вероятно, если документация говорит иначе, но добавим обработку на всякий случай.
-                        tickers = data
-                        print(f"[MEXC API Info] Received direct list of tickers. Processing {len(tickers)} items.")
-                        for t in tickers: # Повторяем логику парсинга для каждого тикера в списке
-                            symbol = t.get("symbol")
-                            rate_str = str(t.get("fundingRate", "0"))
-                            next_time_ms_str = str(t.get("nextFundingTime", "0"))
-                            turnover_str = str(t.get("quoteVolume", "0"))
-                            if not symbol: continue
-                            if rate_str == "None" or not rate_str: rate_str = "0"
-                            if next_time_ms_str == "None" or not next_time_ms_str: next_time_ms_str = "0"
-                            if turnover_str == "None" or not turnover_str: turnover_str = "0"
-                            try:
-                                rate_d = Decimal(rate_str)
-                                next_time_ms = int(next_time_ms_str)
-                                turnover_d = Decimal(turnover_str)
-                                funding_data_mexc.append((f"{symbol}_MEXC", rate_d, next_time_ms, turnover_d))
-                            except (ValueError, TypeError) as e_parse:
-                                # print(f"[MEXC Funding Data Parse Error - direct list] Symbol: {symbol}. Error: {e_parse}")
-                                continue
-                    else:
-                        # Если структура ответа не соответствует ни одному из ожидаемых форматов
-                        err_msg = data.get('msg', 'Unknown error structure') if isinstance(data, dict) else str(data)
-                        print(f"[MEXC API Error] Unexpected data format or error: {err_msg}. Full response: {str(data)[:500]}")
-                else:
-                    # Если статус ответа не 200 (например, 404, 500, 403, 429 и т.д.)
-                    print(f"[MEXC API Error] Status: {response.status}, Response: {await response.text(errors='ignore')}")
-    
-    # Обработка ошибок, связанных с HTTP соединением или другими проблемами aiohttp
-    except aiohttp.ClientConnectorError as e_conn: # Ошибка соединения (например, DNS не найден, нет сети)
-        print(f"[MEXC HTTP Connection Error] Could not connect: {e_conn}")
-    except aiohttp.ClientError as e_client: # Другие общие ошибки HTTP клиента
-        print(f"[MEXC HTTP Error] Request failed: {e_client}")
-    # Обработка общих исключений, которые могли не быть пойманы выше
-    except Exception as e_general:
-        print(f"[MEXC General Error] An error occurred in fetch_mexc_funding_info: {e_general}")
-        import traceback # Импортируем модуль для печати полного стека ошибки
-        traceback.print_exc() # Печатаем полный стек ошибки для детальной диагностики
-        
-    return funding_data_mexc # Возвращаем собранные данные (или пустой список, если были ошибки)
 
 
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
