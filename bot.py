@@ -3,6 +3,7 @@
 import os
 import asyncio
 import time # Импортируем time для работы с timestamp
+import aiohttp
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP # Используем Decimal для точности
 
@@ -90,73 +91,135 @@ def ensure_chat_settings(chat_id: int):
 
 
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
+async def get_mexc_funding_data(min_turnover_filter: Decimal):
+    """Асинхронно получает и фильтрует данные по фандингу с MEXC."""
+    # Этот URL публичный и возвращает данные по ВСЕМ фьючерсным контрактам
+    mexc_url = "https://contract.mexc.com/api/v1/contract/detail"
+    funding_data = []
+    try:
+        async with aiohttp.ClientSession() as session_http:
+            async with session_http.get(mexc_url) as response:
+                response.raise_for_status() 
+                data = await response.json()
+                
+                if not data or data.get("success") is not True or not data.get("data"):
+                    print("[MEXC Data Error] Invalid response format from MEXC.")
+                    return []
+                
+                tickers = data["data"]
+                for t in tickers:
+                    if not t.get("quoteCoin") == "USDT" or t.get("state") != "SHOW":
+                        continue
+
+                    # API отдает все нужные данные: ставку, точное время следующей выплаты и оборот
+                    symbol, rate_str, next_time_str, turnover_str = t.get("symbol"), str(t.get("fundingRate", 0)), str(t.get("nextSettleTime", 0)), str(t.get("volume24", 0))
+
+                    if not all([symbol, rate_str, next_time_str, turnover_str]):
+                        continue
+                        
+                    try:
+                        rate_d = Decimal(rate_str)
+                        next_time_int = int(next_time_str) # Это точное время в мс
+                        turnover_d = Decimal(turnover_str) 
+
+                        if turnover_d < min_turnover_filter:
+                            continue
+                        if abs(rate_d) < MIN_FUNDING_RATE_ABS_FILTER:
+                            continue
+                            
+                        funding_data.append({
+                            "exchange": "MEXC",
+                            "symbol": symbol.replace("_", ""), # Приводим к формату Bybit
+                            "rate": rate_d,
+                            "next_ts": next_time_int 
+                        })
+                    except (ValueError, TypeError):
+                        continue
+    except aiohttp.ClientError as e:
+        print(f"Error fetching MEXC data: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred in get_mexc_funding_data: {e}")
+        
+    return funding_data
 
 async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     message = update.message
     chat_id = update.effective_chat.id
-    ensure_chat_settings(chat_id) # Для получения актуальных фильтров, если они есть
+    ensure_chat_settings(chat_id)
     
     loading_message_id = None
     current_min_turnover_filter = sniper_active[chat_id].get('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
 
-
     try:
         if query:
             await query.answer()
-            try:
-                await query.edit_message_text("🔄 Получаю топ пар...")
-                loading_message_id = query.message.message_id
-            except Exception as edit_err:
-                print(f"Error editing message on callback: {edit_err}")
-                sent_message = await context.bot.send_message(chat_id, "🔄 Получаю топ пар...")
-                loading_message_id = sent_message.message_id
+            sent_message = await query.edit_message_text("🔄 Получаю топ пар с Bybit и MEXC...")
         elif message:
-            sent_message = await message.reply_text("🔄 Получаю топ пар...")
-            loading_message_id = sent_message.message_id
+            sent_message = await message.reply_text("🔄 Получаю топ пар с Bybit и MEXC...")
         else:
             return
+        loading_message_id = sent_message.message_id
 
-        response = session.get_tickers(category="linear")
-        tickers = response.get("result", {}).get("list", [])
-        if not tickers:
-            result_msg = "⚠️ Не удалось получить данные тикеров."
-            if loading_message_id:
-                 await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=result_msg)
-            return
+        # Асинхронно запускаем сбор данных с обеих бирж
+        bybit_task = asyncio.create_task(session.get_tickers(category="linear"))
+        mexc_task = asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter))
+        
+        # Ждем выполнения обеих задач
+        results = await asyncio.gather(bybit_task, mexc_task, return_exceptions=True)
+        
+        bybit_response, mexc_funding_data = results[0], results[1]
 
-        funding_data = []
-        for t in tickers:
-            symbol, rate_str, next_time_str, turnover_str = t.get("symbol"), t.get("fundingRate"), t.get("nextFundingTime"), t.get("turnover24h")
-            if not all([symbol, rate_str, next_time_str, turnover_str]): continue
-            try:
-                 rate_d, next_time_int, turnover_d = Decimal(rate_str), int(next_time_str), Decimal(turnover_str)
-                 if turnover_d < current_min_turnover_filter: continue # Используем настройку пользователя или дефолт
-                 if abs(rate_d) < MIN_FUNDING_RATE_ABS_FILTER: continue
-                 funding_data.append((symbol, rate_d, next_time_int))
-            except (ValueError, TypeError) as e:
-                print(f"[Funding Data Error] Could not parse data for {symbol}: {e}")
-                continue
+        all_funding_data = []
 
-        funding_data.sort(key=lambda x: abs(x[1]), reverse=True)
+        # Обработка Bybit
+        if isinstance(bybit_response, dict) and bybit_response.get("result", {}).get("list"):
+            tickers = bybit_response["result"]["list"]
+            for t in tickers:
+                symbol, rate_str, next_time_str, turnover_str = t.get("symbol"), t.get("fundingRate"), t.get("nextFundingTime"), t.get("turnover24h")
+                if not all([symbol, rate_str, next_time_str, turnover_str]): continue
+                try:
+                    rate_d, next_time_int, turnover_d = Decimal(rate_str), int(next_time_str), Decimal(turnover_str)
+                    if turnover_d < current_min_turnover_filter: continue
+                    if abs(rate_d) < MIN_FUNDING_RATE_ABS_FILTER: continue
+                    all_funding_data.append({
+                        "exchange": "BYBIT", "symbol": symbol, "rate": rate_d, "next_ts": next_time_int
+                    })
+                except (ValueError, TypeError):
+                    continue
+        elif isinstance(bybit_response, Exception):
+            print(f"[Bybit Data Error] Failed to fetch data: {bybit_response}")
+
+        # Обработка MEXC (данные уже готовы)
+        if isinstance(mexc_funding_data, list):
+            all_funding_data.extend(mexc_funding_data)
+        elif isinstance(mexc_funding_data, Exception):
+             print(f"[MEXC Data Error] Task failed: {mexc_funding_data}")
+
+        # Сортируем ОБЩИЙ список
+        all_funding_data.sort(key=lambda x: abs(x['rate']), reverse=True)
         global latest_top_pairs
-        latest_top_pairs = funding_data[:5]
+        latest_top_pairs = all_funding_data[:10] 
 
         if not latest_top_pairs:
-            result_msg = f"📊 Нет подходящих пар (фильтр оборота: {current_min_turnover_filter:,.0f} USDT)."
+            result_msg = f"📊 Нет подходящих пар на Bybit и MEXC (фильтр оборота: {current_min_turnover_filter:,.0f} USDT)."
         else:
-            result_msg = f"📊 Топ пар (фильтр обор.: {current_min_turnover_filter:,.0f} USDT):\n\n"
+            result_msg = f"📊 Топ пар (Bybit & MEXC, оборот > {current_min_turnover_filter:,.0f} USDT):\n\n"
             now_ts_dt = datetime.utcnow().timestamp()
-            for symbol, rate, ts_ms in latest_top_pairs:
+            for item in latest_top_pairs:
+                exchange, symbol, rate, ts_ms = item['exchange'], item['symbol'], item['rate'], item['next_ts']
                 try:
                     delta_sec = int(ts_ms / 1000 - now_ts_dt)
                     if delta_sec < 0: delta_sec = 0
                     h, rem = divmod(delta_sec, 3600); m, s = divmod(rem, 60)
                     time_left = f"{h:01d}ч {m:02d}м {s:02d}с"
                     direction = "📈 LONG (шорты платят)" if rate < 0 else "📉 SHORT (лонги платят)"
-                    result_msg += (f"🎟️ *{symbol}*\n{direction}\n💹 Фандинг: `{rate * 100:.4f}%`\n⌛ Выплата через: `{time_left}`\n\n")
+                    result_msg += (f"🏦 *{exchange}* | 🎟️ *{symbol}*\n"
+                                   f"{direction}\n"
+                                   f"💹 Фандинг: `{rate * 100:.4f}%`\n"
+                                   f"⌛ Выплата через: `{time_left}`\n\n")
                 except Exception as e:
-                     result_msg += f"🎟️ *{symbol}* - _ошибка отображения_\n\n"
+                     result_msg += f"🏦 *{exchange}* | 🎟️ *{symbol}* - _ошибка отображения_\n\n"
 
         if loading_message_id:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
@@ -168,7 +231,8 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if loading_message_id: await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=error_message)
             elif message: await message.reply_text(error_message)
             elif query: await query.message.reply_text(error_message)
-        except Exception as inner_e: await context.bot.send_message(chat_id, "❌ Внутренняя ошибка.")
+        except Exception:
+            await context.bot.send_message(chat_id, "❌ Внутренняя ошибка.")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
