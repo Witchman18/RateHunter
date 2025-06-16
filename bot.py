@@ -187,7 +187,7 @@ async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAUL
     ensure_chat_settings(chat_id)
     
     # Если это команда на поиск, вызываем соответствующую функцию и выходим
-    if data == "fetch_top_pairs_filtered":
+if data == "fetch_top_pairs_filtered":
         await fetch_and_display_top_pairs(update, context)
         return
 
