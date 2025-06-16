@@ -93,7 +93,6 @@ def ensure_chat_settings(chat_id: int):
 # ===================== ОСНОВНЫЕ ФУНКЦИИ =====================
 async def get_mexc_funding_data(min_turnover_filter: Decimal):
     """Асинхронно получает и фильтрует данные по фандингу с MEXC."""
-    # Этот URL публичный и возвращает данные по ВСЕМ фьючерсным контрактам
     mexc_url = "https://contract.mexc.com/api/v1/contract/detail"
     funding_data = []
     try:
@@ -111,15 +110,15 @@ async def get_mexc_funding_data(min_turnover_filter: Decimal):
                     if not t.get("quoteCoin") == "USDT" or t.get("state") != "SHOW":
                         continue
 
-                    # API отдает все нужные данные: ставку, точное время следующей выплаты и оборот
-                    symbol, rate_str, next_time_str, turnover_str = t.get("symbol"), str(t.get("fundingRate", 0)), str(t.get("nextSettleTime", 0)), str(t.get("volume24", 0))
+                    symbol, rate_str, next_time_str, turnover_str = t.get("symbol"), str(t.get("fundingRate")), str(t.get("nextSettleTime")), str(t.get("volume24"))
 
                     if not all([symbol, rate_str, next_time_str, turnover_str]):
                         continue
                         
                     try:
+                        # В этих строках могла быть ошибка, если приходили нечисловые значения
                         rate_d = Decimal(rate_str)
-                        next_time_int = int(next_time_str) # Это точное время в мс
+                        next_time_int = int(next_time_str)
                         turnover_d = Decimal(turnover_str) 
 
                         if turnover_d < min_turnover_filter:
@@ -129,11 +128,15 @@ async def get_mexc_funding_data(min_turnover_filter: Decimal):
                             
                         funding_data.append({
                             "exchange": "MEXC",
-                            "symbol": symbol.replace("_", ""), # Приводим к формату Bybit
+                            "symbol": symbol.replace("_", ""),
                             "rate": rate_d,
                             "next_ts": next_time_int 
                         })
-                    except (ValueError, TypeError):
+                    # === ИЗМЕНЕНИЕ ЗДЕСЬ ===
+                    # Добавили InvalidOperation, чтобы ловить ошибки преобразования текста в число
+                    except (ValueError, TypeError, decimal.InvalidOperation) as e:
+                        # Эта строка поможет понять, на какой паре споткнулся бот, но не будет забивать логи
+                        # print(f"[MEXC Parsing Warning] Could not parse data for {symbol} (value: {rate_str}, {turnover_str}): {e}")
                         continue
     except aiohttp.ClientError as e:
         print(f"Error fetching MEXC data: {e}")
@@ -142,6 +145,7 @@ async def get_mexc_funding_data(min_turnover_filter: Decimal):
         
     return funding_data
 
+# ЗАМЕНИТЕ СТАРУЮ ВЕРСИЮ ЭТОЙ ФУНКЦИИ НА ЭТУ
 async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     message = update.message
@@ -161,18 +165,15 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         loading_message_id = sent_message.message_id
 
-        # Асинхронно запускаем сбор данных с обеих бирж
         bybit_task = asyncio.create_task(session.get_tickers(category="linear"))
         mexc_task = asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter))
         
-        # Ждем выполнения обеих задач
         results = await asyncio.gather(bybit_task, mexc_task, return_exceptions=True)
         
         bybit_response, mexc_funding_data = results[0], results[1]
 
         all_funding_data = []
 
-        # Обработка Bybit
         if isinstance(bybit_response, dict) and bybit_response.get("result", {}).get("list"):
             tickers = bybit_response["result"]["list"]
             for t in tickers:
@@ -185,18 +186,16 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     all_funding_data.append({
                         "exchange": "BYBIT", "symbol": symbol, "rate": rate_d, "next_ts": next_time_int
                     })
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, decimal.InvalidOperation):
                     continue
         elif isinstance(bybit_response, Exception):
             print(f"[Bybit Data Error] Failed to fetch data: {bybit_response}")
 
-        # Обработка MEXC (данные уже готовы)
         if isinstance(mexc_funding_data, list):
             all_funding_data.extend(mexc_funding_data)
         elif isinstance(mexc_funding_data, Exception):
              print(f"[MEXC Data Error] Task failed: {mexc_funding_data}")
 
-        # Сортируем ОБЩИЙ список
         all_funding_data.sort(key=lambda x: abs(x['rate']), reverse=True)
         global latest_top_pairs
         latest_top_pairs = all_funding_data[:10] 
@@ -225,12 +224,16 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
 
     except Exception as e:
-        print(f"Error in show_top_funding: {e}"); import traceback; traceback.print_exc()
-        error_message = f"❌ Ошибка при получении топа: {e}"
+        # === ИЗМЕНЕНИЕ ЗДЕСЬ ===
+        # Теперь мы будем печатать ПОЛЕЗНУЮ ошибку в лог, а не все подряд
+        print("!!! AN ERROR OCCURRED IN show_top_funding !!!")
+        import traceback
+        traceback.print_exc() # Эта команда выведет полный и понятный лог ошибки
+        
+        error_message = f"❌ Ошибка при получении топа. Проверьте логи."
         try:
             if loading_message_id: await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=error_message)
-            elif message: await message.reply_text(error_message)
-            elif query: await query.message.reply_text(error_message)
+            else: await context.bot.send_message(chat_id=chat_id, text=error_message)
         except Exception:
             await context.bot.send_message(chat_id, "❌ Внутренняя ошибка.")
 
