@@ -143,6 +143,7 @@ async def get_mexc_funding_data(min_turnover_filter: Decimal):
         
     return funding_data
 
+# Эта функция будет создавать меню с кнопками-фильтрами
 async def show_top_funding_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = update.effective_chat.id
@@ -150,7 +151,6 @@ async def show_top_funding_menu(update: Update, context: ContextTypes.DEFAULT_TY
     
     active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
     
-    # Создаем кнопки с актуальными галочками
     bybit_text = "✅ BYBIT" if "BYBIT" in active_exchanges else "⬜️ BYBIT"
     mexc_text = "✅ MEXC" if "MEXC" in active_exchanges else "⬜️ MEXC"
     
@@ -168,20 +168,15 @@ async def show_top_funding_menu(update: Update, context: ContextTypes.DEFAULT_TY
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     menu_text = "Выберите биржи для поиска и нажмите 'Показать'."
     
-    # query.message будет None, если это первая отправка, а не редактирование
-    if query and query.message:
-        await query.answer() # Отвечаем на нажатие кнопки
-        # Пытаемся отредактировать. Если не получится (сообщение то же), ничего страшного
+    if query:
         try:
             await query.edit_message_text(text=menu_text, reply_markup=reply_markup)
         except Exception as e:
             if "Message is not modified" not in str(e):
                 print(f"Error editing message in show_top_funding_menu: {e}")
     else:
-        # Если это первый вызов (от текстовой команды), отправляем новое сообщение
         await update.message.reply_text(text=menu_text, reply_markup=reply_markup)
 
 # ==============================================================================
@@ -324,39 +319,37 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Этот обработчик будет управлять меню "Топ-пар"
 async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() # Сразу отвечаем на нажатие, чтобы кнопка не "висела"
+    await query.answer() # Сразу отвечаем на нажатие
     
     chat_id = query.message.chat_id
     data = query.data
     ensure_chat_settings(chat_id)
     
+    if data == "fetch_top_pairs_filtered":
+        await fetch_and_display_top_pairs(update, context)
+        return
+        
+    if data == "back_to_funding_menu":
+        await show_top_funding_menu(update, context)
+        return
+
+    # Логика для кнопок-переключателей
     active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
     
-    # Логика переключения
     if data.startswith("toggle_exchange_"):
         exchange = data.split("_")[-1]
         if exchange in active_exchanges:
             active_exchanges.remove(exchange)
         else:
             active_exchanges.append(exchange)
-        sniper_active[chat_id]['active_exchanges'] = active_exchanges
-        await show_top_funding_menu(update, context) # Перерисовываем меню
-
     elif data == "select_all_exchanges":
-        sniper_active[chat_id]['active_exchanges'] = ['BYBIT', 'MEXC']
-        await show_top_funding_menu(update, context) # Перерисовываем меню
-
+        active_exchanges = ['BYBIT', 'MEXC']
     elif data == "deselect_all_exchanges":
-        sniper_active[chat_id]['active_exchanges'] = []
-        await show_top_funding_menu(update, context) # Перерисовываем меню
+        active_exchanges = []
         
-    elif data == "fetch_top_pairs_filtered":
-        # Вызываем функцию поиска
-        await fetch_and_display_top_pairs(update, context)
-        
-    elif data == "back_to_funding_menu":
-        # Возвращаемся к меню
-        await show_top_funding_menu(update, context)
+    sniper_active[chat_id]['active_exchanges'] = active_exchanges
+    # После любого изменения настроек - перерисовываем меню
+    await show_top_funding_menu(update, context)
 
 
 async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_to_edit: Update = None):
