@@ -1,5 +1,4 @@
 # --- START OF FILE bot (8).py ---
-
 import os
 import asyncio
 import time # Импортируем time для работы с timestamp
