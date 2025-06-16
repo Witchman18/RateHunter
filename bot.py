@@ -198,7 +198,7 @@ async def show_top_funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         all_funding_data.sort(key=lambda x: abs(x['rate']), reverse=True)
         global latest_top_pairs
-        latest_top_pairs = all_funding_data[:10] 
+        latest_top_pairs = all_funding_data[:7] 
 
         if not latest_top_pairs:
             result_msg = f"📊 Нет подходящих пар на Bybit и MEXC (фильтр оборота: {current_min_turnover_filter:,.0f} USDT)."
