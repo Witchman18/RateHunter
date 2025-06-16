@@ -142,35 +142,30 @@ async def get_mexc_funding_data(min_turnover_filter: Decimal):
         
     return funding_data
 
-# === НОВЫЙ ЕДИНЫЙ ОБРАБОТЧИК МЕНЮ "ТОП-ПАРЫ" ===
+# === ШАГ 1: ЗАМЕНИТЕ ЭТУ ФУНКЦИЮ ===
 async def funding_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = update.effective_chat.id
     ensure_chat_settings(chat_id)
 
-    # Если есть query, значит, было нажатие на кнопку
     if query:
-        await query.answer() # Сразу отвечаем, чтобы убрать "часики"
+        await query.answer()
         data = query.data
 
-        # Если нажали "Показать", то запускаем поиск и выходим из функции
         if data == "fetch_top_pairs_filtered":
             await fetch_and_display_top_pairs(update, context)
             return
         
-        # Если нажали "Назад", то просто показываем меню (код ниже)
         if data == "back_to_funding_menu":
-            pass # Просто даем коду дойти до секции отображения меню
-
-        # Если это кнопки-переключатели
+            # Просто даем коду дойти до секции перерисовки
+            pass
         else:
+            # Обрабатываем все кнопки-переключатели
             active_exchanges = sniper_active[chat_id]['active_exchanges']
             if data.startswith("toggle_exchange_"):
                 exchange = data.split("_")[-1]
-                if exchange in active_exchanges:
-                    active_exchanges.remove(exchange)
-                else:
-                    active_exchanges.append(exchange)
+                if exchange in active_exchanges: active_exchanges.remove(exchange)
+                else: active_exchanges.append(exchange)
             elif data == "select_all_exchanges":
                 active_exchanges = ['BYBIT', 'MEXC']
             elif data == "deselect_all_exchanges":
@@ -178,8 +173,6 @@ async def funding_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             sniper_active[chat_id]['active_exchanges'] = active_exchanges
     
     # --- Секция отображения/перерисовки меню ---
-    # Этот код выполнится в любом случае, кроме нажатия "Показать"
-    
     active_exchanges = sniper_active[chat_id]['active_exchanges']
     bybit_text = "✅ BYBIT" if "BYBIT" in active_exchanges else "⬜️ BYBIT"
     mexc_text = "✅ MEXC" if "MEXC" in active_exchanges else "⬜️ MEXC"
@@ -192,19 +185,17 @@ async def funding_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     reply_markup = InlineKeyboardMarkup(keyboard)
     menu_text = "Выберите биржи для поиска и нажмите 'Показать'."
 
-    # Если это было нажатие кнопки, редактируем сообщение
     if query:
         try:
             await query.edit_message_text(text=menu_text, reply_markup=reply_markup)
         except Exception as e:
-            if "Message is not modified" not in str(e): 
-                print(f"Error editing message, but it's not a 'not modified' error: {e}")
-    # Если это была текстовая команда, отправляем новое
+            if "Message is not modified" not in str(e): print(f"Error editing menu: {e}")
     else:
         await update.message.reply_text(text=menu_text, reply_markup=reply_markup)
 # ==============================================================================
 # === ЭТО ПОЛНЫЙ И ОКОНЧАТЕЛЬНЫЙ КОД ФУНКЦИИ. ЗАМЕНИТЕ ВАШУ ВЕРСИЮ ЦЕЛИКОМ ===
 # ==============================================================================
+# === ШАГ 2: ЗАМЕНИТЕ ЭТУ ФУНКЦИЮ ===
 async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = update.effective_chat.id
@@ -219,55 +210,43 @@ async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFA
 
     try:
         await query.edit_message_text(f"🔄 Ищу топ-5 пар на {', '.join(active_exchanges)}...")
-
-        # === ИЗМЕНЕНИЕ 1: Мы будем собирать задачи и их "имена" ===
-        tasks = []
-        task_map = {} # Словарь для сопоставления задачи с биржей
-
-        if 'BYBIT' in active_exchanges:
-            bybit_task = asyncio.create_task(session.get_tickers(category="linear"))
-            tasks.append(bybit_task)
-            task_map[bybit_task] = 'BYBIT'
-
-        if 'MEXC' in active_exchanges:
-            mexc_task = asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter))
-            tasks.append(mexc_task)
-            task_map[mexc_task] = 'MEXC'
         
-        # === ИЗМЕНЕНИЕ 2: Используем `asyncio.wait` вместо `gather` ===
-        # Это более гибкий способ, который лучше работает с разным количеством задач
-        done, pending = await asyncio.wait(tasks)
+        tasks = []
+        loop = asyncio.get_running_loop()
+
+        # Правильно создаем задачи для ОБОИХ типов функций
+        if 'BYBIT' in active_exchanges:
+            # Запускаем синхронную функцию в отдельном потоке, чтобы не блокировать бота
+            tasks.append(loop.run_in_executor(None, lambda: session.get_tickers(category="linear")))
+        if 'MEXC' in active_exchanges:
+            tasks.append(asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter)))
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
         all_funding_data = []
-        
-        for task in done:
-            exchange_name = task_map[task]
-            try:
-                res = task.result()
-            except Exception as e:
-                print(f"[Data Fetch Error for {exchange_name}] Task failed: {e}")
+        # Теперь обработка результатов стала проще и надежнее
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                print(f"Error getting data from a source: {res}")
                 continue
+            
+            # Определяем, какая биржа вернула результат, по порядку
+            current_exchange = active_exchanges[i]
 
-            # Обработка Bybit
-            if exchange_name == 'BYBIT':
+            if current_exchange == 'BYBIT':
                 if res.get("result") and res.get("result", {}).get("list"):
                     for t in res["result"]["list"]:
-                        symbol, rate_str, next_time_str, turnover_str = t.get("symbol"), t.get("fundingRate"), t.get("nextFundingTime"), t.get("turnover24h")
-                        if not all([symbol, rate_str, next_time_str, turnover_str]): continue
                         try:
-                            rate_d, next_time_int, turnover_d = Decimal(rate_str), int(next_time_str), Decimal(turnover_str)
-                            if turnover_d < current_min_turnover_filter: continue
-                            if abs(rate_d) < MIN_FUNDING_RATE_ABS_FILTER: continue
-                            all_funding_data.append({"exchange": "BYBIT", "symbol": symbol, "rate": rate_d, "next_ts": next_time_int})
+                            rate_d = Decimal(t.get("fundingRate"))
+                            turnover_d = Decimal(t.get("turnover24h"))
+                            if turnover_d < current_min_turnover_filter or abs(rate_d) < MIN_FUNDING_RATE_ABS_FILTER: continue
+                            all_funding_data.append({"exchange": "BYBIT", "symbol": t.get("symbol"), "rate": rate_d, "next_ts": int(t.get("nextFundingTime"))})
                         except (ValueError, TypeError, decimal.InvalidOperation): continue
-            
-            # Обработка MEXC
-            elif exchange_name == 'MEXC':
+            elif current_exchange == 'MEXC':
                 if isinstance(res, list):
                     all_funding_data.extend(res)
 
         all_funding_data.sort(key=lambda x: abs(x['rate']), reverse=True)
-        
         top_pairs = all_funding_data[:5]
 
         if not top_pairs:
@@ -288,22 +267,13 @@ async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFA
                 except Exception:
                      result_msg += f"🏦 *{exchange}* | 🎟️ *{symbol}* - _ошибка отображения_\n\n"
         
-        reply_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")
-        ]])
-        
-        await query.edit_message_text(
-            text=result_msg.strip(), 
-            reply_markup=reply_markup,
-            parse_mode='Markdown', 
-            disable_web_page_preview=True
-        )
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")]])
+        await query.edit_message_text(text=result_msg.strip(), reply_markup=reply_markup, parse_mode='Markdown', disable_web_page_preview=True)
 
     except Exception as e:
         print("!!! AN ERROR OCCURRED IN fetch_and_display_top_pairs !!!")
         import traceback
         traceback.print_exc()
-        
         error_message = "❌ Ошибка при получении топа. Проверьте логи."
         try:
             await query.edit_message_text(text=error_message)
