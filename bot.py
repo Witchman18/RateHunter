@@ -3,6 +3,7 @@ import os
 import asyncio
 import time # Импортируем time для работы с timestamp
 import aiohttp
+import decimal
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP # Используем Decimal для точности
 
@@ -63,7 +64,6 @@ ORDERBOOK_FETCH_RETRY_DELAY = 0.2
 def ensure_chat_settings(chat_id: int):
     if chat_id not in sniper_active:
         sniper_active[chat_id] = {
-        'active_exchanges': ['BYBIT', 'MEXC'],
             'active': False,
             'real_marja': None,
             'real_plecho': None,
@@ -182,16 +182,13 @@ async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer() # Сразу отвечаем на нажатие
     
-    chat_id = query.message.chat_id
+    chat_id = query.message.chat.id
     data = query.data
     ensure_chat_settings(chat_id)
     
     # Если это команда на поиск, вызываем соответствующую функцию и выходим
     if data == "fetch_top_pairs_filtered":
-        try:
-            await fetch_and_display_top_pairs(update, context)
-        except Exception as e:
-            print(f'Error in top_funding_menu_callback: {e}')
+        await fetch_and_display_top_pairs(update, context)
         return
     
     # Если это кнопка "Назад", просто показываем меню
@@ -219,79 +216,472 @@ async def top_funding_menu_callback(update: Update, context: ContextTypes.DEFAUL
     await show_top_funding_menu(update, context)
 
 # === ШАГ 2: ЗАМЕНИТЕ ЭТУ ФУНКЦИЮ ===
-
 async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = update.effective_chat.id
     ensure_chat_settings(chat_id)
-
+    
     active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
     current_min_turnover_filter = sniper_active[chat_id].get('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
-
+    
     if not active_exchanges:
         await query.answer(text="⚠️ Выберите хотя бы одну биржу!", show_alert=True)
         return
 
     try:
         await query.edit_message_text(f"🔄 Ищу топ-5 пар на {', '.join(active_exchanges)}...")
-
+        
         tasks = []
-        exchange_map = {}
+        loop = asyncio.get_running_loop()
 
+        # Правильно создаем задачи для ОБОИХ типов функций
         if 'BYBIT' in active_exchanges:
-            loop = asyncio.get_running_loop()
-            bybit_task = loop.run_in_executor(None, lambda: session.get_tickers(category="linear"))
-            tasks.append(bybit_task)
-            exchange_map[bybit_task] = 'BYBIT'
-
+            # Запускаем синхронную функцию в отдельном потоке, чтобы не блокировать бота
+            tasks.append(loop.run_in_executor(None, lambda: session.get_tickers(category="linear")))
         if 'MEXC' in active_exchanges:
-            mexc_task = asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter))
-            tasks.append(mexc_task)
-            exchange_map[mexc_task] = 'MEXC'
-
+            tasks.append(asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter)))
+        
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
+        
         all_funding_data = []
-
-        for task, res in zip(tasks, results):
-            exch = exchange_map.get(task, "UNKNOWN")
+        # Теперь обработка результатов стала проще и надежнее
+        for i, res in enumerate(results):
             if isinstance(res, Exception):
-                print(f"Error from {exch}: {res}")
+                print(f"Error getting data from a source: {res}")
                 continue
+            
+            # Определяем, какая биржа вернула результат, по порядку
+            current_exchange = active_exchanges[i]
 
-            if exch == 'BYBIT':
-                if res.get("result") and res["result"].get("list"):
+            if current_exchange == 'BYBIT':
+                if res.get("result") and res.get("result", {}).get("list"):
                     for t in res["result"]["list"]:
                         try:
                             rate_d = Decimal(t.get("fundingRate"))
                             turnover_d = Decimal(t.get("turnover24h"))
-                            if turnover_d < current_min_turnover_filter:
-                                continue
-                            symbol = t["symbol"]
-                            all_funding_data.append((exch, symbol, rate_d, turnover_d))
-                        except:
-                            continue
+                            if turnover_d < current_min_turnover_filter or abs(rate_d) < MIN_FUNDING_RATE_ABS_FILTER: continue
+                            all_funding_data.append({"exchange": "BYBIT", "symbol": t.get("symbol"), "rate": rate_d, "next_ts": int(t.get("nextFundingTime"))})
+                        except (ValueError, TypeError, decimal.InvalidOperation): continue
+            elif current_exchange == 'MEXC':
+                if isinstance(res, list):
+                    all_funding_data.extend(res)
 
-            elif exch == 'MEXC':
-                all_funding_data.extend(res)
+        all_funding_data.sort(key=lambda x: abs(x['rate']), reverse=True)
+        top_pairs = all_funding_data[:5]
 
-        if not all_funding_data:
-            await query.edit_message_text("❌ Не удалось получить данные по парам.")
-            return
-
-        sorted_data = sorted(all_funding_data, key=lambda x: abs(x[2]), reverse=True)[:5]
-        msg = "📊 Топ-5 пар по фандингу:
-"
-        for exch, sym, rate, turnover in sorted_data:
-            msg += f"{exch} | {sym}: {rate:.4%}, оборот: {turnover:,.0f}$
-"
-
-        await query.edit_message_text(msg)
+        if not top_pairs:
+            result_msg = f"📊 Нет подходящих пар на выбранных биржах."
+        else:
+            result_msg = f"📊 Топ-5 пар ({', '.join(active_exchanges)}):\n\n"
+            now_ts_dt = datetime.utcnow().timestamp()
+            for item in top_pairs:
+                exchange, symbol, rate, ts_ms = item['exchange'], item['symbol'], item['rate'], item['next_ts']
+                try:
+                    delta_sec = int(ts_ms / 1000 - now_ts_dt)
+                    if delta_sec < 0: delta_sec = 0
+                    h, rem = divmod(delta_sec, 3600); m, s = divmod(rem, 60)
+                    time_left = f"{h:01d}ч {m:02d}м {s:02d}с"
+                    direction = "📈 LONG (шорты платят)" if rate < 0 else "📉 SHORT (лонги платят)"
+                    result_msg += (f"🏦 *{exchange}* | 🎟️ *{symbol}*\n{direction}\n"
+                                   f"💹 Фандинг: `{rate * 100:.4f}%`\n⌛ Выплата через: `{time_left}`\n\n")
+                except Exception:
+                     result_msg += f"🏦 *{exchange}* | 🎟️ *{symbol}* - _ошибка отображения_\n\n"
+        
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")]])
+        await query.edit_message_text(text=result_msg.strip(), reply_markup=reply_markup, parse_mode='Markdown', disable_web_page_preview=True)
 
     except Exception as e:
-        print(f"Top-pairs fetch error: {e}")
-        await query.edit_message_text("❌ Ошибка при получении топа. Проверьте логи.")
+        print("!!! AN ERROR OCCURRED IN fetch_and_display_top_pairs !!!")
+        import traceback
+        traceback.print_exc()
+        error_message = "❌ Ошибка при получении топа. Проверьте логи."
+        try:
+            await query.edit_message_text(text=error_message)
+        except Exception:
+            await context.bot.send_message(chat_id, "❌ Внутренняя ошибка.")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Привет! Я фандинг-бот RateHunter. Выбери действие:", reply_markup=reply_markup)
 
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    # Попытка удалить сообщение с инлайн-клавиатурой, если мы выходим из диалога настройки
+    original_message_id = context.user_data.pop('original_message_id', None)
+    
+    await update.message.reply_text("Действие отменено.")
+
+    if original_message_id:
+        try:
+            # Это сообщение было отредактировано для запроса ввода.
+            # Мы хотим вернуть его к виду основного меню снайпера.
+            # Вместо удаления и новой отправки, попробуем восстановить.
+            # Но проще всего - просто отправить новое меню.
+            await context.bot.delete_message(chat_id=chat_id, message_id=original_message_id)
+        except Exception as e:
+            print(f"Error deleting original message on cancel: {e}")
+    
+    # В любом случае, после отмены диалога настроек, покажем основное меню снайпера
+    # Это предполагает, что cancel вызывается из диалогов, начатых из меню снайпера
+    # Если cancel может быть вызван откуда-то еще, эту логику нужно будет уточнить
+    # или вызывать sniper_control_menu только если мы уверены, что были в его контексте.
+    # Для простоты, пока просто отправляем новое, если были в user_data ключи.
+    # await send_final_config_message(chat_id, context) # Показываем актуальное меню
+    # Лучше, чтобы cancel просто завершал, а пользователь сам вызывал меню снова, если нужно.
+    return ConversationHandler.END
+
+async def send_final_config_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_to_edit: Update = None):
+    ensure_chat_settings(chat_id)
+    settings = sniper_active[chat_id]
+    
+    marja = settings.get('real_marja')
+    plecho = settings.get('real_plecho')
+    max_trades = settings.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
+    is_active = settings.get('active', False)
+    status_text = "🟢 Активен" if is_active else "🔴 Остановлен"
+    min_turnover = settings.get('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
+    min_pnl = settings.get('min_expected_pnl_usdt', DEFAULT_MIN_EXPECTED_PNL_USDT)
+    # Получаем новые настройки с дефолтами
+    min_fr_thresh = settings.get('min_funding_rate_threshold', Decimal("0.001"))
+    tp_ratio_funding = settings.get('tp_target_profit_ratio_of_funding', Decimal("0.75"))
+    sl_ratio_tp = settings.get('sl_max_loss_ratio_to_tp_target', Decimal("0.6"))
+
+    marja_display = marja if marja is not None else 'Не уст.'
+    plecho_display = plecho if plecho is not None else 'Не уст.'
+
+    summary_parts = [
+        f"⚙️ **Текущие настройки RateHunter:**",
+        f"💰 Маржа (1 сделка): `{marja_display}` USDT",
+        f"⚖️ Плечо: `{plecho_display}`x",
+        f"🔢 Макс. сделок: `{max_trades}`",
+        f"💧 Мин. оборот: `{min_turnover:,.0f}` USDT",
+        f"📊 Мин. ставка фандинга: `{min_fr_thresh*100:.1f}%`",
+        f"🎯 Мин. профит (предв. оценка): `{min_pnl}` USDT",
+        f"📈 TP (цель от фандинга): `{tp_ratio_funding*100:.0f}%`",
+        f"📉 SL (риск от TP): `{sl_ratio_tp*100:.0f}%`",
+        f"🚦 Статус снайпера: *{status_text}*"
+    ]
+    
+    if marja is None or plecho is None:
+        summary_parts.append("\n‼️ *Для запуска снайпера установите маржу и плечо!*")
+    
+    summary_text = "\n\n".join(summary_parts) # ИСПРАВЛЕН ОТСТУП
+
+    buttons = []
+    status_button_text = "Остановить снайпер" if is_active else "Запустить снайпер"
+    buttons.append([InlineKeyboardButton(f"{'🔴' if is_active else '🟢'} {status_button_text}", callback_data="toggle_sniper")])
+    
+    trade_limit_buttons = []
+    for i in range(1, 6):
+        text = f"[{i}]" if i == max_trades else f"{i}"
+        trade_limit_buttons.append(InlineKeyboardButton(text, callback_data=f"set_max_trades_{i}"))
+    buttons.append([InlineKeyboardButton("Лимит сделок:", callback_data="noop")] + trade_limit_buttons)
+
+    buttons.append([InlineKeyboardButton(f"💧 Мин. оборот: {min_turnover:,.0f} USDT", callback_data="set_min_turnover_config")])
+    buttons.append([InlineKeyboardButton(f"🎯 Мин. профит: {min_pnl} USDT", callback_data="set_min_profit_config")])
+    
+    # --- ИСПРАВЛЕНЫ ОТСТУПЫ ДЛЯ НОВЫХ КНОПОК ---
+    # Кнопки для Мин. ставки фандинга
+    fr_buttons_row = [InlineKeyboardButton("Мин.Фанд%:", callback_data="noop")]
+    fr_options = {"0.1": "0.001", "0.3": "0.003", "0.5": "0.005", "1.0": "0.01"} 
+    for text, val_str in fr_options.items():
+        val_decimal = Decimal(val_str)
+        button_text = f"[{text}%]" if min_fr_thresh == val_decimal else f"{text}%"
+        fr_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_min_fr_{val_str}"))
+    buttons.append(fr_buttons_row)
+
+    # Кнопки для TP (доля от фандинга)
+    tp_buttons_row = [InlineKeyboardButton("TP% от Ф:", callback_data="noop")]
+    tp_options = {"50": "0.50", "65": "0.65", "75": "0.75", "90": "0.90"}
+    for text, val_str in tp_options.items():
+        val_decimal = Decimal(val_str)
+        button_text = f"[{text}%]" if tp_ratio_funding == val_decimal else f"{text}%"
+        tp_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_tp_rf_{val_str}"))
+    buttons.append(tp_buttons_row)
+    
+    # Кнопки для SL (доля от TP)
+    sl_buttons_row = [InlineKeyboardButton("SL% от TP:", callback_data="noop")]
+    sl_options = {"40": "0.40", "50": "0.50", "60": "0.60", "75": "0.75"}
+    for text, val_str in sl_options.items():
+        val_decimal = Decimal(val_str)
+        button_text = f"[{text}%]" if sl_ratio_tp == val_decimal else f"{text}%"
+        sl_buttons_row.append(InlineKeyboardButton(button_text, callback_data=f"set_sl_rtp_{val_str}"))
+    buttons.append(sl_buttons_row)
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ОТСТУПОВ ДЛЯ НОВЫХ КНОПОК ---
+    
+    buttons.append([InlineKeyboardButton("📊 Показать топ пар", callback_data="show_top_pairs_inline")])
+    reply_markup = InlineKeyboardMarkup(buttons)
+
+    try:
+        if message_to_edit and message_to_edit.callback_query and message_to_edit.callback_query.message:
+            await message_to_edit.callback_query.edit_message_text(text=summary_text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=summary_text, reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        print(f"Error sending/editing final config message to {chat_id}: {e}")
+        if message_to_edit: # Если редактирование не удалось, пробуем отправить новое
+             await context.bot.send_message(chat_id=chat_id, text=summary_text + "\n(Не удалось обновить предыдущее меню)", reply_markup=reply_markup, parse_mode='Markdown')
+
+# ===================== УСТАНОВКА МАРЖИ/ПЛЕЧА =====================
+async def set_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("💰 Введите сумму РЕАЛЬНОЙ маржи для ОДНОЙ сделки (в USDT):")
+    return SET_MARJA
+
+async def save_real_marja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id; ensure_chat_settings(chat_id)
+    try:
+        marja = Decimal(update.message.text.strip().replace(",", "."))
+        if marja <= 0: await update.message.reply_text("❌ Маржа > 0."); return ConversationHandler.END # Завершаем, если некорректно
+        sniper_active[chat_id]["real_marja"] = marja
+        await update.message.reply_text(f"✅ Маржа: {marja} USDT")
+        await send_final_config_message(chat_id, context) 
+    except (ValueError, TypeError): await update.message.reply_text("❌ Неверный формат. Число (100 или 55.5)."); return SET_MARJA # Просим снова
+    except Exception as e: await update.message.reply_text(f"❌ Ошибка: {e}"); return ConversationHandler.END
+    return ConversationHandler.END
+
+async def set_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⚖ Введите размер плеча (например, 5 или 10):")
+    return SET_PLECHO
+
+async def save_real_plecho(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id; ensure_chat_settings(chat_id)
+    try:
+        plecho = Decimal(update.message.text.strip().replace(",", "."))
+        if not (0 < plecho <= 100): await update.message.reply_text("❌ Плечо > 0 и <= 100."); return ConversationHandler.END
+        sniper_active[chat_id]["real_plecho"] = plecho
+        await update.message.reply_text(f"✅ Плечо: {plecho}x")
+        await send_final_config_message(chat_id, context)
+    except (ValueError, TypeError): await update.message.reply_text("❌ Неверный формат. Число (10)."); return SET_PLECHO
+    except Exception as e: await update.message.reply_text(f"❌ Ошибка: {e}"); return ConversationHandler.END
+    return ConversationHandler.END
+
+# ===================== МЕНЮ УПРАВЛЕНИЯ СНАЙПЕРОМ =====================
+async def sniper_control_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ensure_chat_settings(chat_id)
+    # Если update.callback_query существует, значит мы пришли из inline кнопки и можем редактировать
+    # Иначе, это команда из ReplyKeyboard, отправляем новое сообщение
+    await send_final_config_message(chat_id, context, message_to_edit=update if update.callback_query else None)
+async def sniper_control_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() # Отвечаем на callback сразу, чтобы кнопка не "висела"
+    chat_id = query.message.chat.id
+    data = query.data
+    ensure_chat_settings(chat_id)
+    chat_settings = sniper_active[chat_id]
+
+    action_taken = False # Флаг, что какое-то действие было выполнено и меню нужно обновить
+
+    if data == "toggle_sniper":
+        if chat_settings.get('real_marja') is None or chat_settings.get('real_plecho') is None:
+            # Отправляем всплывающее уведомление вместо сообщения в чат, чтобы не замусоривать
+            await context.bot.answer_callback_query(query.id, text="‼️ Не установлены маржа и/или плечо!", show_alert=True)
+        else:
+            new_status = not chat_settings.get('active', False)
+            chat_settings['active'] = new_status
+            # Сообщение о запуске/остановке лучше отправить отдельно, а меню обновить.
+            # Для answer_callback_query текст короткий, основное изменение будет в меню.
+            await context.bot.answer_callback_query(query.id, text="🚀 Снайпер запущен!" if new_status else "🛑 Снайпер остановлен.")
+            action_taken = True # Статус всегда меняется, так что меню нужно обновить
+    
+    elif data.startswith("set_max_trades_"):
+        try:
+            new_max_trades = int(data.split("_")[-1])
+            current_max_trades = chat_settings.get('max_concurrent_trades', DEFAULT_MAX_CONCURRENT_TRADES)
+            if 1 <= new_max_trades <= 5:
+                if current_max_trades != new_max_trades:
+                    chat_settings['max_concurrent_trades'] = new_max_trades
+                    action_taken = True
+                    await context.bot.answer_callback_query(query.id, text=f"Лимит сделок: {new_max_trades}")
+                else:
+                    # Значение не изменилось, просто отвечаем на callback
+                    await context.bot.answer_callback_query(query.id, text="Лимит сделок не изменен.")
+            else: 
+                 # Это условие не должно срабатывать, если кнопки генерируются правильно
+                 await context.bot.answer_callback_query(query.id, text="⚠️ Ошибка: Неверное значение лимита.", show_alert=True)
+        except (ValueError, IndexError): 
+             await context.bot.answer_callback_query(query.id, text="⚠️ Ошибка обработки лимита.", show_alert=True)
+
+    elif data.startswith("set_min_fr_"): 
+        try:
+            rate_val_str = data.split("_")[-1] 
+            new_val = Decimal(rate_val_str)
+            current_val = chat_settings.get('min_funding_rate_threshold', Decimal("0.001"))
+            if current_val != new_val:
+                chat_settings['min_funding_rate_threshold'] = new_val
+                action_taken = True
+                await context.bot.answer_callback_query(query.id, text=f"Мин. ставка фандинга: {new_val*100:.1f}%")
+            else:
+                await context.bot.answer_callback_query(query.id, text="Значение не изменилось")
+        except Exception as e:
+            print(f"Error setting min_funding_rate_threshold: {e}")
+            await context.bot.answer_callback_query(query.id, text="Ошибка установки значения", show_alert=True)
+
+    elif data.startswith("set_tp_rf_"): 
+        try:
+            val_str = data.split("_")[-1] 
+            new_val = Decimal(val_str)
+            current_val = chat_settings.get('tp_target_profit_ratio_of_funding', Decimal("0.75"))
+            if current_val != new_val:
+                chat_settings['tp_target_profit_ratio_of_funding'] = new_val
+                action_taken = True
+                await context.bot.answer_callback_query(query.id, text=f"TP (доля от фандинга): {new_val*100:.0f}%")
+            else:
+                await context.bot.answer_callback_query(query.id, text="Значение не изменилось")
+        except Exception as e:
+            print(f"Error setting tp_target_profit_ratio_of_funding: {e}")
+            await context.bot.answer_callback_query(query.id, text="Ошибка установки значения", show_alert=True)
+
+    elif data.startswith("set_sl_rtp_"): 
+        try:
+            val_str = data.split("_")[-1]
+            new_val = Decimal(val_str)
+            current_val = chat_settings.get('sl_max_loss_ratio_to_tp_target', Decimal("0.6"))
+            if current_val != new_val:
+                chat_settings['sl_max_loss_ratio_to_tp_target'] = new_val
+                action_taken = True
+                await context.bot.answer_callback_query(query.id, text=f"SL (доля от TP): {new_val*100:.0f}%")
+            else:
+                await context.bot.answer_callback_query(query.id, text="Значение не изменилось")
+        except Exception as e:
+            print(f"Error setting sl_max_loss_ratio_to_tp_target: {e}")
+            await context.bot.answer_callback_query(query.id, text="Ошибка установки значения", show_alert=True)
+            
+    elif data == "show_top_pairs_inline":
+        # Эта функция сама управляет сообщением (редактирует или отправляет новое)
+        await show_top_funding(update, context) 
+        # После показа топа, мы НЕ хотим перерисовывать меню настроек поверх него.
+        return # Важно! Выходим, чтобы не вызывать send_final_config_message ниже
+    
+    elif data == "noop":
+        # Ничего не делаем, на callback уже ответили в начале функции
+        return # Важно! Выходим, чтобы не вызывать send_final_config_message
+    
+    # Только если action_taken is True, обновляем сообщение с конфигурацией
+    if action_taken:
+        await send_final_config_message(chat_id, context, message_to_edit=update)
+    # Если action_taken is False (например, нажали на уже активную кнопку или noop),
+    # то меню не перерисовываем, чтобы избежать ошибки "Message is not modified".
+
+# --- Настройка Мин. Оборота ---
+async def ask_min_turnover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() # Отвечаем сразу!
+    chat_id = query.message.chat.id
+    ensure_chat_settings(chat_id)
+    current_val = sniper_active[chat_id].get('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
+    
+    # Удаляем сообщение с кнопками (старое меню настроек)
+    try:
+        await query.delete_message()
+    except Exception as e:
+        print(f"Error deleting old menu message in ask_min_turnover: {e}")
+        # Если удалить не удалось, ничего страшного, просто отправим новый промпт.
+        # Главное, что мы не будем пытаться его редактировать.
+        
+    # Отправляем новое сообщение с запросом ввода
+    sent_message = await context.bot.send_message(
+        chat_id, 
+        f"💧 Введите мин. суточный оборот в USDT (текущее: {current_val:,.0f}).\nПример: 5000000\n\nДля отмены введите /cancel"
+    )
+    context.user_data['prompt_message_id'] = sent_message.message_id 
+    return SET_MIN_TURNOVER_CONFIG
+
+async def save_min_turnover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ensure_chat_settings(chat_id)
+    prompt_message_id = context.user_data.pop('prompt_message_id', None)
+    user_input_message_id = update.message.message_id
+    
+    should_send_new_menu = True # Флаг, чтобы отправить меню, даже если была ошибка (но не требующая повторного ввода)
+
+    try:
+        value_str = update.message.text.strip().replace(",", "")
+        value = Decimal(value_str)
+        if value < 0: 
+            await update.message.reply_text("❌ Оборот должен быть положительным числом. Нажмите кнопку настройки в меню снова.");
+            should_send_new_menu = False # Пользователь должен сам нажать кнопку в новом меню
+        else:
+            sniper_active[chat_id]['min_turnover_usdt'] = value
+            await update.message.reply_text(f"✅ Мин. оборот установлен: {value:,.0f} USDT")
+            
+    except (ValueError, TypeError): 
+        await update.message.reply_text("❌ Неверный формат. Введите число. Нажмите кнопку настройки в меню снова.");
+        should_send_new_menu = False
+    except Exception as e: 
+        await update.message.reply_text(f"❌ Произошла ошибка: {e}. Нажмите кнопку настройки в меню снова.")
+        should_send_new_menu = False
+    
+    # Удаляем сообщения диалога (сообщение с вводом пользователя и сообщение с промптом)
+    try: 
+        await context.bot.delete_message(chat_id=chat_id, message_id=user_input_message_id)
+    except Exception as e: print(f"Error deleting user input message: {e}")
+    
+    if prompt_message_id:
+        try: 
+            await context.bot.delete_message(chat_id=chat_id, message_id=prompt_message_id)
+        except Exception as e: print(f"Error deleting prompt message: {e}")
+
+    if should_send_new_menu:
+        await send_final_config_message(chat_id, context) # Отправляем новое актуальное меню
+        
+    return ConversationHandler.END
+# --- Настройка Мин. Профита ---
+async def ask_min_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() # Отвечаем сразу!
+    chat_id = query.message.chat.id
+    ensure_chat_settings(chat_id)
+    current_val = sniper_active[chat_id].get('min_expected_pnl_usdt', DEFAULT_MIN_EXPECTED_PNL_USDT)
+    
+    try:
+        await query.delete_message()
+    except Exception as e:
+        print(f"Error deleting old menu message in ask_min_profit: {e}")
+        
+    sent_message = await context.bot.send_message(
+        chat_id, 
+        f"💰 Введите мин. ожидаемый профит в USDT (текущее: {current_val}).\nПример: 0.05\n\nДля отмены введите /cancel"
+    )
+    context.user_data['prompt_message_id'] = sent_message.message_id
+    return SET_MIN_PROFIT_CONFIG
+
+async def save_min_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ensure_chat_settings(chat_id)
+    prompt_message_id = context.user_data.pop('prompt_message_id', None)
+    user_input_message_id = update.message.message_id
+    
+    should_send_new_menu = True
+
+    try:
+        value_str = update.message.text.strip().replace(",", ".")
+        value = Decimal(value_str)
+        sniper_active[chat_id]['min_expected_pnl_usdt'] = value
+        await update.message.reply_text(f"✅ Мин. профит установлен: {value} USDT")
+            
+    except (ValueError, TypeError): 
+        await update.message.reply_text("❌ Неверный формат. Введите число (например, 0.05). Нажмите кнопку настройки в меню снова.");
+        should_send_new_menu = False
+    except Exception as e: 
+        await update.message.reply_text(f"❌ Произошла ошибка: {e}. Нажмите кнопку настройки в меню снова.")
+        should_send_new_menu = False
+    
+    try: 
+        await context.bot.delete_message(chat_id=chat_id, message_id=user_input_message_id)
+    except Exception as e: print(f"Error deleting user input message for profit: {e}")
+    
+    if prompt_message_id:
+        try: 
+            await context.bot.delete_message(chat_id=chat_id, message_id=prompt_message_id)
+        except Exception as e: print(f"Error deleting prompt message for profit: {e}")
+
+    if should_send_new_menu:
+        await send_final_config_message(chat_id, context) 
+        
+    return ConversationHandler.END
+
+
+# ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (ТРЕЙДИНГ) =====================
 def get_position_direction(rate: Decimal) -> str:
     if rate is None: return "NONE"
     if rate < Decimal("0"): return "Buy"
