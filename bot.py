@@ -182,13 +182,14 @@ async def show_top_funding_menu(update: Update, context: ContextTypes.DEFAULT_TY
         # Если мы пришли из главного меню, отправляем новое сообщение
         await update.message.reply_text(text=menu_text, reply_markup=reply_markup)
 
-# Эта функция будет ВЫПОЛНЯТЬ поиск по выбранным биржам
+# Эта функция будет ВЫПОЛНЯТЬ поиск по выбранным биржам# ==============================================================================
+# === ЭТО ПОЛНЫЙ И ОКОНЧАТЕЛЬНЫЙ КОД ФУНКЦИИ. ЗАМЕНИТЕ ВАШУ ВЕРСИЮ ЦЕЛИКОМ ===
+# ==============================================================================
 async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = update.effective_chat.id
     ensure_chat_settings(chat_id)
     
-    # Получаем настройки из памяти
     active_exchanges = sniper_active[chat_id].get('active_exchanges', [])
     current_min_turnover_filter = sniper_active[chat_id].get('min_turnover_usdt', DEFAULT_MIN_TURNOVER_USDT)
     
@@ -196,91 +197,81 @@ async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFA
         await query.answer(text="⚠️ Выберите хотя бы одну биржу!", show_alert=True)
         return
 
-    await query.edit_message_text(f"🔄 Ищу топ-5 пар на {', '.join(active_exchanges)}...")
+    try:
+        await query.edit_message_text(f"🔄 Ищу топ-5 пар на {', '.join(active_exchanges)}...")
 
-    # --- Асинхронный сбор данных только с ВЫБРАННЫХ бирж ---
-    tasks = []
-    if 'BYBIT' in active_exchanges:
-        tasks.append(asyncio.create_task(session.get_tickers(category="linear")))
-    if 'MEXC' in active_exchanges:
-        tasks.append(asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter)))
+        tasks = []
+        if 'BYBIT' in active_exchanges:
+            tasks.append(asyncio.create_task(session.get_tickers(category="linear")))
+        if 'MEXC' in active_exchanges:
+            tasks.append(asyncio.create_task(get_mexc_funding_data(current_min_turnover_filter)))
+            
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    all_funding_data = []
-    
-    # Обрабатываем результаты
-    for res in results:
-        if isinstance(res, Exception):
-            print(f"[Data Fetch Error] Task failed: {res}")
-            continue
-        # Обработка Bybit
-        if res.get("result") and res.get("result", {}).get("list"):
-            for t in res["result"]["list"]:
-                symbol, rate_str, next_time_str, turnover_str = t.get("symbol"), t.get("fundingRate"), t.get("nextFundingTime"), t.get("turnover24h")
-                if not all([symbol, rate_str, next_time_str, turnover_str]): continue
+        all_funding_data = []
+        
+        for res in results:
+            if isinstance(res, Exception):
+                print(f"[Data Fetch Error] Task failed: {res}")
+                continue
+            if res.get("result") and res.get("result", {}).get("list"):
+                for t in res["result"]["list"]:
+                    symbol, rate_str, next_time_str, turnover_str = t.get("symbol"), t.get("fundingRate"), t.get("nextFundingTime"), t.get("turnover24h")
+                    if not all([symbol, rate_str, next_time_str, turnover_str]): continue
+                    try:
+                        rate_d, next_time_int, turnover_d = Decimal(rate_str), int(next_time_str), Decimal(turnover_str)
+                        if turnover_d < current_min_turnover_filter: continue
+                        if abs(rate_d) < MIN_FUNDING_RATE_ABS_FILTER: continue
+                        all_funding_data.append({"exchange": "BYBIT", "symbol": symbol, "rate": rate_d, "next_ts": next_time_int})
+                    except (ValueError, TypeError, decimal.InvalidOperation): continue
+            elif isinstance(res, list):
+                all_funding_data.extend(res)
+
+        all_funding_data.sort(key=lambda x: abs(x['rate']), reverse=True)
+        
+        top_pairs = all_funding_data[:5]
+
+        if not top_pairs:
+            result_msg = f"📊 Нет подходящих пар на выбранных биржах."
+        else:
+            result_msg = f"📊 Топ-5 пар ({', '.join(active_exchanges)}):\n\n"
+            now_ts_dt = datetime.utcnow().timestamp()
+            for item in top_pairs:
+                exchange, symbol, rate, ts_ms = item['exchange'], item['symbol'], item['rate'], item['next_ts']
                 try:
-                    rate_d, next_time_int, turnover_d = Decimal(rate_str), int(next_time_str), Decimal(turnover_str)
-                    if turnover_d < current_min_turnover_filter: continue
-                    if abs(rate_d) < MIN_FUNDING_RATE_ABS_FILTER: continue
-                    all_funding_data.append({"exchange": "BYBIT", "symbol": symbol, "rate": rate_d, "next_ts": next_time_int})
-                except (ValueError, TypeError, decimal.InvalidOperation): continue
-        # Обработка MEXC (он возвращает уже готовый список словарей)
-        elif isinstance(res, list):
-            all_funding_data.extend(res)
-
-    all_funding_data.sort(key=lambda x: abs(x['rate']), reverse=True)
-    
-    # === ИЗМЕНЕНИЕ ЗДЕСЬ ===
-    top_pairs = all_funding_data[:5] # Берем топ-5, как вы и просили
-
-    if not top_pairs:
-        result_msg = f"📊 Нет подходящих пар на выбранных биржах."
-    else:
-        result_msg = f"📊 Топ-5 пар ({', '.join(active_exchanges)}):\n\n"
-        now_ts_dt = datetime.utcnow().timestamp()
-        for item in top_pairs:
-            exchange, symbol, rate, ts_ms = item['exchange'], item['symbol'], item['rate'], item['next_ts']
-            try:
-                delta_sec = int(ts_ms / 1000 - now_ts_dt)
-                if delta_sec < 0: delta_sec = 0
-                h, rem = divmod(delta_sec, 3600); m, s = divmod(rem, 60)
-                time_left = f"{h:01d}ч {m:02d}м {s:02d}с"
-                direction = "📈 LONG (шорты платят)" if rate < 0 else "📉 SHORT (лонги платят)"
-                result_msg += (f"🏦 *{exchange}* | 🎟️ *{symbol}*\n{direction}\n"
-                               f"💹 Фандинг: `{rate * 100:.4f}%`\n⌛ Выплата через: `{time_left}`\n\n")
-            except Exception:
-                 result_msg += f"🏦 *{exchange}* | 🎟️ *{symbol}* - _ошибка отображения_\n\n"
-    
-    await query.edit_message_text(text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
-    # ПРАВИЛЬНЫЙ БЛОК ДЛЯ ВСТАВКИ
-# Создаем клавиатуру с одной кнопкой "Назад"
-reply_markup = InlineKeyboardMarkup([[
-    InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")
-]])
-
-# Редактируем сообщение, передавая ему и новый текст, и новую клавиатуру
-await query.edit_message_text(
-    text=result_msg.strip(), 
-    reply_markup=reply_markup,
-    parse_mode='Markdown', 
-    disable_web_page_preview=True
-)
-    except Exception as e:
-        # === ИЗМЕНЕНИЕ ЗДЕСЬ ===
-        # Теперь мы будем печатать ПОЛЕЗНУЮ ошибку в лог, а не все подряд
-        print("!!! AN ERROR OCCURRED IN show_top_funding !!!")
-        import traceback
-        traceback.print_exc() # Эта команда выведет полный и понятный лог ошибки
+                    delta_sec = int(ts_ms / 1000 - now_ts_dt)
+                    if delta_sec < 0: delta_sec = 0
+                    h, rem = divmod(delta_sec, 3600); m, s = divmod(rem, 60)
+                    time_left = f"{h:01d}ч {m:02d}м {s:02d}с"
+                    direction = "📈 LONG (шорты платят)" if rate < 0 else "📉 SHORT (лонги платят)"
+                    result_msg += (f"🏦 *{exchange}* | 🎟️ *{symbol}*\n{direction}\n"
+                                   f"💹 Фандинг: `{rate * 100:.4f}%`\n⌛ Выплата через: `{time_left}`\n\n")
+                except Exception:
+                     result_msg += f"🏦 *{exchange}* | 🎟️ *{symbol}* - _ошибка отображения_\n\n"
         
-        error_message = f"❌ Ошибка при получении топа. Проверьте логи."
+        reply_markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")
+        ]])
+        
+        await query.edit_message_text(
+            text=result_msg.strip(), 
+            reply_markup=reply_markup,
+            parse_mode='Markdown', 
+            disable_web_page_preview=True
+        )
+
+    except Exception as e:
+        print("!!! AN ERROR OCCURRED IN fetch_and_display_top_pairs !!!")
+        import traceback
+        traceback.print_exc()
+        
+        error_message = "❌ Ошибка при получении топа. Проверьте логи."
         try:
-            if loading_message_id: await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=error_message)
-            else: await context.bot.send_message(chat_id=chat_id, text=error_message)
+            # Поскольку мы всегда работаем через query, нам не нужен if/else
+            await query.edit_message_text(text=error_message)
         except Exception:
+            # Этот except сработает, если даже отправка сообщения об ошибке не удалась
             await context.bot.send_message(chat_id, "❌ Внутренняя ошибка.")
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Привет! Я фандинг-бот RateHunter. Выбери действие:", reply_markup=reply_markup)
