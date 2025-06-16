@@ -255,8 +255,8 @@ async def fetch_and_display_top_pairs(update: Update, context: ContextTypes.DEFA
     
     await query.edit_message_text(text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
     # Можно добавить кнопку "Назад к меню", если хотите
-     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")]])
-    await query.edit_message_text(..., reply_markup=reply_markup)
+     #reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к выбору бирж", callback_data="back_to_funding_menu")]])
+    #await query.edit_message_text(..., reply_markup=reply_markup)
 
         if loading_message_id:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=loading_message_id, text=result_msg.strip(), parse_mode='Markdown', disable_web_page_preview=True)
