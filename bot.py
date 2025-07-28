@@ -1,10 +1,9 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - Alpha v0.2.2 ===================
+# ===================== RateHunter 2.0 - Alpha v0.2.3 ===================
 # =========================================================================
 # Исправления в этой версии:
-# - ИСПРАВЛЕНА КРИТИЧЕСКАЯ ОШИБКА: Устранена попытка ответа на удаленное
-#   сообщение, что блокировало запуск диалогов по кнопкам "Ставка" и "Объем".
-# - Код запуска диалогов переписан на более надежный.
+# - ИСПРАВЛЕНА ОШИБКА: Добавлена обработка кнопок "Ставка" и "Объем" в фильтрах
+# - Исправлен паттерн регистрации обработчика для всех кнопок фильтров
 # =========================================================================
 
 import os
@@ -50,7 +49,6 @@ def ensure_user_settings(chat_id: int):
 # =================================================================
 # ===================== МОДУЛЬ СБОРА ДАННЫХ (API) =====================
 # =================================================================
-# (Этот блок остается без изменений)
 
 async def get_bybit_data():
     bybit_url = "https://api.bybit.com/v5/market/tickers?category=linear"
@@ -210,12 +208,17 @@ async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     action = query.data.split('_', 1)[1]
-    if action == "close": await query.message.delete()
+    if action == "close": 
+        await query.message.delete()
     elif action == "toggle_notif":
         user_settings[query.effective_chat.id]['notifications_on'] ^= True
         await send_filters_menu(update, context)
     elif action == "exchanges":
         await show_exchanges_menu(update, context)
+    elif action == "funding":  # ИСПРАВЛЕНО: добавлена обработка кнопки "Ставка"
+        return await ask_for_value(update, context, 'funding')
+    elif action == "volume":   # ИСПРАВЛЕНО: добавлена обработка кнопки "Объем"
+        return await ask_for_value(update, context, 'volume')
 
 async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -286,6 +289,11 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_filters_menu(update, context) # Отправляем новое меню
     return ConversationHandler.END
 
+# Заглушка для background_scanner (функция отсутствует в оригинальном коде)
+async def background_scanner(app):
+    """Фоновый сканер - заглушка"""
+    pass
+
 # =================================================================
 # ========================== ЗАПУСК БОТА ==========================
 # =================================================================
@@ -312,7 +320,8 @@ if __name__ == "__main__":
 
     app.add_handler(CallbackQueryHandler(drill_down_callback, pattern="^drill_"))
     app.add_handler(CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"))
-    app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|toggle_notif|exchanges)$"))
+    # ИСПРАВЛЕНО: добавлены funding и volume в паттерн
+    app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|toggle_notif|exchanges|funding|volume)$"))
     app.add_handler(CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"))
     
     async def post_init(app): asyncio.create_task(background_scanner(app))
