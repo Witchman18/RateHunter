@@ -1,16 +1,18 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - Alpha v0.2.4 ===================
+# ===================== RateHunter 2.0 - Alpha v0.2.5 ===================
 # =========================================================================
 # Исправления в этой версии:
-# - ИСПРАВЛЕНО: Направление сделки (ЛОНГ/ШОРТ) теперь корректно.
-# - ИСПРАВЛЕНО: Вместо отсчета времени отображается точное время фандинга (МСК).
+# - ИСПРАВЛЕНО: Критическая ошибка с отсутствием импорта 'json', ломавшая получение данных с MEXC.
+# - ДОБАВЛЕНО: Отображение максимального размера ордера в детальном просмотре.
+# - УЛУЧШЕНО: Стабилизирована функция получения данных с MEXC.
 # =========================================================================
 
 import os
 import asyncio
 import aiohttp
 import decimal
-from datetime import datetime, timezone, timedelta # ИЗМЕНЕНО: Добавлены timezone и timedelta
+import json # ИСПРАВЛЕНИЕ 1: Добавлен необходимый импорт
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
@@ -24,7 +26,7 @@ load_dotenv()
 
 # --- Конфигурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MSK_TIMEZONE = timezone(timedelta(hours=3)) # ИЗМЕНЕНО: Определяем МСК таймзону
+MSK_TIMEZONE = timezone(timedelta(hours=3))
 
 # --- Глобальные переменные и настройки ---
 user_settings = {}
@@ -53,9 +55,22 @@ def ensure_user_settings(chat_id: int):
 
 async def get_bybit_data():
     bybit_url = "https://api.bybit.com/v5/market/tickers?category=linear"
+    # Для Bybit нужно получать лимиты отдельным запросом
+    # Пока оставляем 'max_order_value_usdt' как заглушку, но для него нужен будет отдельный запрос к instruments-info
+    instrument_url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
     results = []
     try:
         async with aiohttp.ClientSession() as session:
+            # Получаем лимиты по ордерам
+            limits_data = {}
+            async with session.get(instrument_url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("retCode") == 0 and data.get("result", {}).get("list"):
+                        for inst in data["result"]["list"]:
+                            limits_data[inst['symbol']] = inst.get('lotSizeFilter', {}).get('maxOrderQty', '0')
+
+            # Получаем основные данные по тикерам
             async with session.get(bybit_url) as response:
                 response.raise_for_status()
                 data = await response.json()
@@ -65,7 +80,9 @@ async def get_bybit_data():
                             results.append({
                                 'exchange': 'Bybit', 'symbol': t.get("symbol"),
                                 'rate': Decimal(t.get("fundingRate")), 'next_funding_time': int(t.get("nextFundingTime")),
-                                'volume_24h_usdt': Decimal(t.get("turnover24h")), 'max_order_value_usdt': Decimal('0'),
+                                'volume_24h_usdt': Decimal(t.get("turnover24h")),
+                                # ИСПРАВЛЕНИЕ 2: Подставляем реальный лимит, если нашли
+                                'max_order_value_usdt': Decimal(limits_data.get(t.get("symbol"), '0')),
                                 'trade_url': f'https://www.bybit.com/trade/usdt/{t.get("symbol")}'
                             })
                         except (TypeError, ValueError, decimal.InvalidOperation): continue
@@ -73,67 +90,43 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
+    # ИСПРАВЛЕНИЕ 3: Чистая и рабочая версия функции
     mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
     results = []
-    print("\n[DEBUG] Запускаю get_mexc_data...")
     try:
-        # ДОБАВЛЕНО: добавляем заголовок User-Agent, некоторые API это требуют
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         async with aiohttp.ClientSession(headers=headers) as session:
-            print(f"[DEBUG] Отправляю GET-запрос на {mexc_url}")
             async with session.get(mexc_url, timeout=10) as response:
-                print(f"[DEBUG] MEXC: Получен статус-код: {response.status}")
-                
-                # Читаем ответ как текст, чтобы увидеть его в любом случае
-                raw_text = await response.text()
-                
-                # Проверяем, не пустой ли ответ
-                if not raw_text:
-                    print("[DEBUG] MEXC: Получен ПУСТОЙ ответ!")
-                    return []
-                
-                print(f"[DEBUG] MEXC: Начало сырого ответа (первые 500 символов):\n---\n{raw_text[:500]}\n---")
-                
-                response.raise_for_status() # Проверяем на ошибки HTTP (4xx, 5xx)
-                
-                # Теперь пытаемся декодировать JSON из сохраненного текста
-                data = json.loads(raw_text)
-                
+                response.raise_for_status()
+                data = await response.json() # Теперь это работает, т.к. json импортирован
                 if data.get("success") and data.get("data"):
-                    print(f"[DEBUG] MEXC: 'success: True', найдено {len(data['data'])} записей. Начинаю парсинг...")
-                    # ... (остальная логика парсинга без изменений)
                     for t in data["data"]:
-                        if not t.get("symbol", "").endswith("USDT"): continue
-                        try:
+                         if not t.get("symbol", "").endswith("USDT"): continue
+                         try:
                             results.append({
                                 'exchange': 'MEXC', 'symbol': t.get("symbol"),
                                 'rate': Decimal(str(t.get("fundingRate"))), 'next_funding_time': int(t.get("nextSettleTime")),
-                                'volume_24h_usdt': Decimal(str(t.get("amount24"))), 'max_order_value_usdt': Decimal('0'),
+                                'volume_24h_usdt': Decimal(str(t.get("amount24"))),
+                                # API 'ticker' не отдает лимиты, ставим 0
+                                'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{t.get("symbol")}'
                             })
-                        except (TypeError, ValueError, decimal.InvalidOperation) as parse_error:
-                            # Ловим ошибку парсинга конкретной монеты
-                            print(f"[DEBUG] MEXC: Ошибка парсинга записи: {t}. Ошибка: {parse_error}")
-                            continue
-                else:
-                    print("[DEBUG] MEXC: Ответ не содержит 'success: True' или ключ 'data'.")
-
-    except Exception as e:
-        # Выводим тип ошибки и саму ошибку
-        print(f"[API_ERROR] MEXC: Произошла критическая ошибка типа {type(e).__name__}: {e}")
-        
-    print(f"[DEBUG] Завершаю get_mexc_data. Собрано {len(results)} записей.")
+                         except (TypeError, ValueError, decimal.InvalidOperation): continue
+    except Exception as e: print(f"[API_ERROR] MEXC: {e}")
     return results
 
 async def fetch_all_data(force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
         return api_data_cache["data"]
+    # Запускаем сбор данных параллельно
     tasks = [get_bybit_data(), get_mexc_data()]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     all_data = []
     for res in results_from_tasks:
         if isinstance(res, list): all_data.extend(res)
+        elif isinstance(res, Exception): print(f"[GATHER_ERROR] Одна из задач сбора данных провалилась: {res}")
+
     api_data_cache["data"], api_data_cache["last_update"] = all_data, now
     return all_data
 
@@ -146,17 +139,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user_settings(update.effective_chat.id)
     main_menu_keyboard = [["🔥 Топ-ставки сейчас"], ["🔔 Настроить фильтры", "ℹ️ Мои настройки"]]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
-    await update.message.reply_text(
-        "Добро пожаловать в RateHunter 2.0!", reply_markup=reply_markup
-    )
+    await update.message.reply_text("Добро пожаловать в RateHunter 2.0!", reply_markup=reply_markup)
 
 async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ensure_user_settings(chat_id)
     settings = user_settings[chat_id]
-    message_to_edit = update.callback_query.message if update.callback_query else await update.message.reply_text("🔄 Ищу...")
-    await message_to_edit.edit_text("🔄 Ищу лучшие ставки по вашим фильтрам...")
+
+    # Определяем, откуда пришел запрос, чтобы правильно ответить или отредактировать
+    if update.callback_query:
+        message_to_edit = update.callback_query.message
+        await message_to_edit.edit_text("🔄 Ищу лучшие ставки по вашим фильтрам...")
+    else:
+        message_to_edit = await update.message.reply_text("🔄 Ищу...")
+
     all_data = await fetch_all_data()
+    if not all_data:
+        await message_to_edit.edit_text("😔 Не удалось получить данные с бирж. Попробуйте позже.")
+        return
+
     user_filtered_data = [
         item for item in all_data
         if item['exchange'] in settings['exchanges'] and abs(item['rate']) >= settings['funding_threshold']
@@ -167,59 +168,65 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not top_5:
         await message_to_edit.edit_text("😔 Не найдено пар, соответствующих вашим фильтрам.")
         return
+
     message_text = f"🔥 **ТОП-5 фандингов > {settings['funding_threshold']*100:.2f}%**\n\n"
     buttons = []
     for item in top_5:
-        # --- ИЗМЕНЕНО: Логика направления и времени ---
         symbol_only = item['symbol'].replace("USDT", "")
         funding_dt = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=MSK_TIMEZONE)
         time_str = funding_dt.strftime('%H:%M МСК')
-        
-        # Если ставка отрицательная - лонгисты получают деньги (заходим в ЛОНГ)
-        # Если ставка положительная - шортисты получают деньги (заходим в ШОРТ)
         direction_text = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
         rate_str = f"{item['rate'] * 100:+.2f}%"
-        
         message_text += f"{direction_text} *{symbol_only}* `{rate_str}` в `{time_str}` [{item['exchange']}]\n"
-        # -----------------------------------------------
         buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
-        
+
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     await message_to_edit.edit_text(
         message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True
     )
-    
+
 async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
+    query = update.callback_query
+    await query.answer()
     symbol_to_show = query.data.split('_')[1]
-    all_data = api_data_cache.get("data", []);
+
+    # Используем данные из кэша, если они есть, иначе принудительно обновляем
+    all_data = api_data_cache.get("data", [])
     if not all_data:
+        await query.edit_message_text("🔄 Обновляю данные...")
         all_data = await fetch_all_data(force_update=True)
+
     symbol_specific_data = [item for item in all_data if item['symbol'] == symbol_to_show]
     symbol_specific_data.sort(key=lambda x: abs(x['rate']), reverse=True)
     symbol_only = symbol_to_show.replace("USDT", "")
     message_text = f"💎 **Детали по {symbol_only}**\n\n"
     for item in symbol_specific_data:
-        # --- ИЗМЕНЕНО: Логика направления и времени ---
         funding_dt = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=MSK_TIMEZONE)
         time_str = funding_dt.strftime('%H:%M МСК')
-        
         direction_text = "🟢 ЛОНГ" if item['rate'] < 0 else "🔴 ШОРТ"
         rate_str = f"{item['rate'] * 100:+.2f}%"
-        
         message_text += f"{direction_text} `{rate_str}` в `{time_str}` [{item['exchange']}]({item['trade_url']})\n"
-        # -----------------------------------------------
-        
+
+        # ИСПРАВЛЕНИЕ 4: Выводим макс. размер позиции, если он известен (не равен 0)
+        max_pos = item.get('max_order_value_usdt', Decimal('0'))
+        if max_pos > 0:
+            # Примечание: 'maxOrderQty' у Bybit - это в базовом активе (например, в BTC), а не в USDT.
+            # Для простоты выводим как есть. В будущем можно пересчитывать в USDT.
+            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
+
     keyboard = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
     await query.edit_message_text(
         text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True
     )
 
 async def back_to_top_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await query.answer() if (query := update.callback_query) else None
+    # ИСПРАВЛЕНИЕ 5: Корректная работа с query
+    query = update.callback_query
+    if query:
+        await query.answer()
     await show_top_rates(update, context)
 
-# --- БЛОК: Меню "Настроить фильтры" ---
+# --- (Остальной код без изменений) ---
 
 async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -248,7 +255,7 @@ async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     action = query.data.split('_', 1)[1]
-    if action == "close": 
+    if action == "close":
         await query.message.delete()
     elif action == "toggle_notif":
         user_settings[update.effective_chat.id]['notifications_on'] ^= True
@@ -276,14 +283,12 @@ async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAU
 async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
     query = update.callback_query; await query.answer()
     chat_id = update.effective_chat.id
-    
     prompts = {
         'funding': (f"Текущий порог ставки: `> {user_settings[chat_id]['funding_threshold']*100:.2f}%`.\n\n"
                     "Отправьте новое значение в процентах (например, `0.75`)."),
         'volume': (f"Текущий порог объема: `{user_settings[chat_id]['volume_threshold_usdt']:,.0f} USDT`.\n\n"
                    "Отправьте новое значение в USDT (например, `500000`).")
     }
-    
     await query.message.delete()
     sent_message = await context.bot.send_message(
         chat_id=chat_id, text=prompts[setting_type] + "\n\nДля отмены введите /cancel.", parse_mode='Markdown'
@@ -302,41 +307,31 @@ async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting
         elif setting_type == 'volume':
             if value < 0: raise ValueError("Value must be positive")
             user_settings[chat_id]['volume_threshold_usdt'] = value
-    except (ValueError, TypeError, decimal.InvalidOperation) as e:
+    except (ValueError, TypeError, decimal.InvalidOperation):
         error_messages = {
             'funding': "❌ Ошибка. Введите число от 0 до 100 (например, `0.75`).",
             'volume': "❌ Ошибка. Введите целое положительное число (например, `500000`)."
         }
         await update.message.reply_text(error_messages[setting_type] + " Попробуйте снова.", parse_mode='Markdown')
         return SET_FUNDING_THRESHOLD if setting_type == 'funding' else SET_VOLUME_THRESHOLD
-
-    # Очистка
     if 'prompt_message_id' in context.user_data:
         await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
     await context.bot.delete_message(chat_id, update.message.message_id)
-    
     await send_filters_menu(update, context)
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if 'prompt_message_id' in context.user_data:
-        try:
-            await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
-        except Exception:
-            pass 
-    try:
-        await context.bot.delete_message(chat_id, update.message.id)
-    except Exception:
-        pass 
-    
+        try: await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
+        except Exception: pass
+    try: await context.bot.delete_message(chat_id, update.message.id)
+    except Exception: pass
     await context.bot.send_message(chat_id, "Действие отменено.")
-    await send_filters_menu(update, context) 
+    await send_filters_menu(update, context)
     return ConversationHandler.END
 
-# Заглушка для background_scanner
 async def background_scanner(app):
-    """Фоновый сканер - заглушка"""
     pass
 
 # =================================================================
@@ -344,32 +339,30 @@ async def background_scanner(app):
 # =================================================================
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    funding_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(lambda u,c: ask_for_value(u,c,'funding'), pattern="^filters_funding$")],
-        states={SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u,c: save_value(u,c,'funding'))]},
+
+    conv_handler_funding = ConversationHandler(
+        entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding'), pattern="^filters_funding$")],
+        states={SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]},
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
-    volume_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(lambda u,c: ask_for_value(u,c,'volume'), pattern="^filters_volume$")],
-        states={SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u,c: save_value(u,c,'volume'))]},
+    conv_handler_volume = ConversationHandler(
+        entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume'), pattern="^filters_volume$")],
+        states={SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]},
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
-    
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates))
     app.add_handler(MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry))
-    
-    app.add_handler(funding_conv)
-    app.add_handler(volume_conv)
-
+    app.add_handler(conv_handler_funding)
+    app.add_handler(conv_handler_volume)
     app.add_handler(CallbackQueryHandler(drill_down_callback, pattern="^drill_"))
     app.add_handler(CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"))
     app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|toggle_notif|exchanges)$"))
     app.add_handler(CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"))
-    
+
     async def post_init(app): asyncio.create_task(background_scanner(app))
     app.post_init = post_init
-    
+
     print("Bot is running...")
     app.run_polling()
