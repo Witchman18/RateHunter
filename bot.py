@@ -147,7 +147,7 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Если ставка отрицательная - лонгисты получают деньги (заходим в ЛОНГ)
         # Если ставка положительная - шортисты получают деньги (заходим в ШОРТ)
-        direction_text = "🟢 ЛОНГ" if item['rate'] < 0 else "🔴 ШОРТ"
+        direction_text = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
         rate_str = f"{item['rate'] * 100:+.2f}%"
         
         message_text += f"{direction_text} *{symbol_only}* `{rate_str}` в `{time_str}` [{item['exchange']}]\n"
