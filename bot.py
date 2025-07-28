@@ -222,7 +222,7 @@ async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
 async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    active_exchanges = user_settings[query.effective_chat.id]['exchanges']
+    active_exchanges = user_settings[query.message.chat_id]['exchanges']
     buttons = [InlineKeyboardButton(f"{'✅' if ex in active_exchanges else '⬜️'} {ex}", callback_data=f"exch_{ex}") for ex in ALL_AVAILABLE_EXCHANGES]
     keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)] + [[InlineKeyboardButton("⬅️ Назад", callback_data="exch_back")]]
     await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -232,7 +232,7 @@ async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAU
     action = query.data.split('_', 1)[1]
     if action == "back": await send_filters_menu(update, context)
     else:
-        active_exchanges = user_settings[query.effective_chat.id]['exchanges']
+        active_exchanges = user_settings[query.message.chat_id]['exchanges']
         if action in active_exchanges: active_exchanges.remove(action)
         else: active_exchanges.append(action)
         await show_exchanges_menu(update, context)
