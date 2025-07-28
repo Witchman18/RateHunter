@@ -73,37 +73,56 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
-    # ИЗМЕНЕНО: Используем другой, более надежный эндпоинт 'ticker'
-    mexc_url = "https://contract.mexc.com/api/v1/contract/ticker" 
+    mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
     results = []
+    print("\n[DEBUG] Запускаю get_mexc_data...")
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(mexc_url) as response:
-                response.raise_for_status()
-                data = await response.json()
+        # ДОБАВЛЕНО: добавляем заголовок User-Agent, некоторые API это требуют
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            print(f"[DEBUG] Отправляю GET-запрос на {mexc_url}")
+            async with session.get(mexc_url, timeout=10) as response:
+                print(f"[DEBUG] MEXC: Получен статус-код: {response.status}")
+                
+                # Читаем ответ как текст, чтобы увидеть его в любом случае
+                raw_text = await response.text()
+                
+                # Проверяем, не пустой ли ответ
+                if not raw_text:
+                    print("[DEBUG] MEXC: Получен ПУСТОЙ ответ!")
+                    return []
+                
+                print(f"[DEBUG] MEXC: Начало сырого ответа (первые 500 символов):\n---\n{raw_text[:500]}\n---")
+                
+                response.raise_for_status() # Проверяем на ошибки HTTP (4xx, 5xx)
+                
+                # Теперь пытаемся декодировать JSON из сохраненного текста
+                data = json.loads(raw_text)
+                
                 if data.get("success") and data.get("data"):
+                    print(f"[DEBUG] MEXC: 'success: True', найдено {len(data['data'])} записей. Начинаю парсинг...")
+                    # ... (остальная логика парсинга без изменений)
                     for t in data["data"]:
-                        # Пропускаем, если это не USDT-пара
                         if not t.get("symbol", "").endswith("USDT"): continue
                         try:
-                            # ИЗМЕНЕНО: Ключи в ответе 'ticker' немного другие
                             results.append({
-                                'exchange': 'MEXC',
-                                'symbol': t.get("symbol"),
-                                # 'fundingRate' есть в этом эндпоинте
-                                'rate': Decimal(str(t.get("fundingRate"))), 
-                                # 'nextSettleTime' тоже есть
-                                'next_funding_time': int(t.get("nextSettleTime")), 
-                                # ИЗМЕНЕНО: Объем теперь в ключе 'amount24', это объем в USDT
-                                'volume_24h_usdt': Decimal(str(t.get("amount24"))), 
-                                # ВАЖНО: Эндпоинт 'ticker' НЕ ОТДАЕТ 'maxVol'. Мы оставим 0, но см. пункт 2
-                                'max_order_value_usdt': Decimal('0'), 
+                                'exchange': 'MEXC', 'symbol': t.get("symbol"),
+                                'rate': Decimal(str(t.get("fundingRate"))), 'next_funding_time': int(t.get("nextSettleTime")),
+                                'volume_24h_usdt': Decimal(str(t.get("amount24"))), 'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{t.get("symbol")}'
                             })
-                        except (TypeError, ValueError, decimal.InvalidOperation):
+                        except (TypeError, ValueError, decimal.InvalidOperation) as parse_error:
+                            # Ловим ошибку парсинга конкретной монеты
+                            print(f"[DEBUG] MEXC: Ошибка парсинга записи: {t}. Ошибка: {parse_error}")
                             continue
+                else:
+                    print("[DEBUG] MEXC: Ответ не содержит 'success: True' или ключ 'data'.")
+
     except Exception as e:
-        print(f"[API_ERROR] MEXC: {e}")
+        # Выводим тип ошибки и саму ошибку
+        print(f"[API_ERROR] MEXC: Произошла критическая ошибка типа {type(e).__name__}: {e}")
+        
+    print(f"[DEBUG] Завершаю get_mexc_data. Собрано {len(results)} записей.")
     return results
 
 async def fetch_all_data(force_update=False):
