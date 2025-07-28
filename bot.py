@@ -4,6 +4,7 @@
 # Исправления в этой версии:
 # - ИСПРАВЛЕНА ОШИБКА: Добавлена обработка кнопок "Ставка" и "Объем" в фильтрах
 # - Исправлен паттерн регистрации обработчика для всех кнопок фильтров
+# - ИСПРАВЛЕНО: Устранена ошибка AttributeError при обработке CallbackQuery
 # =========================================================================
 
 import os
@@ -211,7 +212,8 @@ async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT
     if action == "close": 
         await query.message.delete()
     elif action == "toggle_notif":
-        user_settings[query.effective_chat.id]['notifications_on'] ^= True
+        # ИСПРАВЛЕНО: Используем update.effective_chat.id вместо query.effective_chat.id
+        user_settings[update.effective_chat.id]['notifications_on'] ^= True
         await send_filters_menu(update, context)
     elif action == "exchanges":
         await show_exchanges_menu(update, context)
@@ -235,7 +237,8 @@ async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAU
 
 async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
     query = update.callback_query; await query.answer()
-    chat_id = query.effective_chat.id
+    # ИСПРАВЛЕНО: Используем update.effective_chat.id вместо query.effective_chat.id
+    chat_id = update.effective_chat.id
     
     prompts = {
         'funding': (f"Текущий порог ставки: `> {user_settings[chat_id]['funding_threshold']*100:.2f}%`.\n\n"
@@ -271,7 +274,8 @@ async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting
         return SET_FUNDING_THRESHOLD if setting_type == 'funding' else SET_VOLUME_THRESHOLD
 
     # Очистка
-    await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
+    if 'prompt_message_id' in context.user_data:
+        await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
     await context.bot.delete_message(chat_id, update.message.message_id)
     
     await send_filters_menu(update, context)
@@ -279,8 +283,16 @@ async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id', None))
-    await context.bot.delete_message(chat_id, update.message.id)
+    if 'prompt_message_id' in context.user_data:
+        try:
+            await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
+        except Exception:
+            pass # Сообщение могло быть уже удалено
+    try:
+        await context.bot.delete_message(chat_id, update.message.id)
+    except Exception:
+        pass # Сообщение могло быть уже удалено
+    
     await context.bot.send_message(chat_id, "Действие отменено.")
     await send_filters_menu(update, context) # Отправляем новое меню
     return ConversationHandler.END
