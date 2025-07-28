@@ -73,7 +73,8 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
-    mexc_url = "https://contract.mexc.com/api/v1/contract/detail"
+    # ИЗМЕНЕНО: Используем другой, более надежный эндпоинт 'ticker'
+    mexc_url = "https://contract.mexc.com/api/v1/contract/ticker" 
     results = []
     try:
         async with aiohttp.ClientSession() as session:
@@ -82,17 +83,27 @@ async def get_mexc_data():
                 data = await response.json()
                 if data.get("success") and data.get("data"):
                     for t in data["data"]:
-                         if t.get("quoteCoin") != "USDT" or t.get("state") != "SHOW": continue
-                         try:
-                            symbol = t.get("symbol").replace("_", "")
+                        # Пропускаем, если это не USDT-пара
+                        if not t.get("symbol", "").endswith("USDT"): continue
+                        try:
+                            # ИЗМЕНЕНО: Ключи в ответе 'ticker' немного другие
                             results.append({
-                                'exchange': 'MEXC', 'symbol': symbol,
-                                'rate': Decimal(str(t.get("fundingRate"))), 'next_funding_time': int(t.get("nextSettleTime")),
-                                'volume_24h_usdt': Decimal(str(t.get("volume24"))), 'max_order_value_usdt': Decimal(str(t.get("maxVol"))),
+                                'exchange': 'MEXC',
+                                'symbol': t.get("symbol"),
+                                # 'fundingRate' есть в этом эндпоинте
+                                'rate': Decimal(str(t.get("fundingRate"))), 
+                                # 'nextSettleTime' тоже есть
+                                'next_funding_time': int(t.get("nextSettleTime")), 
+                                # ИЗМЕНЕНО: Объем теперь в ключе 'amount24', это объем в USDT
+                                'volume_24h_usdt': Decimal(str(t.get("amount24"))), 
+                                # ВАЖНО: Эндпоинт 'ticker' НЕ ОТДАЕТ 'maxVol'. Мы оставим 0, но см. пункт 2
+                                'max_order_value_usdt': Decimal('0'), 
                                 'trade_url': f'https://futures.mexc.com/exchange/{t.get("symbol")}'
                             })
-                         except (TypeError, ValueError, decimal.InvalidOperation): continue
-    except Exception as e: print(f"[API_ERROR] MEXC: {e}")
+                        except (TypeError, ValueError, decimal.InvalidOperation):
+                            continue
+    except Exception as e:
+        print(f"[API_ERROR] MEXC: {e}")
     return results
 
 async def fetch_all_data(force_update=False):
