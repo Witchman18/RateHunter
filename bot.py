@@ -215,10 +215,6 @@ async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT
         await send_filters_menu(update, context)
     elif action == "exchanges":
         await show_exchanges_menu(update, context)
-    elif action == "funding":  # ИСПРАВЛЕНО: добавлена обработка кнопки "Ставка"
-        return await ask_for_value(update, context, 'funding')
-    elif action == "volume":   # ИСПРАВЛЕНО: добавлена обработка кнопки "Объем"
-        return await ask_for_value(update, context, 'volume')
 
 async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -320,8 +316,8 @@ if __name__ == "__main__":
 
     app.add_handler(CallbackQueryHandler(drill_down_callback, pattern="^drill_"))
     app.add_handler(CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"))
-    # ИСПРАВЛЕНО: добавлены funding и volume в паттерн
-    app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|toggle_notif|exchanges|funding|volume)$"))
+    # ИСПРАВЛЕНО: убраны funding и volume из паттерна, т.к. они обрабатываются ConversationHandler'ами
+    app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|toggle_notif|exchanges)$"))
     app.add_handler(CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"))
     
     async def post_init(app): asyncio.create_task(background_scanner(app))
