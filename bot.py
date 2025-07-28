@@ -1,17 +1,16 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - Alpha v0.2.3 ===================
+# ===================== RateHunter 2.0 - Alpha v0.2.4 ===================
 # =========================================================================
 # Исправления в этой версии:
-# - ИСПРАВЛЕНА ОШИБКА: Добавлена обработка кнопок "Ставка" и "Объем" в фильтрах
-# - Исправлен паттерн регистрации обработчика для всех кнопок фильтров
-# - ИСПРАВЛЕНО: Устранена ошибка AttributeError при обработке CallbackQuery
+# - ИСПРАВЛЕНО: Направление сделки (ЛОНГ/ШОРТ) теперь корректно.
+# - ИСПРАВЛЕНО: Вместо отсчета времени отображается точное время фандинга (МСК).
 # =========================================================================
 
 import os
 import asyncio
 import aiohttp
 import decimal
-from datetime import datetime
+from datetime import datetime, timezone, timedelta # ИЗМЕНЕНО: Добавлены timezone и timedelta
 from decimal import Decimal
 
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
@@ -25,6 +24,7 @@ load_dotenv()
 
 # --- Конфигурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+MSK_TIMEZONE = timezone(timedelta(hours=3)) # ИЗМЕНЕНО: Определяем МСК таймзону
 
 # --- Глобальные переменные и настройки ---
 user_settings = {}
@@ -139,16 +139,21 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     message_text = f"🔥 **ТОП-5 фандингов > {settings['funding_threshold']*100:.2f}%**\n\n"
     buttons = []
-    now_ts = datetime.now().timestamp()
     for item in top_5:
+        # --- ИЗМЕНЕНО: Логика направления и времени ---
         symbol_only = item['symbol'].replace("USDT", "")
-        time_left_seconds = (item['next_funding_time'] / 1000) - now_ts
-        hours, rem = divmod(time_left_seconds, 3600); minutes, _ = divmod(rem, 60)
-        time_str = f"{int(hours):02d}:{int(minutes):02d}" if time_left_seconds > 0 else "Сейчас"
-        direction_emoji = "🟢" if item['rate'] > 0 else "🔴"
+        funding_dt = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=MSK_TIMEZONE)
+        time_str = funding_dt.strftime('%H:%M МСК')
+        
+        # Если ставка отрицательная - лонгисты получают деньги (заходим в ЛОНГ)
+        # Если ставка положительная - шортисты получают деньги (заходим в ШОРТ)
+        direction_text = "🟢 ЛОНГ" if item['rate'] < 0 else "🔴 ШОРТ"
         rate_str = f"{item['rate'] * 100:+.2f}%"
-        message_text += f"{direction_emoji} *{symbol_only}* `{rate_str}` до `{time_str}` [{item['exchange']}]\n"
+        
+        message_text += f"{direction_text} *{symbol_only}* `{rate_str}` в `{time_str}` [{item['exchange']}]\n"
+        # -----------------------------------------------
         buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
+        
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     await message_to_edit.edit_text(
         message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True
@@ -164,13 +169,17 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     symbol_specific_data.sort(key=lambda x: abs(x['rate']), reverse=True)
     symbol_only = symbol_to_show.replace("USDT", "")
     message_text = f"💎 **Детали по {symbol_only}**\n\n"
-    now_ts = datetime.now().timestamp()
     for item in symbol_specific_data:
-        time_left_seconds = (item['next_funding_time'] / 1000) - now_ts
-        hours, rem = divmod(time_left_seconds, 3600); minutes, _ = divmod(rem, 60)
-        time_str = f"{int(hours):02d}:{int(minutes):02d}" if time_left_seconds > 0 else "Сейчас"
-        direction_emoji = "🟢" if item['rate'] > 0 else "🔴"; rate_str = f"{item['rate'] * 100:+.2f}%"
-        message_text += f"{direction_emoji} `{rate_str}` до `{time_str}` [{item['exchange']}]({item['trade_url']})\n"
+        # --- ИЗМЕНЕНО: Логика направления и времени ---
+        funding_dt = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=MSK_TIMEZONE)
+        time_str = funding_dt.strftime('%H:%M МСК')
+        
+        direction_text = "🟢 ЛОНГ" if item['rate'] < 0 else "🔴 ШОРТ"
+        rate_str = f"{item['rate'] * 100:+.2f}%"
+        
+        message_text += f"{direction_text} `{rate_str}` в `{time_str}` [{item['exchange']}]({item['trade_url']})\n"
+        # -----------------------------------------------
+        
     keyboard = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
     await query.edit_message_text(
         text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True
@@ -212,7 +221,6 @@ async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT
     if action == "close": 
         await query.message.delete()
     elif action == "toggle_notif":
-        # ИСПРАВЛЕНО: Используем update.effective_chat.id вместо query.effective_chat.id
         user_settings[update.effective_chat.id]['notifications_on'] ^= True
         await send_filters_menu(update, context)
     elif action == "exchanges":
@@ -237,7 +245,6 @@ async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAU
 
 async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
     query = update.callback_query; await query.answer()
-    # ИСПРАВЛЕНО: Используем update.effective_chat.id вместо query.effective_chat.id
     chat_id = update.effective_chat.id
     
     prompts = {
@@ -287,17 +294,17 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
         except Exception:
-            pass # Сообщение могло быть уже удалено
+            pass 
     try:
         await context.bot.delete_message(chat_id, update.message.id)
     except Exception:
-        pass # Сообщение могло быть уже удалено
+        pass 
     
     await context.bot.send_message(chat_id, "Действие отменено.")
-    await send_filters_menu(update, context) # Отправляем новое меню
+    await send_filters_menu(update, context) 
     return ConversationHandler.END
 
-# Заглушка для background_scanner (функция отсутствует в оригинальном коде)
+# Заглушка для background_scanner
 async def background_scanner(app):
     """Фоновый сканер - заглушка"""
     pass
@@ -328,7 +335,6 @@ if __name__ == "__main__":
 
     app.add_handler(CallbackQueryHandler(drill_down_callback, pattern="^drill_"))
     app.add_handler(CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"))
-    # ИСПРАВЛЕНО: убраны funding и volume из паттерна, т.к. они обрабатываются ConversationHandler'ами
     app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|toggle_notif|exchanges)$"))
     app.add_handler(CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"))
     
