@@ -90,8 +90,16 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
+    # =========================================================================
+    # ===================== СУПЕР-ДИАГНОСТИЧЕСКАЯ ВЕРСИЯ v2 ===================
+    # =========================================================================
     mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
     results = []
+    # Добавляем счетчики для полной картины
+    skipped_count = 0
+    processed_count = 0
+    
+    print("\n[DEBUG] Запускаю get_mexc_data (СУПЕР-ДИАГНОСТИКА)...")
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -99,38 +107,49 @@ async def get_mexc_data():
                 response.raise_for_status()
                 data = await response.json()
                 if data.get("success") and data.get("data"):
-                    for t in data["data"]:
-                        # Пропускаем пары не к USDT
-                        if not t.get("symbol", "").endswith("USDT"):
-                            continue
-
-                        # === ГЛАВНОЕ ИСПРАВЛЕНИЕ ===
-                        # Проверяем, что все необходимые для работы данные присутствуют в ответе.
-                        # Если хотя бы одного поля нет, мы не можем обработать эту пару.
+                    total_items = len(data['data'])
+                    print(f"[DEBUG] MEXC: 'success: True', получено {total_items} записей. Начинаю детальный анализ...")
+                    
+                    for i, t in enumerate(data["data"]):
                         funding_rate = t.get("fundingRate")
                         next_settle_time = t.get("nextSettleTime")
 
+                        # Проверяем наличие ключевых полей
                         if funding_rate is None or next_settle_time is None:
-                            # Пропускаем "сломанные" или неполные записи, как TREE_USDT
-                            continue
-                        # ===========================
-
+                            # Если это первая пропущенная запись, выводим её полностью для анализа
+                            if skipped_count == 0:
+                                print(f"  -> [ПЕРВЫЙ ПРОПУСК] Запись #{i+1} пропущена. Причина: отсутствуют данные. Полные данные записи: {t}")
+                            skipped_count += 1
+                            continue # Переходим к следующей записи
+                        
+                        # Если все поля на месте, пытаемся обработать
                         try:
                             results.append({
                                 'exchange': 'MEXC',
                                 'symbol': t.get("symbol"),
-                                # Используем переменные, которые мы проверили выше
                                 'rate': Decimal(str(funding_rate)),
                                 'next_funding_time': int(next_settle_time),
-                                'volume_24h_usdt': Decimal(str(t.get("amount24"))),
+                                'volume_24h_usdt': Decimal(str(t.get("amount24", '0'))), # Добавим '0' на случай отсутствия
                                 'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{t.get("symbol")}'
                             })
+                            processed_count += 1
                         except (TypeError, ValueError, decimal.InvalidOperation):
-                            # Этот блок на всякий случай, если данные придут в неверном формате
+                            # Если даже с проверкой произошла ошибка парсинга
+                            if skipped_count == 0: # Используем тот же флаг, чтобы не засорять лог
+                               print(f"  -> [ОШИБКА ПАРСИНГА] Запись #{i+1} не удалось обработать. Данные: {t}")
+                            skipped_count += 1
                             continue
+                else:
+                    print("[DEBUG] MEXC: Ответ не содержит 'success: True' или ключ 'data'.")
+
     except Exception as e:
-        print(f"[API_ERROR] MEXC: {e}")
+        print(f"[API_ERROR] MEXC: Произошла критическая ошибка: {e}")
+
+    # Финальный отчет
+    print(f"[DEBUG] Завершаю get_mexc_data. Итог:")
+    print(f"  - Успешно обработано: {processed_count} записей.")
+    print(f"  - Пропущено/ошибки: {skipped_count} записей.")
     return results
 async def fetch_all_data(force_update=False):
     now = datetime.now().timestamp()
