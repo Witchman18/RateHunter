@@ -53,6 +53,80 @@ def ensure_user_settings(chat_id: int):
 
 
 # =================================================================
+# =================== БЫСТРАЯ ДИАГНОСТИКА MEXC ==================
+# =================================================================
+
+async def quick_mexc_debug():
+    """
+    Быстрая диагностика структуры данных MEXC
+    """
+    print("\n" + "🔍" * 20 + " БЫСТРАЯ ДИАГНОСТИКА MEXC " + "🔍" * 20)
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            contracts_url = "https://contract.mexc.com/api/v1/contract/detail"
+            
+            async with session.get(contracts_url, timeout=15) as response:
+                if response.status != 200:
+                    print(f"❌ Ошибка HTTP: {response.status}")
+                    return
+                
+                data = await response.json()
+                
+                if not data.get("success"):
+                    print(f"❌ API ошибка: {data}")
+                    return
+                
+                contracts = data.get("data", [])
+                print(f"📊 Всего контрактов: {len(contracts)}")
+                
+                if contracts:
+                    # Анализируем первый контракт
+                    first_contract = contracts[0]
+                    print(f"\n📋 Структура первого контракта:")
+                    for key, value in first_contract.items():
+                        print(f"  {key}: {value} ({type(value).__name__})")
+                    
+                    # Ищем USDT контракты разными способами
+                    print(f"\n🔍 Поиск USDT контрактов:")
+                    
+                    # Метод 1: по quoteCoin
+                    usdt_by_quote = [c for c in contracts if c.get("quoteCoin") == "USDT"]
+                    print(f"  По quoteCoin='USDT': {len(usdt_by_quote)}")
+                    
+                    # Метод 2: по symbol
+                    usdt_by_symbol = [c for c in contracts if str(c.get("symbol", "")).endswith("USDT")]
+                    print(f"  По symbol заканчивается на 'USDT': {len(usdt_by_symbol)}")
+                    
+                    # Метод 3: по другим полям
+                    for field in ["quoteCurrency", "quote_coin", "baseCoin", "base_coin"]:
+                        usdt_by_field = [c for c in contracts if c.get(field) == "USDT"]
+                        if usdt_by_field:
+                            print(f"  По {field}='USDT': {len(usdt_by_field)}")
+                    
+                    # Показываем уникальные значения важных полей
+                    quote_coins = set(c.get("quoteCoin") for c in contracts if c.get("quoteCoin"))
+                    states = set(c.get("state") for c in contracts if c.get("state"))
+                    
+                    print(f"\n📈 Уникальные quoteCoin (первые 10): {sorted(list(quote_coins))[:10]}")
+                    print(f"📈 Уникальные state: {sorted(list(states))}")
+                    
+                    # Показываем примеры USDT контрактов
+                    if usdt_by_symbol:
+                        print(f"\n💰 Примеры USDT контрактов:")
+                        for i, contract in enumerate(usdt_by_symbol[:3]):
+                            symbol = contract.get("symbol")
+                            state = contract.get("state")
+                            quote = contract.get("quoteCoin")
+                            print(f"  {i+1}. {symbol} | state: {state} | quoteCoin: {quote}")
+                
+    except Exception as e:
+        print(f"❌ Ошибка диагностики: {e}")
+    
+    print("🔍" * 60 + "\n")
+
+
+# =================================================================
 # ===================== ДИАГНОСТИКА MEXC API =====================
 # =================================================================
 
@@ -231,19 +305,91 @@ async def get_mexc_data():
                     print(f"[API_ERROR] MEXC: API вернул ошибку: {contracts_data}")
                     return []
                 
-                # Фильтруем только активные USDT контракты
+                # Анализируем структуру данных
                 all_contracts = contracts_data.get("data", [])
-                usdt_contracts = [
+                print(f"[DEBUG] MEXC: Всего контрактов получено: {len(all_contracts)}")
+                
+                if all_contracts:
+                    # Показываем примеры первых 3 контрактов для анализа
+                    print("[DEBUG] MEXC: Примеры контрактов:")
+                    for i, contract in enumerate(all_contracts[:3]):
+                        print(f"  Контракт {i+1}: {contract}")
+                    
+                    # Анализируем уникальные значения полей
+                    quote_coins = set()
+                    states = set()
+                    symbols_exist = 0
+                    
+                    for contract in all_contracts:
+                        quote_coin = contract.get("quoteCoin")
+                        state = contract.get("state")
+                        symbol = contract.get("symbol")
+                        
+                        if quote_coin:
+                            quote_coins.add(quote_coin)
+                        if state:
+                            states.add(state)
+                        if symbol:
+                            symbols_exist += 1
+                    
+                    print(f"[DEBUG] MEXC: Найденные quoteCoin: {sorted(quote_coins)}")
+                    print(f"[DEBUG] MEXC: Найденные state: {sorted(states)}")
+                    print(f"[DEBUG] MEXC: Контрактов с symbol: {symbols_exist}")
+                
+                # Пробуем разные варианты фильтрации
+                usdt_contracts = []
+                
+                # Вариант 1: Оригинальный фильтр
+                usdt_contracts_v1 = [
                     contract for contract in all_contracts
                     if (contract.get("quoteCoin") == "USDT" and 
                         contract.get("state") == "SHOW" and
                         contract.get("symbol"))
                 ]
                 
-                print(f"[DEBUG] MEXC: Найдено {len(usdt_contracts)} активных USDT контрактов из {len(all_contracts)} общих")
+                # Вариант 2: Только по quoteCoin
+                usdt_contracts_v2 = [
+                    contract for contract in all_contracts
+                    if contract.get("quoteCoin") == "USDT"
+                ]
+                
+                # Вариант 3: Альтернативные названия полей
+                usdt_contracts_v3 = [
+                    contract for contract in all_contracts
+                    if (contract.get("quote_coin") == "USDT" or 
+                        contract.get("quoteCurrency") == "USDT" or
+                        str(contract.get("symbol", "")).endswith("USDT"))
+                ]
+                
+                # Вариант 4: По окончанию символа на USDT
+                usdt_contracts_v4 = [
+                    contract for contract in all_contracts
+                    if str(contract.get("symbol", "")).endswith("USDT")
+                ]
+                
+                print(f"[DEBUG] MEXC: Фильтр v1 (quoteCoin=USDT, state=SHOW): {len(usdt_contracts_v1)}")
+                print(f"[DEBUG] MEXC: Фильтр v2 (только quoteCoin=USDT): {len(usdt_contracts_v2)}")
+                print(f"[DEBUG] MEXC: Фильтр v3 (альтернативные поля): {len(usdt_contracts_v3)}")
+                print(f"[DEBUG] MEXC: Фильтр v4 (symbol ends with USDT): {len(usdt_contracts_v4)}")
+                
+                # Выбираем лучший вариант
+                if usdt_contracts_v1:
+                    usdt_contracts = usdt_contracts_v1
+                    print("[DEBUG] MEXC: Используем фильтр v1")
+                elif usdt_contracts_v2:
+                    usdt_contracts = usdt_contracts_v2
+                    print("[DEBUG] MEXC: Используем фильтр v2")
+                elif usdt_contracts_v4:
+                    usdt_contracts = usdt_contracts_v4
+                    print("[DEBUG] MEXC: Используем фильтр v4")
+                else:
+                    usdt_contracts = usdt_contracts_v3
+                    print("[DEBUG] MEXC: Используем фильтр v3")
+                
+                print(f"[DEBUG] MEXC: Итого выбрано USDT контрактов: {len(usdt_contracts)}")
                 
                 if not usdt_contracts:
-                    print("[API_ERROR] MEXC: Не найдено активных USDT контрактов")
+                    print("[API_ERROR] MEXC: Не найдено USDT контрактов ни одним фильтром")
                     return []
             
             # 2. Получаем данные для каждого контракта (ограничиваем количество)
@@ -396,19 +542,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     main_menu_keyboard = [
         ["🔥 Топ-ставки сейчас"], 
         ["🔔 Настроить фильтры", "ℹ️ Мои настройки"],
-        ["🔧 Диагностика MEXC"]  # Добавляем кнопку диагностики
+        ["🔧 Диагностика MEXC", "🔍 Быстрая диагностика"]
     ]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
     await update.message.reply_text("Добро пожаловать в RateHunter 2.0!\n\n🆕 Добавлена диагностика MEXC API", reply_markup=reply_markup)
 
+async def run_quick_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запуск быстрой диагностики MEXC"""
+    await update.message.reply_text("🔍 Запускаю быструю диагностику MEXC...\nПроверьте логи для подробностей.")
+    
+    # Запускаем быструю диагностику
+    await quick_mexc_debug()
+    
+    await update.message.reply_text("✅ Быстрая диагностика завершена! Проверьте логи выше.")
+
 async def run_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запуск диагностики MEXC"""
-    await update.message.reply_text("🔍 Запускаю диагностику MEXC API...\nПроверьте логи сервера для подробной информации.")
+    """Запуск полной диагностики MEXC"""
+    await update.message.reply_text("🔍 Запускаю полную диагностику MEXC API...\nПроверьте логи сервера для подробной информации.")
     
     # Запускаем диагностику
     await test_mexc_connection()
     
-    await update.message.reply_text("✅ Диагностика завершена! Проверьте логи выше для получения подробной информации.")
+    await update.message.reply_text("✅ Полная диагностика завершена! Проверьте логи выше для получения подробной информации.")
 
 async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -626,8 +781,14 @@ async def background_scanner(app):
 # =================================================================
 
 if __name__ == "__main__":
-    # Запуск диагностики при старте (раскомментируйте если нужно)
-    # print("🚀 Запуск диагностики MEXC перед стартом бота...")
+    # Опции диагностики при старте (раскомментируйте нужную):
+    
+    # ВАРИАНТ 1: Быстрая диагностика структуры данных
+    print("🚀 Запуск быстрой диагностики MEXC...")
+    asyncio.run(quick_mexc_debug())
+    
+    # ВАРИАНТ 2: Полная диагностика API (раскомментируйте если нужно)
+    # print("🚀 Запуск полной диагностики MEXC...")
     # asyncio.run(test_mexc_connection())
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -651,6 +812,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry))
     app.add_handler(MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings))
     app.add_handler(MessageHandler(filters.Regex("^🔧 Диагностика MEXC$"), run_diagnostics))
+    app.add_handler(MessageHandler(filters.Regex("^🔍 Быстрая диагностика$"), run_quick_diagnostics))
     
     # Обработчики настроек
     app.add_handler(conv_handler_funding)
