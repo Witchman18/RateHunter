@@ -90,49 +90,90 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
-    # ИСПРАВЛЕНИЕ: Возвращаемся к эндпоинту 'detail', т.к. только он отдает 'nextSettleTime'.
+    # =========================================================================
+    # =================== УЛЬТИМАТИВНАЯ ДИАГНОСТИКА v3 =========================
+    # =========================================================================
     mexc_url = "https://contract.mexc.com/api/v1/contract/detail"
     results = []
+    
+    print("\n[DIAG] === ЗАПУСК ДИАГНОСТИКИ MEXC ===")
+    print(f"[DIAG] 1. URL для запроса: {mexc_url}")
+
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(mexc_url, timeout=15) as response: # Увеличим таймаут, т.к. ответ больше
-                response.raise_for_status()
-                data = await response.json()
+            print("[DIAG] 2. Отправка запроса с таймаутом 20 секунд...")
+            async with session.get(mexc_url, timeout=20) as response:
+                print(f"[DIAG] 3. Ответ получен. Статус-код: {response.status}")
+                response.raise_for_status() # Если статус 4xx или 5xx, здесь будет ошибка
+
+                print("[DIAG] 4. Пытаюсь прочитать тело ответа как текст...")
+                raw_text = await response.text()
+                if not raw_text:
+                    print("[DIAG] КРИТИЧЕСКАЯ ОШИБКА: Тело ответа ПУСТОЕ. Выход.")
+                    return []
                 
+                print("[DIAG] 5. Пытаюсь декодировать текст в JSON...")
+                data = json.loads(raw_text)
+                print("[DIAG] 6. JSON декодирован успешно.")
+
                 if data.get("success") and data.get("data"):
-                    for t in data["data"]:
-                        # Пропускаем пары не к USDT или неактивные
-                        if t.get("quoteCoin") != "USDT" or t.get("state") != "SHOW":
-                            continue
-
-                        # Наш "умный" фильтр, который мы отладили.
-                        # Он пропустит мусорные записи без фандинга, но обработает остальные.
-                        funding_rate = t.get("fundingRate")
-                        next_settle_time = t.get("nextSettleTime")
-
-                        if funding_rate is None or next_settle_time is None:
-                            continue
+                    total_items = len(data['data'])
+                    print(f"[DIAG] 7. 'success: True', найдено {total_items} записей. Начинаю перебор...")
+                    
+                    processed_count = 0
+                    skipped_count = 0
+                    
+                    for i, t in enumerate(data["data"]):
+                        # Проверяем все условия сразу
+                        is_usdt_pair = t.get("quoteCoin") == "USDT"
+                        is_active = t.get("state") == "SHOW"
+                        has_funding_rate = t.get("fundingRate") is not None
+                        has_settle_time = t.get("nextSettleTime") is not None
                         
-                        try:
-                            symbol = t.get("symbol").replace("_", "")
-                            results.append({
-                                'exchange': 'MEXC',
-                                'symbol': symbol,
-                                'rate': Decimal(str(funding_rate)),
-                                'next_funding_time': int(next_settle_time),
-                                # 'detail' отдает объем в 'volume24', а не 'amount24'
-                                'volume_24h_usdt': Decimal(str(t.get("volume24"))), 
-                                # 'detail' отдает лимит ордера
-                                'max_order_value_usdt': Decimal(str(t.get("maxVol"))),
-                                'trade_url': f'https://futures.mexc.com/exchange/{t.get("symbol")}'
-                            })
-                        except (TypeError, ValueError, decimal.InvalidOperation):
-                            continue
-    except Exception as e:
-        print(f"[API_ERROR] MEXC: {e}")
-    return results
+                        if is_usdt_pair and is_active and has_funding_rate and has_settle_time:
+                            try:
+                                # Все проверки пройдены, парсим
+                                symbol = t.get("symbol").replace("_", "")
+                                results.append({
+                                    'exchange': 'MEXC', 'symbol': symbol,
+                                    'rate': Decimal(str(t["fundingRate"])),
+                                    'next_funding_time': int(t["nextSettleTime"]),
+                                    'volume_24h_usdt': Decimal(str(t.get("volume24", '0'))),
+                                    'max_order_value_usdt': Decimal(str(t.get("maxVol", '0'))),
+                                    'trade_url': f'https://futures.mexc.com/exchange/{t.get("symbol")}'
+                                })
+                                processed_count += 1
+                            except (TypeError, ValueError, decimal.InvalidOperation):
+                                skipped_count += 1 # Ошибка при конвертации данных
+                        else:
+                            # Если какая-то проверка не пройдена
+                            if skipped_count == 0: # Выводим инфо только о первой пропущенной
+                                print(f"  -> [ПЕРВЫЙ ПРОПУСК] Запись #{i+1} ({t.get('symbol')}) пропущена. Причины:")
+                                if not is_usdt_pair: print("     - Не USDT пара")
+                                if not is_active: print("     - Неактивна (state != SHOW)")
+                                if not has_funding_rate: print("     - Отсутствует fundingRate")
+                                if not has_settle_time: print("     - Отсутствует nextSettleTime")
+                            skipped_count += 1
+                            
+                    print("[DIAG] 8. Перебор завершен.")
+                    print(f"   - Успешно обработано: {processed_count}")
+                    print(f"   - Пропущено/ошибки: {skipped_count}")
 
+                else:
+                    print("[DIAG] КРИТИЧЕСКАЯ ОШИБКА: 'success' не True или отсутствует ключ 'data'.")
+
+    except asyncio.TimeoutError:
+        print("[DIAG] КРИТИЧЕСКАЯ ОШИБКА: Запрос к MEXC отвалился по таймауту (20 секунд). Сервер не ответил вовремя.")
+    except aiohttp.ClientResponseError as e:
+        print(f"[DIAG] КРИТИЧЕСКАЯ ОШИБКА: Сервер MEXC вернул ошибку. Статус: {e.status}, Сообщение: {e.message}")
+    except json.JSONDecodeError:
+        print("[DIAG] КРИТИЧЕСКАЯ ОШИБКА: Не удалось декодировать JSON. Ответ от сервера - не JSON.")
+    except Exception as e:
+        print(f"[DIAG] НЕПРЕДВИДЕННАЯ ОШИБКА: {type(e).__name__}: {e}")
+
+    print("[DIAG] === ДИАГНОСТИКА MEXC ЗАВЕРШЕНА ===")
+    return results
 async def fetch_all_data(force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
