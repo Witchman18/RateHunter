@@ -90,71 +90,48 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
-    # =========================================================================
-    # ===================== ДИАГНОСТИЧЕСКАЯ ВЕРСИЯ ============================
-    # =========================================================================
     mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
     results = []
-    print("\n[DEBUG] Запускаю get_mexc_data...")
     try:
-        # ДОБАВЛЕНО ДЛЯ ДИАГНОСТИКИ: добавляем стандартный заголовок, иногда это помогает
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        
+        headers = {'User-Agent': 'Mozilla/5.0'}
         async with aiohttp.ClientSession(headers=headers) as session:
-            print(f"[DEBUG] Отправляю GET-запрос на {mexc_url}")
             async with session.get(mexc_url, timeout=10) as response:
-                
-                # ДОБАВЛЕНО ДЛЯ ДИАГНОСТИКИ: выводим самую важную информацию
-                print(f"[DEBUG] MEXC: Получен статус-код: {response.status}")
-                print(f"[DEBUG] MEXC: Заголовки ответа (Content-Type): {response.headers.get('Content-Type')}")
-                
-                # Читаем ответ как текст, чтобы увидеть его в любом случае
-                raw_text = await response.text()
-                
-                # Проверяем, не пустой ли ответ
-                if not raw_text:
-                    print("[DEBUG] MEXC: Получен ПУСТОЙ ответ!")
-                    return []
-                
-                print(f"[DEBUG] MEXC: Начало сырого ответа (первые 500 символов):\n---\n{raw_text[:500]}\n---")
-                
-                # Теперь пытаемся обработать ответ
-                response.raise_for_status() # Проверяем на ошибки HTTP (4xx, 5xx)
-                
-                # Пытаемся декодировать JSON из сохраненного текста
-                data = json.loads(raw_text) 
-                
+                response.raise_for_status()
+                data = await response.json()
                 if data.get("success") and data.get("data"):
-                    print(f"[DEBUG] MEXC: 'success: True', найдено {len(data['data'])} записей. Начинаю парсинг...")
-                    # ... (остальная логика парсинга без изменений)
                     for t in data["data"]:
-                        if not t.get("symbol", "").endswith("USDT"): continue
+                        # Пропускаем пары не к USDT
+                        if not t.get("symbol", "").endswith("USDT"):
+                            continue
+
+                        # === ГЛАВНОЕ ИСПРАВЛЕНИЕ ===
+                        # Проверяем, что все необходимые для работы данные присутствуют в ответе.
+                        # Если хотя бы одного поля нет, мы не можем обработать эту пару.
+                        funding_rate = t.get("fundingRate")
+                        next_settle_time = t.get("nextSettleTime")
+
+                        if funding_rate is None or next_settle_time is None:
+                            # Пропускаем "сломанные" или неполные записи, как TREE_USDT
+                            continue
+                        # ===========================
+
                         try:
                             results.append({
-                                'exchange': 'MEXC', 'symbol': t.get("symbol"),
-                                'rate': Decimal(str(t.get("fundingRate"))), 'next_funding_time': int(t.get("nextSettleTime")),
-                                'volume_24h_usdt': Decimal(str(t.get("amount24"))), 'max_order_value_usdt': Decimal('0'),
+                                'exchange': 'MEXC',
+                                'symbol': t.get("symbol"),
+                                # Используем переменные, которые мы проверили выше
+                                'rate': Decimal(str(funding_rate)),
+                                'next_funding_time': int(next_settle_time),
+                                'volume_24h_usdt': Decimal(str(t.get("amount24"))),
+                                'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{t.get("symbol")}'
                             })
-                        except (TypeError, ValueError, decimal.InvalidOperation) as parse_error:
-                            print(f"[DEBUG] MEXC: Ошибка парсинга записи: {t}. Ошибка: {parse_error}")
+                        except (TypeError, ValueError, decimal.InvalidOperation):
+                            # Этот блок на всякий случай, если данные придут в неверном формате
                             continue
-                else:
-                    print("[DEBUG] MEXC: Ответ не содержит 'success: True' или ключ 'data'. Структура ответа неверна.")
-
-    except aiohttp.ClientResponseError as e:
-         print(f"[API_ERROR] MEXC: Ошибка ответа от сервера! Статус: {e.status}, Сообщение: {e.message}")
-    except aiohttp.ClientError as e:
-        print(f"[API_ERROR] MEXC: Ошибка клиента aiohttp! {type(e).__name__}: {e}")
-    except json.JSONDecodeError:
-        print("[API_ERROR] MEXC: Не удалось декодировать JSON. Ответ от сервера, скорее всего, не JSON (возможно, HTML-страница).")
     except Exception as e:
-        # Выводим тип ошибки и саму ошибку
-        print(f"[API_ERROR] MEXC: Произошла непредвиденная ошибка типа {type(e).__name__}: {e}")
-        
-    print(f"[DEBUG] Завершаю get_mexc_data. Собрано {len(results)} записей.")
+        print(f"[API_ERROR] MEXC: {e}")
     return results
-
 async def fetch_all_data(force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
