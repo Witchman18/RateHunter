@@ -781,17 +781,17 @@ async def background_scanner(app):
 # =================================================================
 
 if __name__ == "__main__":
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
     # Опции диагностики при старте (раскомментируйте нужную):
     
     # ВАРИАНТ 1: Быстрая диагностика структуры данных
-    print("🚀 Запуск быстрой диагностики MEXC...")
-    asyncio.run(quick_mexc_debug())
+    # print("🚀 Запуск быстрой диагностики MEXC...")
+    # asyncio.run(quick_mexc_debug())
     
     # ВАРИАНТ 2: Полная диагностика API (раскомментируйте если нужно)
     # print("🚀 Запуск полной диагностики MEXC...")
     # asyncio.run(test_mexc_connection())
-    
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Обработчики разговоров для настройки фильтров
     conv_handler_funding = ConversationHandler(
@@ -824,9 +824,15 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|toggle_notif|exchanges)$"))
     app.add_handler(CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"))
 
-    # Инициализация фонового сканера
+    # Инициализация фонового сканера и диагностики
     async def post_init(app): 
+        # Запускаем быструю диагностику при старте бота
+        print("🚀 Запуск автоматической диагностики MEXC...")
+        await quick_mexc_debug()
+        
+        # Инициализируем фоновый сканер
         asyncio.create_task(background_scanner(app))
+        
     app.post_init = post_init
 
     print("🤖 RateHunter 2.0 запущен!")
