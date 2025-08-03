@@ -1,10 +1,10 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - Alpha v0.3.1 ===================
+# ===================== RateHunter 2.0 - Alpha v0.3.2 ===================
 # =========================================================================
 # Изменения в этой версии:
-# - ИСПРАВЛЕНИЕ: Полностью исправлен модуль MEXC для корректного получения данных.
-# - ИСПРАВЛЕНИЕ: Правильная интерпретация полей volume/amount в MEXC API.
-# - ОПТИМИЗАЦИЯ: Добавлена предварительная фильтрация пар с низким фандингом.
+# - ДОБАВЛЕНО: Корректный расчет времени следующего фандинга (00, 08, 16 UTC).
+# - ДОБАВЛЕНО: Отображение таймера обратного отсчета до выплаты фандинга.
+# - ОЧИСТКА: Удалена вся диагностическая логика из модуля MEXC.
 # =========================================================================
 
 import os
@@ -28,12 +28,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MSK_TIMEZONE = timezone(timedelta(hours=3))
 
-# API ключи для бирж (опционально для расширенного функционала)
-MEXC_API_KEY = os.getenv("MEXC_API_KEY")
-MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY")
-BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
-BYBIT_SECRET_KEY = os.getenv("BYBIT_SECRET_KEY")
-
 # --- Глобальные переменные и настройки ---
 user_settings = {}
 api_data_cache = {"last_update": None, "data": []}
@@ -54,16 +48,39 @@ def ensure_user_settings(chat_id: int):
     for key, value in get_default_settings().items():
         user_settings[chat_id].setdefault(key, value)
 
+# --- Вспомогательная функция для расчета времени ---
+def calculate_next_funding_time_utc(current_dt_utc: datetime) -> int:
+    """
+    Вычисляет timestamp следующей стандартной выплаты фандинга (00, 08, 16 UTC).
+    """
+    funding_hours_utc = [0, 8, 16]
+    
+    next_hour = -1
+    for hour in funding_hours_utc:
+        if current_dt_utc.hour < hour:
+            next_hour = hour
+            break
+            
+    if next_hour == -1:
+        target_dt = current_dt_utc + timedelta(days=1)
+        target_dt = target_dt.replace(hour=funding_hours_utc[0], minute=0, second=0, microsecond=0)
+    else:
+        target_dt = current_dt_utc.replace(hour=next_hour, minute=0, second=0, microsecond=0)
+        
+    return int(target_dt.timestamp() * 1000)
 
 # =================================================================
 # ===================== МОДУЛЬ СБОРА ДАННЫХ (API) =====================
 # =================================================================
 
 async def get_bybit_data():
-    """Получение данных фандинга от Bybit"""
     bybit_url = "https://api.bybit.com/v5/market/tickers?category=linear"
     instrument_url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
     results = []
+    
+    now_utc = datetime.now(timezone.utc)
+    next_funding_ts = calculate_next_funding_time_utc(now_utc)
+    
     try:
         async with aiohttp.ClientSession() as session:
             limits_data = {}
@@ -82,7 +99,8 @@ async def get_bybit_data():
                         try:
                             results.append({
                                 'exchange': 'Bybit', 'symbol': t.get("symbol"),
-                                'rate': Decimal(t.get("fundingRate")), 'next_funding_time': int(t.get("nextFundingTime")),
+                                'rate': Decimal(t.get("fundingRate")), 
+                                'next_funding_time': next_funding_ts,
                                 'volume_24h_usdt': Decimal(t.get("turnover24h")),
                                 'max_order_value_usdt': Decimal(limits_data.get(t.get("symbol"), '0')),
                                 'trade_url': f'https://www.bybit.com/trade/usdt/{t.get("symbol")}'
@@ -93,160 +111,60 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
-    """ДИАГНОСТИЧЕСКАЯ версия получения данных от MEXC с поддержкой API ключей"""
-    
-    # Выбираем endpoint в зависимости от наличия API ключей
-    if MEXC_API_KEY and MEXC_SECRET_KEY:
-        print(f"[DEBUG] MEXC: Используем авторизованный API")
-        # Для авторизованных запросов можно использовать другие endpoints
-        mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
-        # TODO: Добавить подпись запроса для приватного API
-    else:
-        print(f"[DEBUG] MEXC: Используем публичный API")
-        mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
-    
+    mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
     results = []
     
-    print(f"[DEBUG] MEXC: Начинаем получение данных с {mexc_url}")
+    now_utc = datetime.now(timezone.utc)
+    next_funding_ts = calculate_next_funding_time_utc(now_utc)
     
     try:
-        headers = {}
-        if MEXC_API_KEY:
-            headers['X-MEXC-APIKEY'] = MEXC_API_KEY
-            print(f"[DEBUG] MEXC: Добавлен API ключ в заголовки")
-        
         async with aiohttp.ClientSession() as session:
-            async with session.get(mexc_url, headers=headers, timeout=15) as response:
+            async with session.get(mexc_url, timeout=10) as response:
                 response.raise_for_status()
                 data = await response.json()
                 
-                print(f"[DEBUG] MEXC: Получен ответ, success: {data.get('success')}")
-                
                 if data.get("success") and data.get("data"):
-                    total_pairs = len(data["data"])
-                    processed_pairs = 0
-                    usdt_pairs = 0
-                    valid_funding_pairs = 0
-                    valid_volume_pairs = 0
-                    
-                    print(f"[DEBUG] MEXC: Обрабатываем {total_pairs} пар")
-                    
-                    # Проверим первые 5 пар для диагностики
-                    for i, t in enumerate(data["data"]):
+                    for t in data["data"]:
                         try:
-                            symbol = t.get("symbol")
                             rate_val = t.get("fundingRate")
-                            next_funding_time = t.get("nextSettleTime")
+                            symbol = t.get("symbol")
                             
-                            if i < 5:  # Диагностика первых 5 пар
-                                print(f"[DEBUG] MEXC Sample {i+1}: {symbol}, rate: {rate_val}, time: {next_funding_time}")
-                                print(f"[DEBUG] MEXC Sample {i+1}: amount24: {t.get('amount24')}, volume24: {t.get('volume24')}, lastPrice: {t.get('lastPrice')}")
-                                # Дополнительная диагностика полей времени
-                                print(f"[DEBUG] MEXC Sample {i+1}: nextSettleTime: {t.get('nextSettleTime')}, nextFundingTime: {t.get('nextFundingTime')}")
-                                print(f"[DEBUG] MEXC Sample {i+1}: все поля времени: {[k for k in t.keys() if 'time' in k.lower() or 'settle' in k.lower()]}")
-                            
-                            # Проверяем USDT пары
-                            if symbol and symbol.endswith("USDT"):
-                                usdt_pairs += 1
-                                
-                                # ИСПРАВЛЕНИЕ: Проверяем фандинг данные БЕЗ проверки времени
-                                if rate_val is not None:
-                                    valid_funding_pairs += 1
-                                    
-                                    # Устанавливаем время фандинга по умолчанию если оно None
-                                    if next_funding_time is None:
-                                        # Используем текущее время + 8 часов (стандартный интервал фандинга)
-                                        current_time = datetime.now(timezone.utc)
-                                        next_funding_default = current_time + timedelta(hours=8)
-                                        next_funding_time = int(next_funding_default.timestamp() * 1000)
-                                    
-                                    # Проверяем объем
-                                    volume_24h_usdt = Decimal('0')
-                                    
-                                    # Пробуем amount24
-                                    amount24_val = t.get("amount24")
-                                    if amount24_val and str(amount24_val) != '0':
-                                        try:
-                                            volume_24h_usdt = Decimal(str(amount24_val))
-                                        except:
-                                            pass
-                                    
-                                    # Если amount24 не работает, пробуем volume24 * lastPrice
-                                    if volume_24h_usdt == 0:
-                                        volume24_val = t.get("volume24")
-                                        lastPrice_val = t.get("lastPrice")
-                                        if volume24_val and lastPrice_val:
-                                            try:
-                                                volume_24h_vol = Decimal(str(volume24_val))
-                                                last_price = Decimal(str(lastPrice_val))
-                                                if volume_24h_vol > 0 and last_price > 0:
-                                                    volume_24h_usdt = volume_24h_vol * last_price
-                                            except:
-                                                pass
-                                    
-                                    if volume_24h_usdt > 0:
-                                        valid_volume_pairs += 1
-                                        
-                                        # ИСПРАВЛЕНИЕ: Нормализуем символ для MEXC
-                                        # MEXC использует формат BTC_USDT, а мы ожидаем BTCUSDT
-                                        normalized_symbol = symbol.replace("_", "")
-                                        
-                                        # Убираем фильтр по минимальному объему для тестирования
-                                        # if volume_24h_usdt >= Decimal('50000'):
-                                        processed_pairs += 1
-                                        
-                                        results.append({
-                                            'exchange': 'MEXC',
-                                            'symbol': normalized_symbol,  # Используем нормализованный символ
-                                            'rate': Decimal(str(rate_val)),
-                                            'next_funding_time': int(next_funding_time),
-                                            'volume_24h_usdt': volume_24h_usdt,
-                                            'max_order_value_usdt': Decimal('0'),
-                                            'trade_url': f'https://futures.mexc.com/exchange/{symbol}'  # Оригинальный символ для URL
-                                        })
-                            
-                        except (TypeError, ValueError, decimal.InvalidOperation) as e:
-                            if i < 5:
-                                print(f"[DEBUG] MEXC Error for sample {i+1}: {e}")
+                            if rate_val is None or not symbol or not symbol.endswith("USDT"):
+                                continue
+
+                            volume_in_coin = Decimal(str(t.get("volume24", '0')))
+                            last_price = Decimal(str(t.get("lastPrice", '0')))
+                            volume_in_usdt = volume_in_coin * last_price if last_price > 0 else Decimal('0')
+
+                            results.append({
+                                'exchange': 'MEXC',
+                                'symbol': symbol,
+                                'rate': Decimal(str(rate_val)),
+                                'next_funding_time': next_funding_ts,
+                                'volume_24h_usdt': volume_in_usdt,
+                                'max_order_value_usdt': Decimal('0'),
+                                'trade_url': f'https://futures.mexc.com/exchange/{symbol}'
+                            })
+                        except (TypeError, ValueError, decimal.InvalidOperation):
                             continue
-                    
-                    print(f"[DEBUG] MEXC: Всего пар: {total_pairs}")
-                    print(f"[DEBUG] MEXC: USDT пар: {usdt_pairs}")
-                    print(f"[DEBUG] MEXC: С валидным фандингом: {valid_funding_pairs}")
-                    print(f"[DEBUG] MEXC: С валидным объемом: {valid_volume_pairs}")
-                    print(f"[DEBUG] MEXC: Успешно обработано: {processed_pairs}")
-                    print(f"[DEBUG] MEXC: Получено записей: {len(results)}")
-                else:
-                    print(f"[ERROR] MEXC: Неверный формат ответа API")
-                    
+                            
     except Exception as e:
         print(f"[API_ERROR] MEXC: {e}")
-        
     return results
 
 async def fetch_all_data(force_update=False):
-    """Получение данных со всех бирж с кешированием"""
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
-        print(f"[DEBUG] Используем кешированные данные")
         return api_data_cache["data"]
 
-    print(f"[DEBUG] Обновляем данные с бирж...")
     tasks = [get_bybit_data(), get_mexc_data()]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
-    for i, res in enumerate(results_from_tasks):
-        exchange_name = ['Bybit', 'MEXC'][i]
+    for res in results_from_tasks:
         if isinstance(res, list):
-            print(f"[DEBUG] {exchange_name}: получено {len(res)} записей")
             all_data.extend(res)
-        elif isinstance(res, Exception):
-            print(f"[ERROR] {exchange_name}: {res}")
-        else:
-            print(f"[WARNING] {exchange_name}: неожиданный тип результата: {type(res)}")
             
-    print(f"[DEBUG] Всего получено {len(all_data)} записей")
     api_data_cache["data"], api_data_cache["last_update"] = all_data, now
     return all_data
 
@@ -293,13 +211,32 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message_text = f"🔥 **ТОП-5 фандингов > {settings['funding_threshold']*100:.2f}%**\n\n"
     buttons = []
+    now_utc = datetime.now(timezone.utc)
+    
     for item in top_5:
         symbol_only = item['symbol'].replace("USDT", "")
-        funding_dt = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=MSK_TIMEZONE)
-        time_str = funding_dt.strftime('%H:%M МСК')
-        direction_text = "🟢" if item['rate'] < 0 else "🔴"
+        
+        funding_ts_ms = item['next_funding_time']
+        funding_dt_utc = datetime.fromtimestamp(funding_ts_ms / 1000, tz=timezone.utc)
+        funding_dt_msk = funding_dt_utc.astimezone(MSK_TIMEZONE)
+        time_str = funding_dt_msk.strftime('%H:%M МСК')
+        
+        time_left = funding_dt_utc - now_utc
+        countdown_str = ""
+        if time_left.total_seconds() > 0:
+            hours = int(time_left.total_seconds()) // 3600
+            minutes = (int(time_left.total_seconds()) % 3600) // 60
+            if hours > 0:
+                countdown_str = f" (осталось {hours}ч {minutes}м)"
+            elif minutes > 0:
+                countdown_str = f" (осталось {minutes}м)"
+            else:
+                countdown_str = " (меньше минуты)"
+
+        direction_text = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
         rate_str = f"{item['rate'] * 100:+.2f}%"
-        message_text += f"{direction_text} *{symbol_only}* `{rate_str}` в `{time_str}` [{item['exchange']}]\n"
+        message_text += f"{direction_text} *{symbol_only}* `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]\n"
+        
         buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
 
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
@@ -320,33 +257,44 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     symbol_specific_data = [item for item in all_data if item['symbol'] == symbol_to_show]
     symbol_specific_data.sort(key=lambda x: abs(x['rate']), reverse=True)
     symbol_only = symbol_to_show.replace("USDT", "")
-    
-    if not symbol_specific_data:
-        await query.edit_message_text(f"😔 Данные для {symbol_only} не найдены.")
-        return
-    
     message_text = f"💎 **Детали по {symbol_only}**\n\n"
+    now_utc = datetime.now(timezone.utc)
+    
     for item in symbol_specific_data:
-        funding_dt = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=MSK_TIMEZONE)
-        time_str = funding_dt.strftime('%H:%M МСК')
+        funding_ts_ms = item['next_funding_time']
+        funding_dt_utc = datetime.fromtimestamp(funding_ts_ms / 1000, tz=timezone.utc)
+        funding_dt_msk = funding_dt_utc.astimezone(MSK_TIMEZONE)
+        time_str = funding_dt_msk.strftime('%H:%M МСК')
+        
+        time_left = funding_dt_utc - now_utc
+        countdown_str = ""
+        if time_left.total_seconds() > 0:
+            hours = int(time_left.total_seconds()) // 3600
+            minutes = (int(time_left.total_seconds()) % 3600) // 60
+            if hours > 0:
+                countdown_str = f" (осталось {hours}ч {minutes}м)"
+            elif minutes > 0:
+                countdown_str = f" (осталось {minutes}м)"
+            else:
+                countdown_str = " (меньше минуты)"
+        
         direction_text = "🟢 ЛОНГ" if item['rate'] < 0 else "🔴 ШОРТ"
         rate_str = f"{item['rate'] * 100:+.2f}%"
-        
-        # Форматируем объем
         volume_usdt = item.get('volume_24h_usdt', Decimal('0'))
-        if volume_usdt >= Decimal('1000000000'):  # >= 1B
+        
+        if volume_usdt >= Decimal('1000000000'):
             volume_str = f"{volume_usdt / Decimal('1000000000'):.1f}B"
-        elif volume_usdt >= Decimal('1000000'):  # >= 1M
+        elif volume_usdt >= Decimal('1000000'):
             volume_str = f"{volume_usdt / Decimal('1000000'):.1f}M"
         else:
             volume_str = f"{volume_usdt / Decimal('1000'):.0f}K"
-        
-        message_text += f"{direction_text} `{rate_str}` в `{time_str}` [{item['exchange']}]({item['trade_url']})\n"
+            
+        message_text += f"{direction_text} `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]({item['trade_url']})\n"
         message_text += f"  *Объем 24ч:* `{volume_str} USDT`\n"
 
         max_pos = item.get('max_order_value_usdt', Decimal('0'))
         if max_pos > 0:
-            message_text += f"  *Макс. ордер:* `{max_pos:,.0f} USDT`\n"
+            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
         
         message_text += "\n"
 
@@ -485,9 +433,7 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message_text, parse_mode='Markdown')
 
 async def background_scanner(app):
-    """Фоновый сканер для уведомлений (пока не реализован)"""
     pass
-
 
 # =================================================================
 # ========================== ЗАПУСК БОТА ==========================
