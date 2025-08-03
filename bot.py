@@ -1,11 +1,9 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - Alpha v0.4.0 ===================
+# ===================== RateHunter 2.0 - Alpha v0.5.0 ===================
 # =========================================================================
 # Изменения в этой версии:
-# - АРХИТЕКТУРА: Исправлена проблема с "исчезающими" переменными окружения на хостинге.
-#   Ключи теперь читаются один раз при старте и передаются в функции как аргументы.
-# - API: Реализован полноценный приватный запрос к MEXC с криптографической подписью.
-# - НАДЕЖНОСТЬ: Обеспечена стабильная и точная работа с данными от Bybit и MEXC.
+# - АРХИТЕКТУРА: Полный переход на application.bot_data для хранения API ключей.
+#   Это окончательно решает проблему "исчезающих" переменных на хостинге.
 # =========================================================================
 
 import os
@@ -26,25 +24,18 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 
-# Загружаем переменные из .env файла, если он существует (для локальной разработки)
-# На хостинге (Railway) будут использоваться переменные, заданные в интерфейсе.
 dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
 if os.path.exists(dotenv_path):
     load_dotenv(dotenv_path)
 
-# --- Конфигурация и глобальные переменные ---
-# Читаем переменные ОДИН РАЗ при старте скрипта
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MEXC_API_KEY = os.getenv("MEXC_API_KEY")
-MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY")
-
 MSK_TIMEZONE = timezone(timedelta(hours=3))
+
 user_settings = {}
 api_data_cache = {"last_update": None, "data": []}
 CACHE_LIFETIME_SECONDS = 60
 ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io', 'HTX', 'Bitget']
 
-# --- Состояния для ConversationHandler ---
 SET_FUNDING_THRESHOLD, SET_VOLUME_THRESHOLD = range(2)
 
 def get_default_settings():
@@ -57,10 +48,6 @@ def ensure_user_settings(chat_id: int):
     if chat_id not in user_settings: user_settings[chat_id] = get_default_settings()
     for key, value in get_default_settings().items():
         user_settings[chat_id].setdefault(key, value)
-
-# =================================================================
-# ===================== МОДУЛЬ СБОРА ДАННЫХ (API) =====================
-# =================================================================
 
 async def get_bybit_data():
     bybit_url = "https://api.bybit.com/v5/market/tickers?category=linear"
@@ -97,7 +84,6 @@ async def get_bybit_data():
         print(f"[API_ERROR] Bybit: {e}")
     return results
 
-# ИСПРАВЛЕННАЯ ВЕРСИЯ: Принимает ключи как аргументы
 async def get_mexc_data(api_key: str, secret_key: str):
     if not api_key or not secret_key:
         print("[API_ERROR] MEXC: Ключи не были переданы в функцию get_mexc_data.")
@@ -111,10 +97,8 @@ async def get_mexc_data(api_key: str, secret_key: str):
     signature = hmac.new(secret_key.encode('utf-8'), data_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
 
     headers = {
-        'ApiKey': api_key,
-        'Request-Time': timestamp,
-        'Signature': signature,
-        'Content-Type': 'application/json',
+        'ApiKey': api_key, 'Request-Time': timestamp,
+        'Signature': signature, 'Content-Type': 'application/json',
     }
     
     results = []
@@ -149,8 +133,7 @@ async def get_mexc_data(api_key: str, secret_key: str):
                                 'volume_24h_usdt': volume_in_usdt, 'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
                             })
-                        except (TypeError, ValueError, decimal.InvalidOperation):
-                            continue
+                        except (TypeError, ValueError, decimal.InvalidOperation): continue
                 else:
                     print(f"[API_ERROR] MEXC: Ответ от приватного API получен, но структура неверна: {data}")
 
@@ -159,32 +142,24 @@ async def get_mexc_data(api_key: str, secret_key: str):
     
     return results
 
-# ИСПРАВЛЕННАЯ ВЕРСИЯ: Передает ключи в get_mexc_data
-async def fetch_all_data(force_update=False):
+async def fetch_all_data(force_update=False, mexc_api_key=None, mexc_secret_key=None):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
         return api_data_cache["data"]
 
     tasks = [
         get_bybit_data(), 
-        get_mexc_data(api_key=MEXC_API_KEY, secret_key=MEXC_SECRET_KEY)
+        get_mexc_data(api_key=mexc_api_key, secret_key=mexc_secret_key)
     ]
     
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
     for res in results_from_tasks:
-        if isinstance(res, list):
-            all_data.extend(res)
+        if isinstance(res, list): all_data.extend(res)
             
     api_data_cache["data"], api_data_cache["last_update"] = all_data, now
     return all_data
-
-# ... (Остальная часть кода без изменений) ...
-
-# =================================================================
-# ================== ПОЛЬЗОВАТЕЛЬСКИЙ ИНТЕРФЕЙС ==================
-# =================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user_settings(update.effective_chat.id)
@@ -206,7 +181,11 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         message_to_edit = await update.message.reply_text("🔄 Ищу...")
 
-    all_data = await fetch_all_data()
+    mexc_api_key = context.bot_data.get('mexc_api_key')
+    mexc_secret_key = context.bot_data.get('mexc_secret_key')
+
+    all_data = await fetch_all_data(mexc_api_key=mexc_api_key, mexc_secret_key=mexc_secret_key)
+    
     if not all_data:
         await message_to_edit.edit_text("😔 Не удалось получить данные с бирж. Попробуйте позже.")
         return
@@ -265,8 +244,14 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     all_data = api_data_cache.get("data", [])
     if not all_data:
         await query.edit_message_text("🔄 Обновляю данные...")
-        all_data = await fetch_all_data(force_update=True)
-
+        mexc_api_key = context.bot_data.get('mexc_api_key')
+        mexc_secret_key = context.bot_data.get('mexc_secret_key')
+        all_data = await fetch_all_data(
+            force_update=True,
+            mexc_api_key=mexc_api_key, 
+            mexc_secret_key=mexc_secret_key
+        )
+        
     symbol_specific_data = [item for item in all_data if item['symbol'] == symbol_to_show]
     symbol_specific_data.sort(key=lambda x: abs(x['rate']), reverse=True)
     symbol_only = symbol_to_show.replace("USDT", "")
@@ -359,7 +344,7 @@ async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
 async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    active_exchanges = user_settings[query.message.chat_id]['exchanges']
+    active_exchanges = user_settings[query.message.chat.id]['exchanges']
     buttons = [InlineKeyboardButton(f"{'✅' if ex in active_exchanges else '⬜️'} {ex}", callback_data=f"exch_{ex}") for ex in ALL_AVAILABLE_EXCHANGES]
     keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)] + [[InlineKeyboardButton("⬅️ Назад", callback_data="exch_back")]]
     await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -448,16 +433,20 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def background_scanner(app):
     pass
 
-# =================================================================
-# ========================== ЗАПУСК БОТА ==========================
-# =================================================================
-
 if __name__ == "__main__":
     if not BOT_TOKEN:
         raise ValueError("Не найден BOT_TOKEN. Убедитесь, что он задан в переменных окружения.")
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
+    app.bot_data['mexc_api_key'] = os.getenv("MEXC_API_KEY")
+    app.bot_data['mexc_secret_key'] = os.getenv("MEXC_SECRET_KEY")
+
+    if app.bot_data['mexc_api_key']:
+        print("✅ Ключ MEXC_API_KEY успешно загружен в bot_data.")
+    else:
+        print("⚠️ Ключ MEXC_API_KEY не найден. MEXC не будет работать.")
+
     conv_handler_funding = ConversationHandler(
         entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding'), pattern="^filters_funding$")],
         states={SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]},
