@@ -187,18 +187,22 @@ async def get_mexc_data():
                                     if volume_24h_usdt > 0:
                                         valid_volume_pairs += 1
                                         
+                                        # ИСПРАВЛЕНИЕ: Нормализуем символ для MEXC
+                                        # MEXC использует формат BTC_USDT, а мы ожидаем BTCUSDT
+                                        normalized_symbol = symbol.replace("_", "")
+                                        
                                         # Убираем фильтр по минимальному объему для тестирования
                                         # if volume_24h_usdt >= Decimal('50000'):
                                         processed_pairs += 1
                                         
                                         results.append({
                                             'exchange': 'MEXC',
-                                            'symbol': symbol,
+                                            'symbol': normalized_symbol,  # Используем нормализованный символ
                                             'rate': Decimal(str(rate_val)),
                                             'next_funding_time': int(next_funding_time),
                                             'volume_24h_usdt': volume_24h_usdt,
                                             'max_order_value_usdt': Decimal('0'),
-                                            'trade_url': f'https://futures.mexc.com/exchange/{symbol}'
+                                            'trade_url': f'https://futures.mexc.com/exchange/{symbol}'  # Оригинальный символ для URL
                                         })
                             
                         except (TypeError, ValueError, decimal.InvalidOperation) as e:
@@ -316,17 +320,35 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     symbol_specific_data = [item for item in all_data if item['symbol'] == symbol_to_show]
     symbol_specific_data.sort(key=lambda x: abs(x['rate']), reverse=True)
     symbol_only = symbol_to_show.replace("USDT", "")
+    
+    if not symbol_specific_data:
+        await query.edit_message_text(f"😔 Данные для {symbol_only} не найдены.")
+        return
+    
     message_text = f"💎 **Детали по {symbol_only}**\n\n"
     for item in symbol_specific_data:
         funding_dt = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=MSK_TIMEZONE)
         time_str = funding_dt.strftime('%H:%M МСК')
         direction_text = "🟢 ЛОНГ" if item['rate'] < 0 else "🔴 ШОРТ"
         rate_str = f"{item['rate'] * 100:+.2f}%"
+        
+        # Форматируем объем
+        volume_usdt = item.get('volume_24h_usdt', Decimal('0'))
+        if volume_usdt >= Decimal('1000000000'):  # >= 1B
+            volume_str = f"{volume_usdt / Decimal('1000000000'):.1f}B"
+        elif volume_usdt >= Decimal('1000000'):  # >= 1M
+            volume_str = f"{volume_usdt / Decimal('1000000'):.1f}M"
+        else:
+            volume_str = f"{volume_usdt / Decimal('1000'):.0f}K"
+        
         message_text += f"{direction_text} `{rate_str}` в `{time_str}` [{item['exchange']}]({item['trade_url']})\n"
+        message_text += f"  *Объем 24ч:* `{volume_str} USDT`\n"
 
         max_pos = item.get('max_order_value_usdt', Decimal('0'))
         if max_pos > 0:
-            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
+            message_text += f"  *Макс. ордер:* `{max_pos:,.0f} USDT`\n"
+        
+        message_text += "\n"
 
     keyboard = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
     await query.edit_message_text(
