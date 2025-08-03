@@ -22,7 +22,11 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 
-load_dotenv()
+# Ищем файл .env. Если находим - загружаем. Если нет - ничего страшного, 
+# будем использовать переменные, установленные хостингом.
+dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path)
 
 # --- Конфигурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
