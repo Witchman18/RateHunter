@@ -442,7 +442,7 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
     app.bot_data['mexc_api_key'] = os.getenv("MEXC_API_KEY")
-    app.bot_data['mexc_secret_key'] = os.getenv("MEXC_SECRET_KEY")
+    app.bot_data['mexc_secret_key'] = os.getenv("MEXC_API_SECRET")  # Исправлено имя переменной
     app.bot_data['bybit_api_key'] = os.getenv("BYBIT_API_KEY")
     app.bot_data['bybit_api_secret'] = os.getenv("BYBIT_API_SECRET")
 
