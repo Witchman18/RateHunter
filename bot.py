@@ -28,6 +28,12 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MSK_TIMEZONE = timezone(timedelta(hours=3))
 
+# API ключи для бирж (опционально для расширенного функционала)
+MEXC_API_KEY = os.getenv("MEXC_API_KEY")
+MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY")
+BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
+BYBIT_SECRET_KEY = os.getenv("BYBIT_SECRET_KEY")
+
 # --- Глобальные переменные и настройки ---
 user_settings = {}
 api_data_cache = {"last_update": None, "data": []}
@@ -87,15 +93,30 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
-    """ИСПРАВЛЕННАЯ версия получения данных от MEXC"""
-    mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
+    """ДИАГНОСТИЧЕСКАЯ версия получения данных от MEXC с поддержкой API ключей"""
+    
+    # Выбираем endpoint в зависимости от наличия API ключей
+    if MEXC_API_KEY and MEXC_SECRET_KEY:
+        print(f"[DEBUG] MEXC: Используем авторизованный API")
+        # Для авторизованных запросов можно использовать другие endpoints
+        mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
+        # TODO: Добавить подпись запроса для приватного API
+    else:
+        print(f"[DEBUG] MEXC: Используем публичный API")
+        mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
+    
     results = []
     
     print(f"[DEBUG] MEXC: Начинаем получение данных с {mexc_url}")
     
     try:
+        headers = {}
+        if MEXC_API_KEY:
+            headers['X-MEXC-APIKEY'] = MEXC_API_KEY
+            print(f"[DEBUG] MEXC: Добавлен API ключ в заголовки")
+        
         async with aiohttp.ClientSession() as session:
-            async with session.get(mexc_url, timeout=15) as response:
+            async with session.get(mexc_url, headers=headers, timeout=15) as response:
                 response.raise_for_status()
                 data = await response.json()
                 
@@ -104,52 +125,83 @@ async def get_mexc_data():
                 if data.get("success") and data.get("data"):
                     total_pairs = len(data["data"])
                     processed_pairs = 0
+                    usdt_pairs = 0
+                    valid_funding_pairs = 0
+                    valid_volume_pairs = 0
                     
                     print(f"[DEBUG] MEXC: Обрабатываем {total_pairs} пар")
                     
-                    for t in data["data"]:
+                    # Проверим первые 5 пар для диагностики
+                    for i, t in enumerate(data["data"]):
                         try:
                             symbol = t.get("symbol")
                             rate_val = t.get("fundingRate")
                             next_funding_time = t.get("nextSettleTime")
                             
-                            # Фильтруем только USDT пары с валидными данными
-                            if (not symbol or not symbol.endswith("USDT") or 
-                                rate_val is None or next_funding_time is None):
-                                continue
-
-                            # ИСПРАВЛЕНИЕ: Используем amount24 как объем в USDT
-                            # amount24 - это объем в котируемой валюте (USDT)
-                            volume_24h_usdt = Decimal(str(t.get("amount24", '0')))
+                            if i < 5:  # Диагностика первых 5 пар
+                                print(f"[DEBUG] MEXC Sample {i+1}: {symbol}, rate: {rate_val}, time: {next_funding_time}")
+                                print(f"[DEBUG] MEXC Sample {i+1}: amount24: {t.get('amount24')}, volume24: {t.get('volume24')}, lastPrice: {t.get('lastPrice')}")
                             
-                            # Дополнительная проверка: если amount24 равен 0, пробуем volume24 * lastPrice
-                            if volume_24h_usdt == 0:
-                                volume_24h_vol = Decimal(str(t.get("volume24", '0')))
-                                last_price = Decimal(str(t.get("lastPrice", '0')))
-                                if volume_24h_vol > 0 and last_price > 0:
-                                    volume_24h_usdt = volume_24h_vol * last_price
-
-                            # Предварительная фильтрация по минимальному объему
-                            if volume_24h_usdt < Decimal('50000'):
-                                continue
-
-                            processed_pairs += 1
-
-                            results.append({
-                                'exchange': 'MEXC',
-                                'symbol': symbol,
-                                'rate': Decimal(str(rate_val)),
-                                'next_funding_time': int(next_funding_time),
-                                'volume_24h_usdt': volume_24h_usdt,
-                                'max_order_value_usdt': Decimal('0'),  # MEXC не предоставляет эти данные
-                                'trade_url': f'https://futures.mexc.com/exchange/{symbol}'
-                            })
+                            # Проверяем USDT пары
+                            if symbol and symbol.endswith("USDT"):
+                                usdt_pairs += 1
+                                
+                                # Проверяем фандинг данные
+                                if rate_val is not None and next_funding_time is not None:
+                                    valid_funding_pairs += 1
+                                    
+                                    # Проверяем объем
+                                    volume_24h_usdt = Decimal('0')
+                                    
+                                    # Пробуем amount24
+                                    amount24_val = t.get("amount24")
+                                    if amount24_val and str(amount24_val) != '0':
+                                        try:
+                                            volume_24h_usdt = Decimal(str(amount24_val))
+                                        except:
+                                            pass
+                                    
+                                    # Если amount24 не работает, пробуем volume24 * lastPrice
+                                    if volume_24h_usdt == 0:
+                                        volume24_val = t.get("volume24")
+                                        lastPrice_val = t.get("lastPrice")
+                                        if volume24_val and lastPrice_val:
+                                            try:
+                                                volume_24h_vol = Decimal(str(volume24_val))
+                                                last_price = Decimal(str(lastPrice_val))
+                                                if volume_24h_vol > 0 and last_price > 0:
+                                                    volume_24h_usdt = volume_24h_vol * last_price
+                                            except:
+                                                pass
+                                    
+                                    if volume_24h_usdt > 0:
+                                        valid_volume_pairs += 1
+                                        
+                                        # Убираем фильтр по минимальному объему для тестирования
+                                        # if volume_24h_usdt >= Decimal('50000'):
+                                        processed_pairs += 1
+                                        
+                                        results.append({
+                                            'exchange': 'MEXC',
+                                            'symbol': symbol,
+                                            'rate': Decimal(str(rate_val)),
+                                            'next_funding_time': int(next_funding_time),
+                                            'volume_24h_usdt': volume_24h_usdt,
+                                            'max_order_value_usdt': Decimal('0'),
+                                            'trade_url': f'https://futures.mexc.com/exchange/{symbol}'
+                                        })
                             
                         except (TypeError, ValueError, decimal.InvalidOperation) as e:
+                            if i < 5:
+                                print(f"[DEBUG] MEXC Error for sample {i+1}: {e}")
                             continue
                     
-                    print(f"[DEBUG] MEXC: Успешно обработано {processed_pairs} пар из {total_pairs}")
-                    print(f"[DEBUG] MEXC: Получено {len(results)} валидных записей")
+                    print(f"[DEBUG] MEXC: Всего пар: {total_pairs}")
+                    print(f"[DEBUG] MEXC: USDT пар: {usdt_pairs}")
+                    print(f"[DEBUG] MEXC: С валидным фандингом: {valid_funding_pairs}")
+                    print(f"[DEBUG] MEXC: С валидным объемом: {valid_volume_pairs}")
+                    print(f"[DEBUG] MEXC: Успешно обработано: {processed_pairs}")
+                    print(f"[DEBUG] MEXC: Получено записей: {len(results)}")
                 else:
                     print(f"[ERROR] MEXC: Неверный формат ответа API")
                     
