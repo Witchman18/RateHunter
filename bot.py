@@ -177,6 +177,16 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message_to_edit.edit_text("😔 Не удалось получить данные с бирж. Попробуйте позже.")
         return
 
+    # ==================== ДИАГНОСТИЧЕСКИЙ БЛОК ====================
+    print("\n" + "="*20 + " ДИАГНОСТИКА ДАННЫХ ПЕРЕД ФИЛЬТРАЦИЕЙ " + "="*20)
+    print(f"Фильтры пользователя: Ставка > {settings['funding_threshold']:.4f}, Объем > {settings['volume_threshold_usdt']:,.0f} USDT")
+    print("-" * 70)
+    for item in sorted(all_data, key=lambda x: x.get('volume_24h_usdt', 0), reverse=True)[:20]: # Показываем топ-20 по объему
+        volume_usdt = item.get('volume_24h_usdt', Decimal('0'))
+        print(f"[{item['exchange']}] {item['symbol']:<15} | Объем: {volume_usdt:<20,.2f} | Ставка: {item['rate']:.4f}")
+    print("="*70 + "\n")
+    # ================================================================
+
     user_filtered_data = [
         item for item in all_data
         if item['exchange'] in settings['exchanges'] and abs(item['rate']) >= settings['funding_threshold']
