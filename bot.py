@@ -37,6 +37,18 @@ ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io
 # --- Состояния для ConversationHandler ---
 SET_FUNDING_THRESHOLD, SET_VOLUME_THRESHOLD = range(2)
 
+
+# =================================================================
+# ===================== ДИАГНОСТИКА ПЕРЕМЕННЫХ ====================
+# =================================================================
+print("--- ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ---")
+mexc_key_check = os.getenv("MEXC_API_KEY")
+mexc_secret_check = os.getenv("MEXC_API_SECRET")
+print(f"MEXC_API_KEY найден: {'Да' if mexc_key_check else 'Нет'}")
+print(f"MEXC_API_SECRET найден: {'Да' if mexc_secret_check else 'Нет'}")
+print("-----------------------------------------")
+# =================================================================
+
 def get_default_settings():
     return {
         'notifications_on': True, 'exchanges': ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin'],
