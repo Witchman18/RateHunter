@@ -86,7 +86,6 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
-    # Оптимизированная версия: один быстрый запрос, который возвращает все данные.
     mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
     results = []
     try:
@@ -98,28 +97,31 @@ async def get_mexc_data():
                 if data.get("success") and data.get("data"):
                     for t in data["data"]:
                         try:
-                            # Предварительная фильтрация для ускорения
                             rate_val = t.get("fundingRate")
-                            if rate_val is None:
-                                continue
-
-                            # Отсекаем пары с незначительным фандингом (меньше 0.1%)
-                            if abs(Decimal(str(rate_val))) < Decimal('0.001'):
-                                continue
-
-                            # Проверяем остальные данные только для интересных пар
                             symbol = t.get("symbol")
                             next_funding_time = t.get("nextSettleTime")
                             
-                            if not symbol or not symbol.endswith("USDT") or next_funding_time is None:
+                            if rate_val is None or next_funding_time is None or not symbol or not symbol.endswith("USDT"):
                                 continue
+
+                            # === ГЛАВНОЕ ИСПРАВЛЕНИЕ ===
+                            # Рассчитываем объем в USDT вручную
+                            volume_in_coin = Decimal(str(t.get("volume24", '0')))
+                            last_price = Decimal(str(t.get("lastPrice", '0')))
+                            
+                            # Если цена или объем равны нулю, объем в USDT тоже ноль
+                            if volume_in_coin == 0 or last_price == 0:
+                                volume_in_usdt = Decimal('0')
+                            else:
+                                volume_in_usdt = volume_in_coin * last_price
+                            # ===========================
 
                             results.append({
                                 'exchange': 'MEXC',
                                 'symbol': symbol,
                                 'rate': Decimal(str(rate_val)),
                                 'next_funding_time': int(next_funding_time),
-                                'volume_24h_usdt': Decimal(str(t.get("amount24", '0'))),
+                                'volume_24h_usdt': volume_in_usdt, # Сохраняем правильный объем
                                 'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{symbol}'
                             })
@@ -176,16 +178,6 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not all_data:
         await message_to_edit.edit_text("😔 Не удалось получить данные с бирж. Попробуйте позже.")
         return
-
-    # ==================== ДИАГНОСТИЧЕСКИЙ БЛОК ====================
-    print("\n" + "="*20 + " ДИАГНОСТИКА ДАННЫХ ПЕРЕД ФИЛЬТРАЦИЕЙ " + "="*20)
-    print(f"Фильтры пользователя: Ставка > {settings['funding_threshold']:.4f}, Объем > {settings['volume_threshold_usdt']:,.0f} USDT")
-    print("-" * 70)
-    for item in sorted(all_data, key=lambda x: x.get('volume_24h_usdt', 0), reverse=True)[:20]: # Показываем топ-20 по объему
-        volume_usdt = item.get('volume_24h_usdt', Decimal('0'))
-        print(f"[{item['exchange']}] {item['symbol']:<15} | Объем: {volume_usdt:<20,.2f} | Ставка: {item['rate']:.4f}")
-    print("="*70 + "\n")
-    # ================================================================
 
     user_filtered_data = [
         item for item in all_data
