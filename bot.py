@@ -141,14 +141,24 @@ async def get_mexc_data():
                             if i < 5:  # Диагностика первых 5 пар
                                 print(f"[DEBUG] MEXC Sample {i+1}: {symbol}, rate: {rate_val}, time: {next_funding_time}")
                                 print(f"[DEBUG] MEXC Sample {i+1}: amount24: {t.get('amount24')}, volume24: {t.get('volume24')}, lastPrice: {t.get('lastPrice')}")
+                                # Дополнительная диагностика полей времени
+                                print(f"[DEBUG] MEXC Sample {i+1}: nextSettleTime: {t.get('nextSettleTime')}, nextFundingTime: {t.get('nextFundingTime')}")
+                                print(f"[DEBUG] MEXC Sample {i+1}: все поля времени: {[k for k in t.keys() if 'time' in k.lower() or 'settle' in k.lower()]}")
                             
                             # Проверяем USDT пары
                             if symbol and symbol.endswith("USDT"):
                                 usdt_pairs += 1
                                 
-                                # Проверяем фандинг данные
-                                if rate_val is not None and next_funding_time is not None:
+                                # ИСПРАВЛЕНИЕ: Проверяем фандинг данные БЕЗ проверки времени
+                                if rate_val is not None:
                                     valid_funding_pairs += 1
+                                    
+                                    # Устанавливаем время фандинга по умолчанию если оно None
+                                    if next_funding_time is None:
+                                        # Используем текущее время + 8 часов (стандартный интервал фандинга)
+                                        current_time = datetime.now(timezone.utc)
+                                        next_funding_default = current_time + timedelta(hours=8)
+                                        next_funding_time = int(next_funding_default.timestamp() * 1000)
                                     
                                     # Проверяем объем
                                     volume_24h_usdt = Decimal('0')
