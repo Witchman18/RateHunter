@@ -441,11 +441,18 @@ if __name__ == "__main__":
     
     app.bot_data['mexc_api_key'] = os.getenv("MEXC_API_KEY")
     app.bot_data['mexc_secret_key'] = os.getenv("MEXC_SECRET_KEY")
+    app.bot_data['bybit_api_key'] = os.getenv("BYBIT_API_KEY")
+    app.bot_data['bybit_api_secret'] = os.getenv("BYBIT_API_SECRET")
 
     if app.bot_data['mexc_api_key']:
-        print("✅ Ключ MEXC_API_KEY успешно загружен в bot_data.")
+        print("✅ Ключи MEXC успешно загружены в bot_data.")
     else:
-        print("⚠️ Ключ MEXC_API_KEY не найден. MEXC не будет работать.")
+        print("⚠️ Ключи MEXC не найдены. MEXC не будет работать.")
+        
+    if app.bot_data['bybit_api_key']:
+        print("✅ Ключи Bybit успешно загружены в bot_data.")
+    else:
+        print("⚠️ Ключи Bybit не найдены. Будет использоваться только публичное API.")
 
     conv_handler_funding = ConversationHandler(
         entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding'), pattern="^filters_funding$")],
