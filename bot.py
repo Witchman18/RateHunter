@@ -92,54 +92,64 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
-    # === ФИНАЛЬНОЕ РЕШЕНИЕ: ПРАВИЛЬНАЯ РАБОТА С ПУБЛИЧНЫМ API MEXC ===
+    # === РАБОТА ЧЕРЕЗ ПРИВАТНЫЙ API С ИСПОЛЬЗОВАНИЕМ КЛЮЧЕЙ ===
     
-    # Эндпоинт со статичными, но полными данными (включая ТОЧНОЕ ВРЕМЯ)
-    detail_url = "https://contract.mexc.com/api/v1/contract/detail" 
-    # Эндпоинт с быстрыми, "живыми" данными (ставки, объемы)
-    ticker_url = "https://contract.mexc.com/api/v1/contract/ticker" 
+    api_key = os.getenv("MEXC_API_KEY")
+    secret_key = os.getenv("MEXC_SECRET_KEY")
+
+    if not api_key or not secret_key:
+        print("[API_ERROR] MEXC: Ключи (MEXC_API_KEY, MEXC_API_SECRET) не найдены в .env файле. Запрос невозможен.")
+        return []
+
+    # Используем приватный эндпоинт, который должен отдавать все данные
+    request_path = "/api/v1/private/contract/open_contracts"
+    base_url = "https://contract.mexc.com"
+    
+    # 1. Формируем подпись
+    timestamp = str(int(time.time() * 1000))
+    # Для GET-запроса подписывается строка timestamp + api_key
+    data_to_sign = timestamp + api_key
+    signature = hmac.new(secret_key.encode('utf-8'), data_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+
+    # 2. Формируем правильные заголовки
+    headers = {
+        'ApiKey': api_key,
+        'Request-Time': timestamp,
+        'Signature': signature,
+        'Content-Type': 'application/json',
+    }
+    
     results = []
-    
     try:
         async with aiohttp.ClientSession() as session:
-            
-            # ШАГ 1: Загружаем "каталог" с точным временем для каждой пары.
-            funding_times = {}
-            async with session.get(detail_url, timeout=15) as response:
-                response.raise_for_status()
-                data = await response.json()
-                if data.get("success") and data.get("data"):
-                    for contract in data["data"]:
-                        symbol = contract.get("symbol")
-                        time_val = contract.get("nextSettleTime")
-                        if symbol and time_val:
-                            funding_times[symbol] = int(time_val)
+            # 3. Отправляем авторизованный GET-запрос
+            async with session.get(base_url + request_path, headers=headers, timeout=15) as response:
+                
+                # Диагностика ответа
+                if response.status != 200:
+                    print(f"[API_ERROR] MEXC: Приватный API вернул ошибку! Статус: {response.status}")
+                    print(f"Текст ответа: {await response.text()}")
+                    return []
 
-            if not funding_times:
-                print("[API_ERROR] MEXC: Не удалось получить данные о времени фандинга с /detail.")
-                return []
-
-            # ШАГ 2: Загружаем "живые" данные (ставки, цены, объемы).
-            async with session.get(ticker_url, timeout=10) as response:
-                response.raise_for_status()
                 data = await response.json()
                 
                 if data.get("success") and data.get("data"):
                     for t in data["data"]:
                         try:
+                            # Структура ответа приватного API может отличаться.
+                            # Мы ищем те же самые поля.
                             rate_val = t.get("fundingRate")
                             symbol_from_api = t.get("symbol")
+                            next_funding_ts = t.get("nextSettleTime")
                             
-                            if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT"):
+                            if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT") or not next_funding_ts:
                                 continue
-
-                            # ШАГ 3: ОБЪЕДИНЯЕМ. Для каждой "живой" пары находим ее точное время.
-                            next_funding_ts = funding_times.get(symbol_from_api)
-                            if not next_funding_ts:
-                                continue # Если времени для этой пары нет, пропускаем.
 
                             normalized_symbol = symbol_from_api.replace("_", "")
                             
+                            # Для объема данных в приватном API может не быть, поэтому делаем запасной вариант
+                            # Если объема нет, то пара все равно попадет в список, но будет отфильтрована позже
+                            # если у пользователя стоит фильтр по объему.
                             volume_in_coin = Decimal(str(t.get("volume24", '0')))
                             last_price = Decimal(str(t.get("lastPrice", '0')))
                             volume_in_usdt = volume_in_coin * last_price if last_price > 0 else Decimal('0')
@@ -148,16 +158,19 @@ async def get_mexc_data():
                                 'exchange': 'MEXC',
                                 'symbol': normalized_symbol,
                                 'rate': Decimal(str(rate_val)),
-                                'next_funding_time': next_funding_ts, # Подставляем точное время
+                                'next_funding_time': int(next_funding_ts),
                                 'volume_24h_usdt': volume_in_usdt,
                                 'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
                             })
                         except (TypeError, ValueError, decimal.InvalidOperation):
                             continue
-                            
+                else:
+                    print(f"[API_ERROR] MEXC: Ответ от приватного API получен, но структура неверна: {data}")
+
     except Exception as e:
-        print(f"[API_ERROR] MEXC: {e}")
+        print(f"[API_ERROR] MEXC: Критическая ошибка при выполнении приватного запроса: {e}")
+    
     return results
 
 async def fetch_all_data(force_update=False):
