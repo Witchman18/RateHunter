@@ -1,9 +1,9 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - Alpha v0.5.0 ===================
+# ===================== RateHunter 2.0 - Alpha v0.5.1 ===================
 # =========================================================================
 # Изменения в этой версии:
-# - АРХИТЕКТУРА: Полный переход на application.bot_data для хранения API ключей.
-#   Это окончательно решает проблему "исчезающих" переменных на хостинге.
+# - ИСПРАВЛЕНИЕ: Устранена ошибка "Ключи не были переданы в функцию get_mexc_data"
+# - Все вызовы fetch_all_data теперь корректно передают API ключи из bot_data
 # =========================================================================
 
 import os
@@ -86,7 +86,7 @@ async def get_bybit_data():
 
 async def get_mexc_data(api_key: str, secret_key: str):
     if not api_key or not secret_key:
-        print("[API_ERROR] MEXC: Ключи не были переданы в функцию get_mexc_data.")
+        print("[API_ERROR] MEXC: API ключи не настроены. MEXC будет пропущен.")
         return []
 
     request_path = "/api/v1/private/contract/open_contracts"
@@ -142,10 +142,17 @@ async def get_mexc_data(api_key: str, secret_key: str):
     
     return results
 
-async def fetch_all_data(force_update=False, mexc_api_key=None, mexc_secret_key=None):
+async def fetch_all_data(context, force_update=False):
+    """
+    Получает данные с всех бирж. Теперь принимает context для доступа к bot_data.
+    """
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
         return api_data_cache["data"]
+
+    # Получаем API ключи из bot_data
+    mexc_api_key = context.bot_data.get('mexc_api_key')
+    mexc_secret_key = context.bot_data.get('mexc_secret_key')
 
     tasks = [
         get_bybit_data(), 
@@ -181,10 +188,8 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         message_to_edit = await update.message.reply_text("🔄 Ищу...")
 
-    mexc_api_key = context.bot_data.get('mexc_api_key')
-    mexc_secret_key = context.bot_data.get('mexc_secret_key')
-
-    all_data = await fetch_all_data(mexc_api_key=mexc_api_key, mexc_secret_key=mexc_secret_key)
+    # Передаем context в функцию
+    all_data = await fetch_all_data(context)
     
     if not all_data:
         await message_to_edit.edit_text("😔 Не удалось получить данные с бирж. Попробуйте позже.")
@@ -244,13 +249,8 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     all_data = api_data_cache.get("data", [])
     if not all_data:
         await query.edit_message_text("🔄 Обновляю данные...")
-        mexc_api_key = context.bot_data.get('mexc_api_key')
-        mexc_secret_key = context.bot_data.get('mexc_secret_key')
-        all_data = await fetch_all_data(
-            force_update=True,
-            mexc_api_key=mexc_api_key, 
-            mexc_secret_key=mexc_secret_key
-        )
+        # Передаем context в функцию
+        all_data = await fetch_all_data(context, force_update=True)
         
     symbol_specific_data = [item for item in all_data if item['symbol'] == symbol_to_show]
     symbol_specific_data.sort(key=lambda x: abs(x['rate']), reverse=True)
