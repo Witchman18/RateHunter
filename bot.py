@@ -297,7 +297,7 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         symbol_only = item['symbol'].replace("USDT", "")
         funding_dt = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=MSK_TIMEZONE)
         time_str = funding_dt.strftime('%H:%M МСК')
-        direction_text = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
+        direction_text = "🟢" if item['rate'] < 0 else "🔴"
         rate_str = f"{item['rate'] * 100:+.2f}%"
         message_text += f"{direction_text} *{symbol_only}* `{rate_str}` в `{time_str}` [{item['exchange']}]\n"
         buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
