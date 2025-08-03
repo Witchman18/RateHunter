@@ -150,9 +150,11 @@ async def fetch_all_data(context, force_update=False):
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
         return api_data_cache["data"]
 
-    # Получаем API ключи из bot_data
+    # Получаем API ключи из bot_data - исправлены имена ключей
     mexc_api_key = context.bot_data.get('mexc_api_key')
     mexc_secret_key = context.bot_data.get('mexc_secret_key')
+    
+    print(f"[DEBUG] MEXC ключи: API={mexc_api_key is not None}, SECRET={mexc_secret_key is not None}")
 
     tasks = [
         get_bybit_data(), 
