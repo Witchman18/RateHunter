@@ -48,26 +48,6 @@ def ensure_user_settings(chat_id: int):
     for key, value in get_default_settings().items():
         user_settings[chat_id].setdefault(key, value)
 
-# --- Вспомогательная функция для расчета времени ---
-def calculate_next_funding_time_utc(current_dt_utc: datetime) -> int:
-    """
-    Вычисляет timestamp следующей стандартной выплаты фандинга (00, 08, 16 UTC).
-    """
-    funding_hours_utc = [0, 8, 16]
-    
-    next_hour = -1
-    for hour in funding_hours_utc:
-        if current_dt_utc.hour < hour:
-            next_hour = hour
-            break
-            
-    if next_hour == -1:
-        target_dt = current_dt_utc + timedelta(days=1)
-        target_dt = target_dt.replace(hour=funding_hours_utc[0], minute=0, second=0, microsecond=0)
-    else:
-        target_dt = current_dt_utc.replace(hour=next_hour, minute=0, second=0, microsecond=0)
-        
-    return int(target_dt.timestamp() * 1000)
 
 # =================================================================
 # ===================== МОДУЛЬ СБОРА ДАННЫХ (API) =====================
@@ -77,10 +57,6 @@ async def get_bybit_data():
     bybit_url = "https://api.bybit.com/v5/market/tickers?category=linear"
     instrument_url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
     results = []
-    
-    now_utc = datetime.now(timezone.utc)
-    next_funding_ts = calculate_next_funding_time_utc(now_utc)
-    
     try:
         async with aiohttp.ClientSession() as session:
             limits_data = {}
@@ -97,10 +73,15 @@ async def get_bybit_data():
                 if data.get("retCode") == 0 and data.get("result", {}).get("list"):
                     for t in data["result"]["list"]:
                         try:
+                            # === ИСПРАВЛЕНИЕ ===
+                            # Берем время напрямую из API
+                            next_funding_ts = t.get("nextFundingTime")
+                            if not next_funding_ts: continue
+
                             results.append({
                                 'exchange': 'Bybit', 'symbol': t.get("symbol"),
                                 'rate': Decimal(t.get("fundingRate")), 
-                                'next_funding_time': next_funding_ts,
+                                'next_funding_time': int(next_funding_ts),
                                 'volume_24h_usdt': Decimal(t.get("turnover24h")),
                                 'max_order_value_usdt': Decimal(limits_data.get(t.get("symbol"), '0')),
                                 'trade_url': f'https://www.bybit.com/trade/usdt/{t.get("symbol")}'
@@ -113,10 +94,6 @@ async def get_bybit_data():
 async def get_mexc_data():
     mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
     results = []
-    
-    now_utc = datetime.now(timezone.utc)
-    next_funding_ts = calculate_next_funding_time_utc(now_utc)
-    
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(mexc_url, timeout=10) as response:
@@ -127,23 +104,30 @@ async def get_mexc_data():
                     for t in data["data"]:
                         try:
                             rate_val = t.get("fundingRate")
-                            symbol = t.get("symbol")
+                            symbol_from_api = t.get("symbol")
                             
-                            if rate_val is None or not symbol or not symbol.endswith("USDT"):
+                            # === ИСПРАВЛЕНИЕ ===
+                            # Теперь мы используем 'nextSettleTime', так как это единственное поле времени от MEXC
+                            # Оно может быть неточным для некоторых пар, но это лучше, чем вычислять неправильно.
+                            next_funding_ts = t.get("nextSettleTime")
+                            
+                            if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT") or not next_funding_ts:
                                 continue
 
+                            normalized_symbol = symbol_from_api.replace("_", "")
+                            
                             volume_in_coin = Decimal(str(t.get("volume24", '0')))
                             last_price = Decimal(str(t.get("lastPrice", '0')))
                             volume_in_usdt = volume_in_coin * last_price if last_price > 0 else Decimal('0')
 
                             results.append({
                                 'exchange': 'MEXC',
-                                'symbol': symbol,
+                                'symbol': normalized_symbol,
                                 'rate': Decimal(str(rate_val)),
-                                'next_funding_time': next_funding_ts,
+                                'next_funding_time': int(next_funding_ts),
                                 'volume_24h_usdt': volume_in_usdt,
                                 'max_order_value_usdt': Decimal('0'),
-                                'trade_url': f'https://futures.mexc.com/exchange/{symbol}'
+                                'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
                             })
                         except (TypeError, ValueError, decimal.InvalidOperation):
                             continue
