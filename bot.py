@@ -1,11 +1,9 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - Alpha v0.6.0 ===================
+# ===================== RateHunter 2.0 - Alpha v0.5.1 ===================
 # =========================================================================
 # Изменения в этой версии:
-# - API: Финальная, стабильная версия, использующая публичные API для всех бирж.
-# - НАДЕЖНОСТЬ: Реализован двухступенчатый метод для MEXC, обеспечивающий
-#   максимальную точность данных, доступную через публичные эндпоинты.
-# - ОЧИСТКА: Удалена вся логика, связанная с API-ключами.
+# - ИСПРАВЛЕНИЕ: Устранена ошибка "Ключи не были переданы в функцию get_mexc_data"
+# - Все вызовы fetch_all_data теперь корректно передают API ключи из bot_data
 # =========================================================================
 
 import os
@@ -13,6 +11,9 @@ import asyncio
 import aiohttp
 import decimal
 import json
+import time
+import hmac
+import hashlib
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
@@ -27,17 +28,14 @@ dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
 if os.path.exists(dotenv_path):
     load_dotenv(dotenv_path)
 
-# --- Конфигурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MSK_TIMEZONE = timezone(timedelta(hours=3))
 
-# --- Глобальные переменные и настройки ---
 user_settings = {}
 api_data_cache = {"last_update": None, "data": []}
 CACHE_LIFETIME_SECONDS = 60
 ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io', 'HTX', 'Bitget']
 
-# --- Состояния для ConversationHandler ---
 SET_FUNDING_THRESHOLD, SET_VOLUME_THRESHOLD = range(2)
 
 def get_default_settings():
@@ -50,10 +48,6 @@ def ensure_user_settings(chat_id: int):
     if chat_id not in user_settings: user_settings[chat_id] = get_default_settings()
     for key, value in get_default_settings().items():
         user_settings[chat_id].setdefault(key, value)
-
-# =================================================================
-# ===================== МОДУЛЬ СБОРА ДАННЫХ (API) =====================
-# =================================================================
 
 async def get_bybit_data():
     bybit_url = "https://api.bybit.com/v5/market/tickers?category=linear"
@@ -90,68 +84,123 @@ async def get_bybit_data():
         print(f"[API_ERROR] Bybit: {e}")
     return results
 
-async def get_mexc_data():
-    detail_url = "https://contract.mexc.com/api/v1/contract/detail"
-    ticker_url = "https://contract.mexc.com/api/v1/contract/ticker"
+async def get_mexc_data(api_key: str, secret_key: str):
+    if not api_key or not secret_key:
+        print("[API_ERROR] MEXC: API ключи не настроены. MEXC будет пропущен.")
+        return []
+
+    request_path = "/api/v1/private/contract/open_contracts"
+    base_url = "https://contract.mexc.com"
+    
     results = []
-    try:
-        async with aiohttp.ClientSession() as session:
-            funding_times = {}
-            async with session.get(detail_url, timeout=15) as response:
-                response.raise_for_status()
-                data = await response.json()
-                if data.get("success") and data.get("data"):
-                    for contract in data["data"]:
-                        symbol = contract.get("symbol")
-                        time_val = contract.get("nextSettleTime")
-                        if symbol and time_val:
-                            funding_times[symbol] = int(time_val)
+    
+    # Попробуем несколько раз с увеличивающимся timeout
+    for attempt in range(3):
+        try:
+            timestamp = str(int(time.time() * 1000))
+            data_to_sign = timestamp + api_key
+            signature = hmac.new(secret_key.encode('utf-8'), data_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
 
-            if not funding_times:
-                print("[API_ERROR] MEXC: Не удалось получить данные о времени фандинга с /detail.")
+            headers = {
+                'ApiKey': api_key, 'Request-Time': timestamp,
+                'Signature': signature, 'Content-Type': 'application/json',
+            }
+            
+            timeout_seconds = 10 + (attempt * 10)  # 10, 20, 30 секунд
+            print(f"[DEBUG] MEXC попытка {attempt + 1}/3, timeout={timeout_seconds}с")
+            
+            # Используем более длинный timeout и connector с SSL отключенным
+            connector = aiohttp.TCPConnector(ssl=False)
+            timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+            
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                async with session.get(base_url + request_path, headers=headers) as response:
+                    response_text = await response.text()
+                    print(f"[DEBUG] MEXC ответ: статус={response.status}")
+                    
+                    if response.status != 200:
+                        print(f"[API_ERROR] MEXC: Статус {response.status}, ответ: {response_text[:200]}")
+                        if attempt < 2:  # Если не последняя попытка
+                            await asyncio.sleep(2)  # Ждем 2 секунды перед повтором
+                            continue
+                        return []
+                        
+                    data = await response.json()
+                    
+                    if data.get("success") and data.get("data"):
+                        print(f"[DEBUG] MEXC: Успешно получено {len(data['data'])} контрактов")
+                        for t in data["data"]:
+                            try:
+                                rate_val = t.get("fundingRate")
+                                symbol_from_api = t.get("symbol")
+                                next_funding_ts = t.get("nextSettleTime")
+                                
+                                if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT") or not next_funding_ts:
+                                    continue
+
+                                normalized_symbol = symbol_from_api.replace("_", "")
+                                
+                                volume_in_coin = Decimal(str(t.get("volume24", '0')))
+                                last_price = Decimal(str(t.get("lastPrice", '0')))
+                                volume_in_usdt = volume_in_coin * last_price if last_price > 0 else Decimal('0')
+
+                                results.append({
+                                    'exchange': 'MEXC', 'symbol': normalized_symbol,
+                                    'rate': Decimal(str(rate_val)), 'next_funding_time': int(next_funding_ts),
+                                    'volume_24h_usdt': volume_in_usdt, 'max_order_value_usdt': Decimal('0'),
+                                    'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
+                                })
+                            except (TypeError, ValueError, decimal.InvalidOperation) as e:
+                                continue
+                        
+                        print(f"[DEBUG] MEXC: Обработано {len(results)} записей")
+                        break  # Успешно получили данные, выходим из цикла попыток
+                        
+                    else:
+                        print(f"[API_ERROR] MEXC: Неверная структура ответа: {data}")
+                        if attempt < 2:
+                            await asyncio.sleep(2)
+                            continue
+                        return []
+
+        except asyncio.TimeoutError:
+            print(f"[API_ERROR] MEXC: Timeout на попытке {attempt + 1}/3")
+            if attempt < 2:
+                await asyncio.sleep(3)  # Ждем 3 секунды перед повтором
+                continue
+            else:
+                print("[API_ERROR] MEXC: Все попытки исчерпаны, пропускаем MEXC")
                 return []
-
-            async with session.get(ticker_url, timeout=10) as response:
-                response.raise_for_status()
-                data = await response.json()
-                
-                if data.get("success") and data.get("data"):
-                    for t in data["data"]:
-                        try:
-                            rate_val = t.get("fundingRate")
-                            symbol_from_api = t.get("symbol")
-                            
-                            if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT"):
-                                continue
-
-                            next_funding_ts = funding_times.get(symbol_from_api)
-                            if not next_funding_ts:
-                                continue
-
-                            normalized_symbol = symbol_from_api.replace("_", "")
-                            
-                            volume_in_coin = Decimal(str(t.get("volume24", '0')))
-                            last_price = Decimal(str(t.get("lastPrice", '0')))
-                            volume_in_usdt = volume_in_coin * last_price if last_price > 0 else Decimal('0')
-
-                            results.append({
-                                'exchange': 'MEXC', 'symbol': normalized_symbol,
-                                'rate': Decimal(str(rate_val)), 'next_funding_time': next_funding_ts,
-                                'volume_24h_usdt': volume_in_usdt, 'max_order_value_usdt': Decimal('0'),
-                                'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
-                            })
-                        except (TypeError, ValueError, decimal.InvalidOperation): continue
-                            
-    except Exception as e:
-        print(f"[API_ERROR] MEXC: {e}")
+        except Exception as e:
+            print(f"[API_ERROR] MEXC: Ошибка на попытке {attempt + 1}/3: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)
+                continue
+            else:
+                print("[API_ERROR] MEXC: Все попытки исчерпаны из-за ошибок")
+                return []
+    
     return results
 
-async def fetch_all_data(force_update=False):
+async def fetch_all_data(context, force_update=False):
+    """
+    Получает данные с всех бирж. Теперь принимает context для доступа к bot_data.
+    """
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
         return api_data_cache["data"]
 
-    tasks = [get_bybit_data(), get_mexc_data()]
+    # Получаем API ключи из bot_data - исправлены имена ключей
+    mexc_api_key = context.bot_data.get('mexc_api_key')
+    mexc_secret_key = context.bot_data.get('mexc_secret_key')
+    
+    print(f"[DEBUG] MEXC ключи: API={mexc_api_key is not None}, SECRET={mexc_secret_key is not None}")
+
+    tasks = [
+        get_bybit_data(), 
+        get_mexc_data(api_key=mexc_api_key, secret_key=mexc_secret_key)
+    ]
+    
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
@@ -160,10 +209,6 @@ async def fetch_all_data(force_update=False):
             
     api_data_cache["data"], api_data_cache["last_update"] = all_data, now
     return all_data
-
-# =================================================================
-# ================== ПОЛЬЗОВАТЕЛЬСКИЙ ИНТЕРФЕЙС ==================
-# =================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user_settings(update.effective_chat.id)
@@ -185,7 +230,8 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         message_to_edit = await update.message.reply_text("🔄 Ищу...")
 
-    all_data = await fetch_all_data()
+    # Передаем context в функцию
+    all_data = await fetch_all_data(context)
     
     if not all_data:
         await message_to_edit.edit_text("😔 Не удалось получить данные с бирж. Попробуйте позже.")
@@ -245,7 +291,8 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     all_data = api_data_cache.get("data", [])
     if not all_data:
         await query.edit_message_text("🔄 Обновляю данные...")
-        all_data = await fetch_all_data(force_update=True)
+        # Передаем context в функцию
+        all_data = await fetch_all_data(context, force_update=True)
         
     symbol_specific_data = [item for item in all_data if item['symbol'] == symbol_to_show]
     symbol_specific_data.sort(key=lambda x: abs(x['rate']), reverse=True)
@@ -339,7 +386,7 @@ async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
 async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    active_exchanges = user_settings[query.message.chat_id]['exchanges']
+    active_exchanges = user_settings[query.message.chat.id]['exchanges']
     buttons = [InlineKeyboardButton(f"{'✅' if ex in active_exchanges else '⬜️'} {ex}", callback_data=f"exch_{ex}") for ex in ALL_AVAILABLE_EXCHANGES]
     keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)] + [[InlineKeyboardButton("⬅️ Назад", callback_data="exch_back")]]
     await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -434,6 +481,21 @@ if __name__ == "__main__":
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
+    app.bot_data['mexc_api_key'] = os.getenv("MEXC_API_KEY")
+    app.bot_data['mexc_secret_key'] = os.getenv("MEXC_API_SECRET")  # Исправлено имя переменной
+    app.bot_data['bybit_api_key'] = os.getenv("BYBIT_API_KEY")
+    app.bot_data['bybit_api_secret'] = os.getenv("BYBIT_API_SECRET")
+
+    if app.bot_data['mexc_api_key']:
+        print("✅ Ключи MEXC успешно загружены в bot_data.")
+    else:
+        print("⚠️ Ключи MEXC не найдены. MEXC не будет работать.")
+        
+    if app.bot_data['bybit_api_key']:
+        print("✅ Ключи Bybit успешно загружены в bot_data.")
+    else:
+        print("⚠️ Ключи Bybit не найдены. Будет использоваться только публичное API.")
+
     conv_handler_funding = ConversationHandler(
         entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding'), pattern="^filters_funding$")],
         states={SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]},
