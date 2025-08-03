@@ -92,66 +92,94 @@ async def get_mexc_data(api_key: str, secret_key: str):
     request_path = "/api/v1/private/contract/open_contracts"
     base_url = "https://contract.mexc.com"
     
-    timestamp = str(int(time.time() * 1000))
-    data_to_sign = timestamp + api_key
-    signature = hmac.new(secret_key.encode('utf-8'), data_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
-
-    headers = {
-        'ApiKey': api_key, 'Request-Time': timestamp,
-        'Signature': signature, 'Content-Type': 'application/json',
-    }
-    
-    print(f"[DEBUG] MEXC запрос: {base_url + request_path}")
-    print(f"[DEBUG] MEXC заголовки: ApiKey={api_key[:8]}..., Request-Time={timestamp}")
-    
     results = []
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(base_url + request_path, headers=headers, timeout=15) as response:
-                response_text = await response.text()
-                print(f"[DEBUG] MEXC ответ: статус={response.status}, текст={response_text[:200]}...")
-                
-                if response.status != 200:
-                    print(f"[API_ERROR] MEXC: Приватный API вернул ошибку! Статус: {response.status}")
-                    print(f"Полный текст ответа: {response_text}")
-                    return []
-                    
-                data = await response.json()
-                
-                if data.get("success") and data.get("data"):
-                    for t in data["data"]:
-                        try:
-                            rate_val = t.get("fundingRate")
-                            symbol_from_api = t.get("symbol")
-                            next_funding_ts = t.get("nextSettleTime")
-                            
-                            if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT") or not next_funding_ts:
-                                continue
-
-                            normalized_symbol = symbol_from_api.replace("_", "")
-                            
-                            volume_in_coin = Decimal(str(t.get("volume24", '0')))
-                            last_price = Decimal(str(t.get("lastPrice", '0')))
-                            volume_in_usdt = volume_in_coin * last_price if last_price > 0 else Decimal('0')
-
-                            results.append({
-                                'exchange': 'MEXC', 'symbol': normalized_symbol,
-                                'rate': Decimal(str(rate_val)), 'next_funding_time': int(next_funding_ts),
-                                'volume_24h_usdt': volume_in_usdt, 'max_order_value_usdt': Decimal('0'),
-                                'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
-                            })
-                        except (TypeError, ValueError, decimal.InvalidOperation) as e:
-                            print(f"[DEBUG] MEXC: Ошибка обработки символа {t.get('symbol', 'неизвестно')}: {e}")
-                            continue
-                else:
-                    print(f"[API_ERROR] MEXC: Ответ от приватного API получен, но структура неверна: {data}")
-
-    except Exception as e:
-        print(f"[API_ERROR] MEXC: Критическая ошибка при выполнении приватного запроса: {e}")
-        import traceback
-        print(f"[DEBUG] MEXC: Подробная ошибка: {traceback.format_exc()}")
     
-    print(f"[DEBUG] MEXC: Получено {len(results)} записей")
+    # Попробуем несколько раз с увеличивающимся timeout
+    for attempt in range(3):
+        try:
+            timestamp = str(int(time.time() * 1000))
+            data_to_sign = timestamp + api_key
+            signature = hmac.new(secret_key.encode('utf-8'), data_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+
+            headers = {
+                'ApiKey': api_key, 'Request-Time': timestamp,
+                'Signature': signature, 'Content-Type': 'application/json',
+            }
+            
+            timeout_seconds = 10 + (attempt * 10)  # 10, 20, 30 секунд
+            print(f"[DEBUG] MEXC попытка {attempt + 1}/3, timeout={timeout_seconds}с")
+            
+            # Используем более длинный timeout и connector с SSL отключенным
+            connector = aiohttp.TCPConnector(ssl=False)
+            timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+            
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                async with session.get(base_url + request_path, headers=headers) as response:
+                    response_text = await response.text()
+                    print(f"[DEBUG] MEXC ответ: статус={response.status}")
+                    
+                    if response.status != 200:
+                        print(f"[API_ERROR] MEXC: Статус {response.status}, ответ: {response_text[:200]}")
+                        if attempt < 2:  # Если не последняя попытка
+                            await asyncio.sleep(2)  # Ждем 2 секунды перед повтором
+                            continue
+                        return []
+                        
+                    data = await response.json()
+                    
+                    if data.get("success") and data.get("data"):
+                        print(f"[DEBUG] MEXC: Успешно получено {len(data['data'])} контрактов")
+                        for t in data["data"]:
+                            try:
+                                rate_val = t.get("fundingRate")
+                                symbol_from_api = t.get("symbol")
+                                next_funding_ts = t.get("nextSettleTime")
+                                
+                                if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT") or not next_funding_ts:
+                                    continue
+
+                                normalized_symbol = symbol_from_api.replace("_", "")
+                                
+                                volume_in_coin = Decimal(str(t.get("volume24", '0')))
+                                last_price = Decimal(str(t.get("lastPrice", '0')))
+                                volume_in_usdt = volume_in_coin * last_price if last_price > 0 else Decimal('0')
+
+                                results.append({
+                                    'exchange': 'MEXC', 'symbol': normalized_symbol,
+                                    'rate': Decimal(str(rate_val)), 'next_funding_time': int(next_funding_ts),
+                                    'volume_24h_usdt': volume_in_usdt, 'max_order_value_usdt': Decimal('0'),
+                                    'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
+                                })
+                            except (TypeError, ValueError, decimal.InvalidOperation) as e:
+                                continue
+                        
+                        print(f"[DEBUG] MEXC: Обработано {len(results)} записей")
+                        break  # Успешно получили данные, выходим из цикла попыток
+                        
+                    else:
+                        print(f"[API_ERROR] MEXC: Неверная структура ответа: {data}")
+                        if attempt < 2:
+                            await asyncio.sleep(2)
+                            continue
+                        return []
+
+        except asyncio.TimeoutError:
+            print(f"[API_ERROR] MEXC: Timeout на попытке {attempt + 1}/3")
+            if attempt < 2:
+                await asyncio.sleep(3)  # Ждем 3 секунды перед повтором
+                continue
+            else:
+                print("[API_ERROR] MEXC: Все попытки исчерпаны, пропускаем MEXC")
+                return []
+        except Exception as e:
+            print(f"[API_ERROR] MEXC: Ошибка на попытке {attempt + 1}/3: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)
+                continue
+            else:
+                print("[API_ERROR] MEXC: Все попытки исчерпаны из-за ошибок")
+                return []
+    
     return results
 
 async def fetch_all_data(context, force_update=False):
