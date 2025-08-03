@@ -92,11 +92,35 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
-    mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
+    # === ФИНАЛЬНОЕ РЕШЕНИЕ: ПРАВИЛЬНАЯ РАБОТА С ПУБЛИЧНЫМ API MEXC ===
+    
+    # Эндпоинт со статичными, но полными данными (включая ТОЧНОЕ ВРЕМЯ)
+    detail_url = "https://contract.mexc.com/api/v1/contract/detail" 
+    # Эндпоинт с быстрыми, "живыми" данными (ставки, объемы)
+    ticker_url = "https://contract.mexc.com/api/v1/contract/ticker" 
     results = []
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(mexc_url, timeout=10) as response:
+            
+            # ШАГ 1: Загружаем "каталог" с точным временем для каждой пары.
+            funding_times = {}
+            async with session.get(detail_url, timeout=15) as response:
+                response.raise_for_status()
+                data = await response.json()
+                if data.get("success") and data.get("data"):
+                    for contract in data["data"]:
+                        symbol = contract.get("symbol")
+                        time_val = contract.get("nextSettleTime")
+                        if symbol and time_val:
+                            funding_times[symbol] = int(time_val)
+
+            if not funding_times:
+                print("[API_ERROR] MEXC: Не удалось получить данные о времени фандинга с /detail.")
+                return []
+
+            # ШАГ 2: Загружаем "живые" данные (ставки, цены, объемы).
+            async with session.get(ticker_url, timeout=10) as response:
                 response.raise_for_status()
                 data = await response.json()
                 
@@ -106,13 +130,13 @@ async def get_mexc_data():
                             rate_val = t.get("fundingRate")
                             symbol_from_api = t.get("symbol")
                             
-                            # === ИСПРАВЛЕНИЕ ===
-                            # Теперь мы используем 'nextSettleTime', так как это единственное поле времени от MEXC
-                            # Оно может быть неточным для некоторых пар, но это лучше, чем вычислять неправильно.
-                            next_funding_ts = t.get("nextSettleTime")
-                            
-                            if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT") or not next_funding_ts:
+                            if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT"):
                                 continue
+
+                            # ШАГ 3: ОБЪЕДИНЯЕМ. Для каждой "живой" пары находим ее точное время.
+                            next_funding_ts = funding_times.get(symbol_from_api)
+                            if not next_funding_ts:
+                                continue # Если времени для этой пары нет, пропускаем.
 
                             normalized_symbol = symbol_from_api.replace("_", "")
                             
@@ -124,7 +148,7 @@ async def get_mexc_data():
                                 'exchange': 'MEXC',
                                 'symbol': normalized_symbol,
                                 'rate': Decimal(str(rate_val)),
-                                'next_funding_time': int(next_funding_ts),
+                                'next_funding_time': next_funding_ts, # Подставляем точное время
                                 'volume_24h_usdt': volume_in_usdt,
                                 'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
