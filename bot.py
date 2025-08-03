@@ -85,59 +85,80 @@ async def get_bybit_data():
         print(f"[API_ERROR] Bybit: {e}")
     return results
 
-async def get_mexc_data():
-    # === ДИАГНОСТИЧЕСКАЯ ВЕРСИЯ ОБЪЕМА ===
-    mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
+async def get_mexc_data_extended():
+    """Расширенная версия получения данных MEXC с дополнительной информацией"""
+    ticker_url = "https://contract.mexc.com/api/v1/contract/ticker"
+    detail_url = "https://contract.mexc.com/api/v1/contract/detail"
     results = []
-    
-    print("\n[DEBUG] MEXC: Запуск диагностики объема...")
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(mexc_url, timeout=10) as response:
+            # Получаем основные данные тикеров
+            async with session.get(ticker_url, timeout=10) as response:
                 response.raise_for_status()
-                data = await response.json()
+                ticker_data = await response.json()
+            
+            # Получаем детальную информацию о контрактах
+            contract_details = {}
+            try:
+                async with session.get(detail_url, timeout=10) as response:
+                    if response.status == 200:
+                        detail_data = await response.json()
+                        if detail_data.get("success") and detail_data.get("data"):
+                            for contract in detail_data["data"]:
+                                symbol = contract.get("symbol")
+                                if symbol:
+                                    contract_details[symbol] = {
+                                        'max_leverage': contract.get("maxLeverage", 0),
+                                        'min_leverage': contract.get("minLeverage", 0),
+                                        'risk_limit': contract.get("riskLimit", 0)
+                                    }
+            except Exception as e:
+                print(f"[WARNING] MEXC contract details failed: {e}")
                 
-                if data.get("success") and data.get("data"):
-                    for t in data["data"]:
-                        try:
-                            symbol = t.get("symbol")
-                            rate_val = t.get("fundingRate")
-                            next_funding_time = t.get("nextSettleTime")
-                            
-                            if not symbol or not symbol.endswith("USDT") or rate_val is None or next_funding_time is None:
-                                continue
-
-                            # *** ВЫВОД ДАННЫХ ДЛЯ ДИАГНОСТИКИ ***
-                            volume_24h_amount = Decimal(str(t.get("amount24", '0')))
-                            volume_24h_vol = Decimal(str(t.get("volume24", '0')))
-                            last_price = Decimal(str(t.get("lastPrice", '0')))
-
-                            print(f"[DEBUG] MEXC: {symbol} - rate: {rate_val}, Amount24: {volume_24h_amount}, Volume24: {volume_24h_vol}, LastPrice: {last_price}")
-
-                            # Рассчитываем объем в USDT (как мы думали)
-                            if last_price > 0:
-                                calculated_volume_usdt = volume_24h_vol * last_price
-                            else:
-                                calculated_volume_usdt = Decimal('0')
-
-                            # *** КОНЕЦ ДИАГНОСТИКИ ***
-
-                            results.append({
-                                'exchange': 'MEXC',
-                                'symbol': symbol,
-                                'rate': Decimal(str(rate_val)),
-                                'next_funding_time': int(next_funding_time),
-                                'volume_24h_usdt': calculated_volume_usdt,
-                                'max_order_value_usdt': Decimal('0'),
-                                'trade_url': f'https://futures.mexc.com/exchange/{symbol}'
-                            })
-                        except (TypeError, ValueError, decimal.InvalidOperation) as e:
-                            print(f"[DEBUG] MEXC: Ошибка парсинга для {symbol}: {e}")
+            # Обрабатываем тикеры
+            if ticker_data.get("success") and ticker_data.get("data"):
+                for t in ticker_data["data"]:
+                    try:
+                        symbol = t.get("symbol")
+                        rate_val = t.get("fundingRate")
+                        next_funding_time = t.get("nextSettleTime")
+                        
+                        if (not symbol or not symbol.endswith("USDT") or 
+                            rate_val is None or next_funding_time is None):
                             continue
-                            
+
+                        # Используем amount24 как объем в USDT
+                        volume_24h_usdt = Decimal(str(t.get("amount24", '0')))
+                        
+                        # Предварительная фильтрация по объему
+                        if volume_24h_usdt < Decimal('50000'):
+                            continue
+
+                        # Получаем дополнительную информацию из деталей контракта
+                        contract_info = contract_details.get(symbol, {})
+                        max_leverage = contract_info.get('max_leverage', 0)
+                        
+                        # Примерная оценка максимального ордера (если есть риск-лимит)
+                        risk_limit = contract_info.get('risk_limit', 0)
+                        estimated_max_order = Decimal(str(risk_limit)) if risk_limit > 0 else Decimal('0')
+
+                        results.append({
+                            'exchange': 'MEXC',
+                            'symbol': symbol,
+                            'rate': Decimal(str(rate_val)),
+                            'next_funding_time': int(next_funding_time),
+                            'volume_24h_usdt': volume_24h_usdt,
+                            'max_order_value_usdt': estimated_max_order,
+                            'trade_url': f'https://futures.mexc.com/exchange/{symbol}',
+                            'max_leverage': max_leverage  # Дополнительная информация
+                        })
+                        
+                    except (TypeError, ValueError, decimal.InvalidOperation):
+                        continue
+                        
     except Exception as e:
-        print(f"[API_ERROR] MEXC: {e}")
+        print(f"[API_ERROR] MEXC Extended: {e}")
         
     return results
 async def fetch_all_data(force_update=False):
