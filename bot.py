@@ -86,8 +86,12 @@ async def get_bybit_data():
     return results
 
 async def get_mexc_data():
+    # === ДИАГНОСТИЧЕСКАЯ ВЕРСИЯ ОБЪЕМА ===
     mexc_url = "https://contract.mexc.com/api/v1/contract/ticker"
     results = []
+    
+    print("\n[DEBUG] MEXC: Запуск диагностики объема...")
+    
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(mexc_url, timeout=10) as response:
@@ -97,41 +101,45 @@ async def get_mexc_data():
                 if data.get("success") and data.get("data"):
                     for t in data["data"]:
                         try:
-                            rate_val = t.get("fundingRate")
                             symbol = t.get("symbol")
+                            rate_val = t.get("fundingRate")
                             next_funding_time = t.get("nextSettleTime")
                             
-                            if rate_val is None or next_funding_time is None or not symbol or not symbol.endswith("USDT"):
+                            if not symbol or not symbol.endswith("USDT") or rate_val is None or next_funding_time is None:
                                 continue
 
-                            # === ГЛАВНОЕ ИСПРАВЛЕНИЕ ===
-                            # Рассчитываем объем в USDT вручную
-                            volume_in_coin = Decimal(str(t.get("volume24", '0')))
+                            # *** ВЫВОД ДАННЫХ ДЛЯ ДИАГНОСТИКИ ***
+                            volume_24h_amount = Decimal(str(t.get("amount24", '0')))
+                            volume_24h_vol = Decimal(str(t.get("volume24", '0')))
                             last_price = Decimal(str(t.get("lastPrice", '0')))
-                            
-                            # Если цена или объем равны нулю, объем в USDT тоже ноль
-                            if volume_in_coin == 0 or last_price == 0:
-                                volume_in_usdt = Decimal('0')
+
+                            print(f"[DEBUG] MEXC: {symbol} - rate: {rate_val}, Amount24: {volume_24h_amount}, Volume24: {volume_24h_vol}, LastPrice: {last_price}")
+
+                            # Рассчитываем объем в USDT (как мы думали)
+                            if last_price > 0:
+                                calculated_volume_usdt = volume_24h_vol * last_price
                             else:
-                                volume_in_usdt = volume_in_coin * last_price
-                            # ===========================
+                                calculated_volume_usdt = Decimal('0')
+
+                            # *** КОНЕЦ ДИАГНОСТИКИ ***
 
                             results.append({
                                 'exchange': 'MEXC',
                                 'symbol': symbol,
                                 'rate': Decimal(str(rate_val)),
                                 'next_funding_time': int(next_funding_time),
-                                'volume_24h_usdt': volume_in_usdt, # Сохраняем правильный объем
+                                'volume_24h_usdt': calculated_volume_usdt,
                                 'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{symbol}'
                             })
-                        except (TypeError, ValueError, decimal.InvalidOperation):
+                        except (TypeError, ValueError, decimal.InvalidOperation) as e:
+                            print(f"[DEBUG] MEXC: Ошибка парсинга для {symbol}: {e}")
                             continue
                             
     except Exception as e:
         print(f"[API_ERROR] MEXC: {e}")
+        
     return results
-
 async def fetch_all_data(force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
