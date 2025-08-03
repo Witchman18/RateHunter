@@ -101,14 +101,21 @@ async def get_mexc_data(api_key: str, secret_key: str):
         'Signature': signature, 'Content-Type': 'application/json',
     }
     
+    print(f"[DEBUG] MEXC запрос: {base_url + request_path}")
+    print(f"[DEBUG] MEXC заголовки: ApiKey={api_key[:8]}..., Request-Time={timestamp}")
+    
     results = []
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(base_url + request_path, headers=headers, timeout=15) as response:
+                response_text = await response.text()
+                print(f"[DEBUG] MEXC ответ: статус={response.status}, текст={response_text[:200]}...")
+                
                 if response.status != 200:
                     print(f"[API_ERROR] MEXC: Приватный API вернул ошибку! Статус: {response.status}")
-                    print(f"Текст ответа: {await response.text()}")
+                    print(f"Полный текст ответа: {response_text}")
                     return []
+                    
                 data = await response.json()
                 
                 if data.get("success") and data.get("data"):
@@ -133,13 +140,18 @@ async def get_mexc_data(api_key: str, secret_key: str):
                                 'volume_24h_usdt': volume_in_usdt, 'max_order_value_usdt': Decimal('0'),
                                 'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
                             })
-                        except (TypeError, ValueError, decimal.InvalidOperation): continue
+                        except (TypeError, ValueError, decimal.InvalidOperation) as e:
+                            print(f"[DEBUG] MEXC: Ошибка обработки символа {t.get('symbol', 'неизвестно')}: {e}")
+                            continue
                 else:
                     print(f"[API_ERROR] MEXC: Ответ от приватного API получен, но структура неверна: {data}")
 
     except Exception as e:
         print(f"[API_ERROR] MEXC: Критическая ошибка при выполнении приватного запроса: {e}")
+        import traceback
+        print(f"[DEBUG] MEXC: Подробная ошибка: {traceback.format_exc()}")
     
+    print(f"[DEBUG] MEXC: Получено {len(results)} записей")
     return results
 
 async def fetch_all_data(context, force_update=False):
