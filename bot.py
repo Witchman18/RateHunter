@@ -39,11 +39,19 @@ ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io
 
 # --- Состояния для ConversationHandler ---
 SET_FUNDING_THRESHOLD, SET_VOLUME_THRESHOLD = range(2)
+SET_ALERT_RATE, SET_ALERT_TIME = range(10, 12) 
 
 def get_default_settings():
     return {
-        'notifications_on': True, 'exchanges': ['Bybit', 'MEXC'],
-        'funding_threshold': Decimal('0.005'), 'volume_threshold_usdt': Decimal('1000000'),
+        'exchanges': ['Bybit', 'MEXC'],
+        'funding_threshold': Decimal('0.005'),         
+        'volume_threshold_usdt': Decimal('1000000'),   
+        
+        # --- НОВЫЕ ПАРАМЕТРЫ ДЛЯ УВЕДОМЛЕНИЙ ---
+        'alerts_on': False,                             
+        'alert_rate_threshold': Decimal('0.015'),       
+        'alert_time_window_minutes': 30,                
+        'sent_notifications': set(),                    
     }
 
 def ensure_user_settings(chat_id: int):
@@ -455,15 +463,13 @@ async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ensure_user_settings(chat_id)
     settings = user_settings[chat_id]
-    notif_emoji = "✅" if settings['notifications_on'] else "🔴"
-    vol = settings['volume_threshold_usdt']
-    vol_str = f"{vol / 1_000_000:.1f}M" if vol >= 1_000_000 else f"{vol / 1_000:.0f}K"
-    message_text = "🔔 **Настройки фильтров и уведомлений**"
+    message_text = "🔔 **Настройки фильтров для ручного поиска**"
     keyboard = [
         [InlineKeyboardButton("🏦 Биржи", callback_data="filters_exchanges")],
         [InlineKeyboardButton(f"🔔 Ставка: > {settings['funding_threshold']*100:.2f}%", callback_data="filters_funding")],
-        [InlineKeyboardButton(f"💧 Объем: > {vol_str}", callback_data="filters_volume")],
-        [InlineKeyboardButton(f"{notif_emoji} Уведомления: {'ВКЛ' if settings['notifications_on'] else 'ВЫКЛ'}", callback_data="filters_toggle_notif")],
+        [InlineKeyboardButton(f"💧 Объем: > {format_volume(settings['volume_threshold_usdt'])}", callback_data="filters_volume")],
+        # --- НОВАЯ КНОПКА ---
+        [InlineKeyboardButton("🚨 Настроить Уведомления", callback_data="alert_show_menu")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="filters_close")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -471,7 +477,6 @@ async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
-
 async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_filters_menu(update, context)
 
@@ -503,44 +508,49 @@ async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAU
         else: active_exchanges.append(action)
         await show_exchanges_menu(update, context)
 
-async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
-    query = update.callback_query; await query.answer()
-    chat_id = update.effective_chat.id
+async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str, menu_to_return: callable):
+    query, chat_id = update.callback_query, update.effective_chat.id
+    await query.answer()
+    settings = user_settings[chat_id]
+    
     prompts = {
-        'funding': (f"Текущий порог ставки: `> {user_settings[chat_id]['funding_threshold']*100:.2f}%`.\n\n"
-                    "Отправьте новое значение в процентах (например, `0.75`)."),
-        'volume': (f"Текущий порог объема: `{user_settings[chat_id]['volume_threshold_usdt']:,.0f} USDT`.\n\n"
-                   "Отправьте новое значение в USDT (например, `500000`).")
+        'funding': (f"Текущий порог ставки: `> {settings['funding_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `0.75`)."),
+        'volume': (f"Текущий порог объема: `{format_volume(settings['volume_threshold_usdt'])}`.\n\nОтправьте новое значение (например, `500k` или `2M`)."),
+        'alert_rate': (f"Текущий порог для уведомлений: `> {settings['alert_rate_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `1.5`)."),
+        'alert_time': (f"Текущее временное окно: `< {settings['alert_time_window_minutes']} минут`.\n\nОтправьте новое значение в минутах (например, `45`).")
     }
     await query.message.delete()
-    sent_message = await context.bot.send_message(
-        chat_id=chat_id, text=prompts[setting_type] + "\n\nДля отмены введите /cancel.", parse_mode='Markdown'
-    )
-    context.user_data['prompt_message_id'] = sent_message.message_id
-    return SET_FUNDING_THRESHOLD if setting_type == 'funding' else SET_VOLUME_THRESHOLD
+    sent_message = await context.bot.send_message(chat_id=chat_id, text=prompts[setting_type] + "\n\nДля отмены введите /cancel.", parse_mode='Markdown')
+    context.user_data.update({'prompt_message_id': sent_message.message_id, 'menu_to_return': menu_to_return})
+    
+    state_map = {'funding': SET_FUNDING_THRESHOLD, 'volume': SET_VOLUME_THRESHOLD, 'alert_rate': SET_ALERT_RATE, 'alert_time': SET_ALERT_TIME}
+    return state_map.get(setting_type)
 
 async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
     chat_id = update.effective_chat.id
     try:
-        value_str = update.message.text.strip().replace(",", ".")
-        value = Decimal(value_str)
-        if setting_type == 'funding':
+        value_str = update.message.text.strip().replace(",", ".").upper()
+        if setting_type == 'funding' or setting_type == 'alert_rate':
+            value = Decimal(value_str)
             if not (0 < value < 100): raise ValueError("Value out of range 0-100")
-            user_settings[chat_id]['funding_threshold'] = value / 100
+            key = 'funding_threshold' if setting_type == 'funding' else 'alert_rate_threshold'
+            user_settings[chat_id][key] = value / 100
         elif setting_type == 'volume':
-            if value < 0: raise ValueError("Value must be positive")
-            user_settings[chat_id]['volume_threshold_usdt'] = value
+            num_part = value_str.replace('K', '').replace('M', '')
+            multiplier = 1000 if 'K' in value_str else 1_000_000 if 'M' in value_str else 1
+            user_settings[chat_id]['volume_threshold_usdt'] = Decimal(num_part) * multiplier
+        elif setting_type == 'alert_time':
+            value = int(value_str)
+            if value <= 0: raise ValueError("Value must be positive")
+            user_settings[chat_id]['alert_time_window_minutes'] = value
     except (ValueError, TypeError, decimal.InvalidOperation):
-        error_messages = {
-            'funding': "❌ Ошибка. Введите число от 0 до 100 (например, `0.75`).",
-            'volume': "❌ Ошибка. Введите целое положительное число (например, `500000`)."
-        }
-        await update.message.reply_text(error_messages[setting_type] + " Попробуйте снова.", parse_mode='Markdown')
-        return SET_FUNDING_THRESHOLD if setting_type == 'funding' else SET_VOLUME_THRESHOLD
+        await update.message.reply_text("❌ Ошибка. Введите корректное значение. Попробуйте снова.", parse_mode='Markdown')
+        return # Остаемся в том же состоянии, чтобы пользователь мог попробовать снова
+
     if 'prompt_message_id' in context.user_data:
         await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
     await context.bot.delete_message(chat_id, update.message.message_id)
-    await send_filters_menu(update, context)
+    await context.user_data.pop('menu_to_return')(update, context) # Возвращаемся в нужное меню
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -551,9 +561,10 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     try: await context.bot.delete_message(chat_id, update.message.id)
     except Exception: pass
     await context.bot.send_message(chat_id, "Действие отменено.")
-    await send_filters_menu(update, context)
+    if 'menu_to_return' in context.user_data:
+        await context.user_data.pop('menu_to_return')(update, context)
     return ConversationHandler.END
-
+    
 async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ensure_user_settings(chat_id)
@@ -574,8 +585,87 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     await update.message.reply_text(message_text, parse_mode='Markdown')
 
-async def background_scanner(app):
-    pass
+# --- Блок для настройки уведомлений ---
+async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает меню настройки кастомных уведомлений."""
+    if query := update.callback_query: await query.answer()
+    chat_id = update.effective_chat.id
+    ensure_user_settings(chat_id)
+    settings = user_settings[chat_id]
+    
+    status_emoji = "✅" if settings.get('alerts_on', False) else "🔴"
+    status_text = "ВКЛЮЧЕНЫ" if settings.get('alerts_on', False) else "ВЫКЛЮЧЕНЫ"
+    message_text = "🚨 **Настройки уведомлений**\n\nБот пришлет сигнал, когда будут выполнены оба условия."
+    
+    keyboard = [
+        [InlineKeyboardButton(f"📈 Порог ставки: > {settings['alert_rate_threshold']*100:.2f}%", callback_data="alert_set_rate")],
+        [InlineKeyboardButton(f"⏰ Окно до выплаты: < {settings['alert_time_window_minutes']} мин", callback_data="alert_set_time")],
+        [InlineKeyboardButton(f"{status_emoji} Уведомления: {status_text}", callback_data="alert_toggle_on")],
+        [InlineKeyboardButton("⬅️ Назад к фильтрам", callback_data="alert_back_filters")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатия в меню уведомлений."""
+    query, action = update.callback_query, query.data.split('_', 1)[1]
+    await query.answer()
+    if action == "toggle_on":
+        user_settings[update.effective_chat.id]['alerts_on'] ^= True
+        await show_alerts_menu(update, context)
+    elif action == "back_filters":
+        await send_filters_menu(update, context)
+
+async def background_scanner(app: ApplicationBuilder):
+    """Фоновый процесс для мониторинга и отправки кастомных уведомлений."""
+    print("🚀 Фоновый сканер уведомлений запущен.")
+    while True:
+        await asyncio.sleep(60) # Проверка раз в минуту
+        try:
+            # Получаем свежие данные для всех
+            all_data = await fetch_all_data(app, force_update=True)
+            if not all_data: continue
+
+            now_utc = datetime.now(timezone.utc)
+            current_ts_ms = int(now_utc.timestamp() * 1000)
+
+            # Проходим по всем пользователям
+            for chat_id, settings in list(user_settings.items()):
+                if not settings.get('alerts_on', False): continue
+
+                # Очистка старых ID уведомлений (старше 3 часов)
+                settings['sent_notifications'] = {nid for nid in settings['sent_notifications'] if int(nid.split('_')[-1]) > current_ts_ms - (3 * 60 * 60 * 1000)}
+                
+                # Ищем подходящие пары для этого пользователя
+                for item in all_data:
+                    if item['exchange'] not in settings['exchanges']: continue
+                    if abs(item['rate']) < settings['alert_rate_threshold']: continue
+
+                    time_left = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc) - now_utc
+                    if not (0 < time_left.total_seconds() <= settings['alert_time_window_minutes'] * 60): continue
+
+                    # Анти-спам
+                    notification_id = f"{item['exchange']}_{item['symbol']}_{item['next_funding_time']}"
+                    if notification_id in settings['sent_notifications']: continue
+                    
+                    # Все условия выполнены! Отправляем уведомление.
+                    h, m = divmod(int(time_left.total_seconds() // 60), 60)
+                    countdown_str = f"{h}ч {m}м" if h > 0 else f"{m}м"
+                    message = (f"⚠️ **Найден фандинг по вашему фильтру!**\n\n"
+                               f"{'🟢' if item['rate'] < 0 else '🔴'} **{item['symbol'].replace('USDT', '')}** `{item['rate'] * 100:+.2f}%`\n"
+                               f"⏰ Выплата через *{countdown_str}* на *{item['exchange']}*")
+                    try:
+                        await app.bot.send_message(chat_id, message, parse_mode='Markdown')
+                        settings['sent_notifications'].add(notification_id)
+                        print(f"[BG_SCANNER] Отправлено уведомление для {chat_id}: {notification_id}")
+                    except Exception as e:
+                        print(f"[BG_SCANNER] Не удалось отправить уведомление для {chat_id}: {e}")
+        except Exception as e:
+            print(f"[BG_SCANNER] Критическая ошибка в цикле сканера: {e}\n{traceback.format_exc()}")
 
 # =================================================================
 # ========================== ЗАПУСК БОТА ==========================
@@ -599,35 +689,32 @@ if __name__ == "__main__":
     if app.bot_data['bybit_api_key']: print("✅ Ключи Bybit успешно загружены.")
     else: print("⚠️ Ключи Bybit не найдены.")
 
-    conv_handler_funding = ConversationHandler(
-        entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding'), pattern="^filters_funding$")],
-        states={SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]},
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
-    )
-    conv_handler_volume = ConversationHandler(
-        entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume'), pattern="^filters_volume$")],
-        states={SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]},
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
-    )
-
+        # --- РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
+    conv_handlers = [
+        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding', send_filters_menu), pattern="^filters_funding$")], states={SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
+        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume', send_filters_menu), pattern="^filters_volume$")], states={SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
+        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")], states={SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_rate'))]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
+        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")], states={SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
+    ]
+    app.add_handlers(conv_handlers)
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates))
     app.add_handler(MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry))
     app.add_handler(MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings))
     app.add_handler(MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics))
     
-    app.add_handler(conv_handler_funding)
-    app.add_handler(conv_handler_volume)
-    
     app.add_handler(CallbackQueryHandler(drill_down_callback, pattern="^drill_"))
     app.add_handler(CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"))
-    app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|toggle_notif|exchanges)$"))
+    app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|exchanges)$"))
     app.add_handler(CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"))
+    
+    # Новые обработчики для меню уведомлений
+    app.add_handler(CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"))
+    app.add_handler(CallbackQueryHandler(alert_callback_handler, pattern="^alert_(toggle_on|back_filters)$"))
 
-    async def post_init(app):
-        asyncio.create_task(background_scanner(app))
-        
-    app.post_init = post_init
+    # Запускаем фоновый сканер
+    app.post_init = background_scanner
 
     print("🤖 RateHunter 2.0 запущен!")
     app.run_polling()
