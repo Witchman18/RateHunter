@@ -697,25 +697,25 @@ if __name__ == "__main__":
         ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")], states={SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
     ]
     for handler in conv_handlers:
-    app.add_handler(handler)
+     app.add_handler(handler)
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates))
-    app.add_handler(MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry))
-    app.add_handler(MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings))
-    app.add_handler(MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics))
+     app.add_handler(CommandHandler("start", start))
+     app.add_handler(MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates))
+     app.add_handler(MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry))
+     app.add_handler(MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings))
+     app.add_handler(MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics))
     
-    app.add_handler(CallbackQueryHandler(drill_down_callback, pattern="^drill_"))
-    app.add_handler(CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"))
-    app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|exchanges)$"))
-    app.add_handler(CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"))
+     app.add_handler(CallbackQueryHandler(drill_down_callback, pattern="^drill_"))
+     app.add_handler(CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"))
+     app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|exchanges)$"))
+     app.add_handler(CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"))
     
     # Новые обработчики для меню уведомлений
-    app.add_handler(CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"))
-    app.add_handler(CallbackQueryHandler(alert_callback_handler, pattern="^alert_(toggle_on|back_filters)$"))
+     app.add_handler(CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"))
+     app.add_handler(CallbackQueryHandler(alert_callback_handler, pattern="^alert_(toggle_on|back_filters)$"))
 
     # Запускаем фоновый сканер
-    app.post_init = background_scanner
+     app.post_init = background_scanner
 
-    print("🤖 RateHunter 2.0 запущен!")
-    app.run_polling()
+     print("🤖 RateHunter 2.0 запущен!")
+     app.run_polling()
