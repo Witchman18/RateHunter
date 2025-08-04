@@ -259,6 +259,7 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE, force_update=False)
 # =================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("--- ПОЛУЧЕНА КОМАНДА /start ---") # Строка для отладки
     ensure_user_settings(update.effective_chat.id)
     main_menu_keyboard = [["🔥 Топ-ставки сейчас"], ["🔔 Настроить фильтры", "ℹ️ Мои настройки"], ["🔧 Диагностика API"]]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
@@ -673,25 +674,24 @@ async def background_scanner(app: ApplicationBuilder):
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
-        raise ValueError("Не найден BOT_TOKEN. Убедитесь, что он задан в переменных окружения.")
+        raise ValueError("Не найден BOT_TOKEN. Убедитесь, что он задан в .env файле.")
     
+    # 1. Создаем приложение
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Загружаем ключи в "общий склад" бота
+    # 2. Загружаем ключи API
     app.bot_data['mexc_api_key'] = os.getenv("MEXC_API_KEY")
     app.bot_data['mexc_secret_key'] = os.getenv("MEXC_API_SECRET")
     app.bot_data['bybit_api_key'] = os.getenv("BYBIT_API_KEY")
     app.bot_data['bybit_secret_key'] = os.getenv("BYBIT_API_SECRET")
 
-    # Диагностика при старте
     if app.bot_data['bybit_api_key']: print("✅ Ключи Bybit успешно загружены.")
     else: print("⚠️ Ключи Bybit не найдены.")
     print("ℹ️ Ключи для MEXC (публичные данные) больше не требуются.")
 
-
-    # --- РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
-
-    # Сначала определим "аварийные выходы" из диалогов, чтобы бот не зависал
+    # --- 3. РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
+    
+    # "Аварийные выходы" из диалогов для предотвращения зависаний
     fallbacks = [
         CommandHandler("start", start),
         CommandHandler("cancel", cancel_conversation),
@@ -701,33 +701,38 @@ if __name__ == "__main__":
         MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics),
     ]
 
-    # Список всех наших диалогов
+    # Список всех диалогов (ConversationHandlers)
+    # allow_reentry=True делает их более устойчивыми
     conv_handlers = [
-        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding', send_filters_menu), pattern="^filters_funding$")], states={SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]}, fallbacks=fallbacks),
-        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume', send_filters_menu), pattern="^filters_volume$")], states={SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]}, fallbacks=fallbacks),
-        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")], states={SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_rate'))]}, fallbacks=fallbacks),
-        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")], states={SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]}, fallbacks=fallbacks),
+        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding', send_filters_menu), pattern="^filters_funding$")], states={SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]}, fallbacks=fallbacks, allow_reentry=True),
+        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume', send_filters_menu), pattern="^filters_volume$")], states={SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]}, fallbacks=fallbacks, allow_reentry=True),
+        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")], states={SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_rate'))]}, fallbacks=fallbacks, allow_reentry=True),
+        ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")], states={SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]}, fallbacks=fallbacks, allow_reentry=True),
     ]
-    # Добавляем все диалоги разом
-    app.add_handlers(conv_handlers)
     
-    # Теперь добавляем основные команды и кнопки. Они находятся ВНЕ цикла.
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates))
-    app.add_handler(MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry))
-    app.add_handler(MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings))
-    app.add_handler(MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics))
-    
-    # Обработчики для кнопок в сообщениях (Inline-кнопок)
-    app.add_handler(CallbackQueryHandler(drill_down_callback, pattern="^drill_"))
-    app.add_handler(CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"))
-    app.add_handler(CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|exchanges)$"))
-    app.add_handler(CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"))
-    app.add_handler(CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"))
-    app.add_handler(CallbackQueryHandler(alert_callback_handler, pattern="^alert_(toggle_on|back_filters)$"))
+    # Список обычных обработчиков (команды, текст, кнопки)
+    # Порядок важен! Сначала диалоги, потом все остальное.
+    regular_handlers = [
+        CommandHandler("start", start),
+        MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates),
+        MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry),
+        MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings),
+        MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics),
+        CallbackQueryHandler(drill_down_callback, pattern="^drill_"),
+        CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"),
+        CallbackQueryHandler(filters_callback_handler, pattern="^filters_(close|exchanges)$"),
+        CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
+        CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
+        CallbackQueryHandler(alert_callback_handler, pattern="^alert_(toggle_on|back_filters)$"),
+    ]
 
-    # Запускаем фоновый сканер после инициализации
+    # Добавляем все обработчики в приложение
+    app.add_handlers(conv_handlers)
+    app.add_handlers(regular_handlers)
+
+    # 4. Запускаем фоновый сканер после инициализации
     app.post_init = background_scanner
 
+    # 5. Запускаем бота
     print("🤖 RateHunter 2.0 запущен!")
     app.run_polling()
