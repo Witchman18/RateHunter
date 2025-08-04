@@ -403,7 +403,8 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         arrow = "🟢" if item['rate'] < 0 else "🔴"
         rate_str = f"{item['rate'] * 100:+.2f}%"
         time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
-        message_text += f"{arrow} {symbol_only} {rate_str} | ⏰ {time_str}{countdown_str} | {item['exchange']}\n"
+        message_text += f"{arrow} {symbol_only} {rate_str} | 🕒 {time_str}{countdown_str} | {item['exchange']}\n\n"
+
         buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
 
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
