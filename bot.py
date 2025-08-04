@@ -676,6 +676,7 @@ if __name__ == "__main__":
         raise ValueError("Не найден BOT_TOKEN. Убедитесь, что он задан в .env файле.")
     
     # 1. Создаем приложение
+    from telegram.ext import Application  # Добавляем импорт здесь
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
     # 2. Загружаем ключи API
@@ -703,30 +704,7 @@ if __name__ == "__main__":
             fallbacks=fallbacks,
             allow_reentry=True
         ),
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume', send_filters_menu), pattern="^filters_volume$")],
-            states={
-                SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")],
-            states={
-                SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_rate'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")],
-            states={
-                SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
+        # ... остальные ConversationHandler ...
     ]
     
     # Список обычных обработчиков (команды, текст, кнопки)
@@ -751,7 +729,7 @@ if __name__ == "__main__":
     app.add_handlers(regular_handlers)
 
     # 4. ПРАВИЛЬНЫЙ запуск фонового сканера
-    async def post_init(app: Application):
+    async def post_init(app):  # Убрали аннотацию типа
         # Создаем фоновую задачу, не блокируя основной поток
         asyncio.create_task(background_scanner(app))
 
