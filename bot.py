@@ -631,10 +631,18 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатия в меню уведомлений."""
-    query, action = update.callback_query, query.data.split('_', 1)[1]
+    # --- ИСПРАВЛЕНИЕ ---
+    # Сначала получаем объект query
+    query = update.callback_query
+    # А затем используем его для получения action
+    action = query.data.split('_', 1)[1]
+    # -------------------
+    
     await query.answer()
     if action == "toggle_on":
-        user_settings[update.effective_chat.id]['alerts_on'] ^= True
+        chat_id = update.effective_chat.id
+        ensure_user_settings(chat_id) # На всякий случай убедимся, что настройки есть
+        user_settings[chat_id]['alerts_on'] ^= True # Безопасное переключение
         await show_alerts_menu(update, context)
     elif action == "back_filters":
         await send_filters_menu(update, context)
