@@ -1,7 +1,7 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - v1.0.3 =========================
+# ===================== RateHunter 2.0 - v1.0.2 =========================
 # =========================================================================
-# Версия с исправленным временем фандинга MEXC и улучшенным UI
+# Исправленная версия с улучшенной диагностикой API ошибок
 # =========================================================================
 
 import os
@@ -81,19 +81,26 @@ async def get_bybit_data(api_key: str, secret_key: str):
         async with aiohttp.ClientSession() as session:
             async with session.get(base_url + request_path + "?" + params, headers=headers, timeout=15) as response:
                 response_text = await response.text()
+                print(f"[DEBUG] Bybit: Статус {response.status}, размер ответа: {len(response_text)} символов")
                 
                 if response.status != 200:
                     print(f"[API_ERROR] Bybit: Статус {response.status}")
                     print(f"[API_ERROR] Bybit: Ответ: {response_text[:500]}...")
                     return []
                 
-                data = await response.json()
+                try:
+                    data = json.loads(response_text)
+                except json.JSONDecodeError as e:
+                    print(f"[API_ERROR] Bybit: Ошибка парсинга JSON: {e}")
+                    print(f"[API_ERROR] Bybit: Первые 200 символов ответа: {response_text[:200]}")
+                    return []
                 
                 if data.get("retCode") == 0 and data.get("result", {}).get("list"):
                     print(f"[DEBUG] Bybit: Получено {len(data['result']['list'])} инструментов")
                     for t in data["result"]["list"]:
                         try:
-                            if not t.get("symbol") or not t.get("fundingRate"): continue
+                            if not t.get("symbol") or not t.get("fundingRate"):
+                                continue
                             results.append({
                                 'exchange': 'Bybit', 
                                 'symbol': t.get("symbol"), 
@@ -119,6 +126,11 @@ async def get_bybit_data(api_key: str, secret_key: str):
     return results
 
 async def get_mexc_data(api_key: str, secret_key: str):
+    # API ключи для MEXC больше не требуются для публичных данных,
+    # но оставим проверку на случай будущих изменений.
+    # if not api_key or not secret_key:
+    #     print("[API_WARNING] MEXC: Ключи не настроены (для публичных данных не требуются).")
+
     results = []
     ticker_url = "https://contract.mexc.com/api/v1/contract/ticker"
     funding_rate_url = "https://contract.mexc.com/api/v1/contract/funding_rate"
@@ -126,12 +138,14 @@ async def get_mexc_data(api_key: str, secret_key: str):
     try:
         print("[DEBUG] MEXC: Запрашиваем данные по тикерам и ставкам...")
         async with aiohttp.ClientSession() as session:
+            # Используем asyncio.gather для параллельного выполнения запросов
             tasks = [
                 session.get(ticker_url, timeout=15),
                 session.get(funding_rate_url, timeout=15)
             ]
             responses = await asyncio.gather(*tasks, return_exceptions=True)
 
+            # Проверяем ответы и парсим JSON
             ticker_response, funding_response = responses
             
             if isinstance(ticker_response, Exception) or ticker_response.status != 200:
@@ -145,6 +159,7 @@ async def get_mexc_data(api_key: str, secret_key: str):
             ticker_data = await ticker_response.json()
             funding_data = await funding_response.json()
 
+            # 1. Создаем словарь с правильными данными о ставках и времени фандинга
             funding_info = {}
             if funding_data.get("success") and funding_data.get("data"):
                 for item in funding_data["data"]:
@@ -153,13 +168,14 @@ async def get_mexc_data(api_key: str, secret_key: str):
                         try:
                             funding_info[symbol] = {
                                 'rate': Decimal(str(item.get("fundingRate", "0"))),
-                                'next_funding_time': int(item.get("nextSettleTime", 0))
+                                'next_funding_time': int(item.get("nextSettleTime", 0)) # В этом эндпоинте время верное
                             }
                         except (TypeError, ValueError, decimal.InvalidOperation) as e:
                             print(f"[DEBUG] MEXC: Ошибка парсинга данных фандинга для {symbol}: {e}")
                             continue
             print(f"[DEBUG] MEXC: Обработано {len(funding_info)} ставок фандинга.")
 
+            # 2. Обрабатываем данные тикеров, используя информацию из funding_info
             if ticker_data.get("success") and ticker_data.get("data"):
                 print(f"[DEBUG] MEXC: Получено {len(ticker_data['data'])} тикеров.")
                 for ticker in ticker_data["data"]:
@@ -167,10 +183,13 @@ async def get_mexc_data(api_key: str, secret_key: str):
                     if not symbol or not symbol.endswith("_USDT"):
                         continue
 
+                    # Используем данные о ставке и времени из нашего словаря
                     if symbol in funding_info:
                         try:
                             rate = funding_info[symbol]['rate']
                             next_funding = funding_info[symbol]['next_funding_time']
+                            
+                            # Объем для USDT-M контрактов уже указан в USDT
                             volume_usdt = Decimal(str(ticker.get("amount24", "0")))
 
                             results.append({
@@ -237,27 +256,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
     await update.message.reply_text("Добро пожаловать в RateHunter 2.0!", reply_markup=reply_markup)
 
-def format_volume(vol: Decimal) -> str:
-    """Форматирует объем в читаемый вид (K, M, B)"""
-    if vol >= 1_000_000_000:
-        return f"${vol / 1_000_000_000:.1f}B"
-    if vol >= 1_000_000:
-        return f"${vol / 1_000_000:.1f}M"
-    if vol >= 1_000:
-        return f"${vol / 1_000:.0f}K"
-    return f"${vol:.0f}"
-
 async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Диагностика состояния API"""
     msg = await update.message.reply_text("🔧 Проверяю состояние API...")
     
+    # Принудительно обновляем данные
     all_data = await fetch_all_data(context, force_update=True)
     
+    # Подсчитываем данные по биржам
     exchange_counts = {}
     for item in all_data:
         exchange = item.get('exchange', 'Unknown')
         exchange_counts[exchange] = exchange_counts.get(exchange, 0) + 1
     
+    # Анализируем ставки и объемы
     rates_analysis = {"high_rates": 0, "medium_rates": 0, "low_rates": 0}
     volume_analysis = {"high_volume": 0, "medium_volume": 0, "low_volume": 0}
     
@@ -265,14 +277,21 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rate_pct = abs(item['rate']) * 100
         volume_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
         
-        if rate_pct >= 0.5: rates_analysis["high_rates"] += 1
-        elif rate_pct >= 0.1: rates_analysis["medium_rates"] += 1
-        else: rates_analysis["low_rates"] += 1
+        if rate_pct >= 0.5:
+            rates_analysis["high_rates"] += 1
+        elif rate_pct >= 0.1:
+            rates_analysis["medium_rates"] += 1
+        else:
+            rates_analysis["low_rates"] += 1
             
-        if volume_m >= 100: volume_analysis["high_volume"] += 1
-        elif volume_m >= 10: volume_analysis["medium_volume"] += 1
-        else: volume_analysis["low_volume"] += 1
+        if volume_m >= 100:
+            volume_analysis["high_volume"] += 1
+        elif volume_m >= 10:
+            volume_analysis["medium_volume"] += 1
+        else:
+            volume_analysis["low_volume"] += 1
     
+    # Формируем отчет
     report = "🔧 **Диагностика API**\n\n"
     
     if exchange_counts:
@@ -285,27 +304,32 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"\n📊 **Анализ ставок:**\n"
     report += f"• ≥ 0.5%: {rates_analysis['high_rates']} пар\n"
     report += f"• 0.1-0.5%: {rates_analysis['medium_rates']} пар\n"
+    report += f"• < 0.1%: {rates_analysis['low_rates']} пар\n"
     
     report += f"\n💰 **Анализ объемов:**\n"
     report += f"• ≥ 100M USDT: {volume_analysis['high_volume']} пар\n"
     report += f"• 10-100M USDT: {volume_analysis['medium_volume']} пар\n"
+    report += f"• < 10M USDT: {volume_analysis['low_volume']} пар\n"
     
+    # Топ-5 по ставкам
     if all_data:
         top_rates = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:5]
         report += f"\n🔥 **Топ-5 ставок:**\n"
         for item in top_rates:
             rate_pct = abs(item['rate']) * 100
-            vol_str = format_volume(item.get('volume_24h_usdt', Decimal('0')))
-            report += f"• {item['symbol'].replace('USDT', '')}: {rate_pct:.3f}% (объем: {vol_str}) [{item['exchange']}]\n"
+            vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+            report += f"• {item['symbol'].replace('USDT', '')}: {rate_pct:.3f}% (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
     
     report += f"\n⏰ Время обновления: {datetime.now(MSK_TIMEZONE).strftime('%H:%M:%S MSK')}"
+    report += f"\n🕒 Кэш действителен: {CACHE_LIFETIME_SECONDS} сек"
     
+    # Проверяем наличие ключей
     report += "\n\n🔑 **Статус ключей:**\n"
     mexc_key = context.bot_data.get('mexc_api_key')
     bybit_key = context.bot_data.get('bybit_api_key')
     
+    report += f"{'✅' if mexc_key else '❌'} MEXC: {'Настроены' if mexc_key else 'Отсутствуют'}\n"
     report += f"{'✅' if bybit_key else '❌'} Bybit: {'Настроены' if bybit_key else 'Отсутствуют'}\n"
-    report += f"MEXC ключи для публичных данных больше не требуются.\n"
     
     await msg.edit_text(report, parse_mode='Markdown')
 
@@ -322,34 +346,44 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("😔 Не удалось получить данные с бирж. Попробуйте 🔧 Диагностика API для проверки.")
         return
 
-    filtered_data = [
-        item for item in all_data 
-        if item['exchange'] in settings['exchanges'] 
-        and abs(item['rate']) >= settings['funding_threshold'] 
-        and item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']
-    ]
+    # Диагностика фильтров
+    print(f"[DEBUG] Фильтры: биржи={settings['exchanges']}, ставка>={settings['funding_threshold']}, объем>={settings['volume_threshold_usdt']}")
+    
+    # Показываем топ-10 ставок без фильтров для диагностики
+    all_sorted = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:10]
+    print("[DEBUG] Топ-10 ставок без фильтров:")
+    for i, item in enumerate(all_sorted):
+        rate_pct = abs(item['rate']) * 100
+        vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%, объем: {vol_m:.1f}M USDT")
+
+    filtered_data = [item for item in all_data if item['exchange'] in settings['exchanges'] and abs(item['rate']) >= settings['funding_threshold'] and item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']]
     filtered_data.sort(key=lambda x: abs(x['rate']), reverse=True)
     top_5 = filtered_data[:5]
-    
+
+    print(f"[DEBUG] После фильтрации найдено: {len(filtered_data)} пар")
+
     if not top_5:
+        # Показываем альтернативную статистику
         exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
         rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
         
-        stats_msg = f"😔 **Не найдено пар, соответствующих всем фильтрам.**\n\n"
-        stats_msg += f"**Ваши фильтры:**\n"
-        stats_msg += f"• Биржи: `{', '.join(settings['exchanges'])}`\n"
-        stats_msg += f"• Ставка: `> {settings['funding_threshold']*100:.2f}%`\n"
-        stats_msg += f"• Объем: `> {format_volume(settings['volume_threshold_usdt'])}`\n\n"
+        stats_msg = f"😔 Не найдено пар, соответствующих всем фильтрам.\n\n"
+        stats_msg += f"📊 **Статистика:**\n"
+        stats_msg += f"• Всего инструментов: {len(all_data)}\n"
+        stats_msg += f"• На выбранных биржах: {len(exchange_filtered)}\n"
+        stats_msg += f"• Со ставкой ≥ {settings['funding_threshold']*100:.1f}%: {len(rate_filtered)}\n"
+        stats_msg += f"• С объемом ≥ {settings['volume_threshold_usdt']/1_000:.0f}K: {len(filtered_data)}\n\n"
         
+        # Показываем топ-3 без фильтра объема
         if rate_filtered:
-            stats_msg += f"🔥 **Топ-3 со ставкой > {settings['funding_threshold']*100:.2f}% (без учета объема):**\n\n"
+            stats_msg += f"🔥 **Топ-3 со ставкой ≥ {settings['funding_threshold']*100:.1f}%:**\n"
             for item in sorted(rate_filtered, key=lambda x: abs(x['rate']), reverse=True)[:3]:
                 rate_pct = abs(item['rate']) * 100
-                vol_str = format_volume(item.get('volume_24h_usdt', Decimal('0')))
+                vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
                 direction = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
-                stats_msg += f"{direction} **{item['symbol'].replace('USDT', '')}** `{rate_pct:.2f}%` (Объем: {vol_str}) [{item['exchange']}]\n"
+                stats_msg += f"{direction} {item['symbol'].replace('USDT', '')} `{rate_pct:.2f}%` (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
         
-        stats_msg += "\n*Попробуйте ослабить фильтры в настройках.*"
         await msg.edit_text(stats_msg, parse_mode='Markdown')
         return
 
@@ -359,27 +393,17 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     for item in top_5:
         symbol_only = item['symbol'].replace("USDT", "")
-        buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
-
         funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
         time_left = funding_dt_utc - now_utc
         countdown_str = ""
         if time_left.total_seconds() > 0:
-            total_minutes = int(time_left.total_seconds() // 60)
-            h, m = divmod(total_minutes, 60)
-            if h > 0: countdown_str = f"{h}ч {m}м"
-            elif m > 0: countdown_str = f"{m}м"
-            else: countdown_str = "<1м"
-        
-        direction_emoji = "🟢" if item['rate'] < 0 else "🔴"
-        rate_str = f"{item['rate'] * 100:+.2f}%"
-        
-        message_text += f"{direction_emoji} **{symbol_only}/USDT** `{rate_str}`\n"
-        
-        time_info = f"{funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M')}"
-        if countdown_str: time_info += f" (ост. {countdown_str})"
-            
-        message_text += f"> `💧{format_volume(item.get('volume_24h_usdt', Decimal('0')))}` `⏰ {time_info}` `·` `*{item['exchange']}*\n\n"
+            h, m = divmod(int(time_left.total_seconds()) // 60, 60)
+            countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)" if m > 0 else " (меньше минуты)"
+
+        direction, rate_str = ("🟢 LONG", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 SHORT", f"{item['rate'] * 100:+.2f}%")
+        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
+        message_text += f"{direction} *{symbol_only}* `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]\n"
+        buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
 
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
@@ -405,13 +429,14 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         countdown_str = ""
         if time_left.total_seconds() > 0:
             h, m = divmod(int(time_left.total_seconds()) // 60, 60)
-            countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)"
-
+            countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)" if m > 0 else " (меньше минуты)"
+        
         direction, rate_str = ("🟢 ЛОНГ", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 ШОРТ", f"{item['rate'] * 100:+.2f}%")
         time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
-        vol_str = format_volume(item.get('volume_24h_usdt', Decimal('0')))
+        vol = item.get('volume_24h_usdt', Decimal('0'))
+        vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
             
-        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]({item['trade_url']})\n  *Объем 24ч:* `{vol_str}`\n"
+        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]({item['trade_url']})\n  *Объем 24ч:* `{vol_str} USDT`\n"
         if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
         message_text += "\n"
 
@@ -420,7 +445,8 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def back_to_top_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query: await query.answer()
+    if query:
+        await query.answer()
     await show_top_rates(update, context)
 
 async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -428,12 +454,13 @@ async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user_settings(chat_id)
     settings = user_settings[chat_id]
     notif_emoji = "✅" if settings['notifications_on'] else "🔴"
-    
+    vol = settings['volume_threshold_usdt']
+    vol_str = f"{vol / 1_000_000:.1f}M" if vol >= 1_000_000 else f"{vol / 1_000:.0f}K"
     message_text = "🔔 **Настройки фильтров и уведомлений**"
     keyboard = [
         [InlineKeyboardButton("🏦 Биржи", callback_data="filters_exchanges")],
         [InlineKeyboardButton(f"🔔 Ставка: > {settings['funding_threshold']*100:.2f}%", callback_data="filters_funding")],
-        [InlineKeyboardButton(f"💧 Объем: > {format_volume(settings['volume_threshold_usdt'])}", callback_data="filters_volume")],
+        [InlineKeyboardButton(f"💧 Объем: > {vol_str}", callback_data="filters_volume")],
         [InlineKeyboardButton(f"{notif_emoji} Уведомления: {'ВКЛ' if settings['notifications_on'] else 'ВЫКЛ'}", callback_data="filters_toggle_notif")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="filters_close")]
     ]
@@ -449,11 +476,13 @@ async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     action = query.data.split('_', 1)[1]
-    if action == "close": await query.message.delete()
+    if action == "close":
+        await query.message.delete()
     elif action == "toggle_notif":
         user_settings[update.effective_chat.id]['notifications_on'] ^= True
         await send_filters_menu(update, context)
-    elif action == "exchanges": await show_exchanges_menu(update, context)
+    elif action == "exchanges":
+        await show_exchanges_menu(update, context)
 
 async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -478,8 +507,8 @@ async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, sett
     prompts = {
         'funding': (f"Текущий порог ставки: `> {user_settings[chat_id]['funding_threshold']*100:.2f}%`.\n\n"
                     "Отправьте новое значение в процентах (например, `0.75`)."),
-        'volume': (f"Текущий порог объема: `{format_volume(user_settings[chat_id]['volume_threshold_usdt'])} USDT`.\n\n"
-                   "Отправьте новое значение в USDT (например, `500000` или `2M`).")
+        'volume': (f"Текущий порог объема: `{user_settings[chat_id]['volume_threshold_usdt']:,.0f} USDT`.\n\n"
+                   "Отправьте новое значение в USDT (например, `500000`).")
     }
     await query.message.delete()
     sent_message = await context.bot.send_message(
@@ -491,34 +520,21 @@ async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, sett
 async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
     chat_id = update.effective_chat.id
     try:
-        value_str = update.message.text.strip().replace(",", ".").upper()
-        
+        value_str = update.message.text.strip().replace(",", ".")
+        value = Decimal(value_str)
         if setting_type == 'funding':
-            value = Decimal(value_str)
             if not (0 < value < 100): raise ValueError("Value out of range 0-100")
             user_settings[chat_id]['funding_threshold'] = value / 100
         elif setting_type == 'volume':
-            num_part = value_str
-            multiplier = 1
-            if 'K' in value_str:
-                num_part = value_str.replace('K', '')
-                multiplier = 1000
-            elif 'M' in value_str:
-                num_part = value_str.replace('M', '')
-                multiplier = 1_000_000
-            
-            value = Decimal(num_part) * multiplier
             if value < 0: raise ValueError("Value must be positive")
             user_settings[chat_id]['volume_threshold_usdt'] = value
-            
     except (ValueError, TypeError, decimal.InvalidOperation):
         error_messages = {
             'funding': "❌ Ошибка. Введите число от 0 до 100 (например, `0.75`).",
-            'volume': "❌ Ошибка. Введите число (например, `500000` или `2M`)."
+            'volume': "❌ Ошибка. Введите целое положительное число (например, `500000`)."
         }
         await update.message.reply_text(error_messages[setting_type] + " Попробуйте снова.", parse_mode='Markdown')
         return SET_FUNDING_THRESHOLD if setting_type == 'funding' else SET_VOLUME_THRESHOLD
-
     if 'prompt_message_id' in context.user_data:
         await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
     await context.bot.delete_message(chat_id, update.message.message_id)
@@ -541,16 +557,18 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user_settings(chat_id)
     settings = user_settings[chat_id]
     
-    exchanges_list = ", ".join(settings['exchanges']) if settings['exchanges'] else "Не выбраны"
+    exchanges_list = ", ".join(settings['exchanges'])
+    vol = settings['volume_threshold_usdt']
+    vol_str = f"{vol / 1_000_000:.1f}M" if vol >= 1_000_000 else f"{vol / 1_000:.0f}K"
     
     message_text = f"""ℹ️ **Ваши текущие настройки:**
 
 🏦 **Биржи:** {exchanges_list}
-🔔 **Мин. ставка:** > {settings['funding_threshold']*100:.2f}%
-💧 **Мин. объем:** > {format_volume(settings['volume_threshold_usdt'])}
+🔔 **Минимальная ставка:** > {settings['funding_threshold']*100:.2f}%
+💧 **Минимальный объем:** > {vol_str} USDT
 🔕 **Уведомления:** {'Включены' if settings['notifications_on'] else 'Выключены'}
 
-Для изменения используйте "🔔 Настроить фильтры"
+Для изменения настроек используйте "🔔 Настроить фильтры"
 """
     await update.message.reply_text(message_text, parse_mode='Markdown')
 
@@ -567,14 +585,17 @@ if __name__ == "__main__":
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
+    # Загружаем ключи в "общий склад" бота
     app.bot_data['mexc_api_key'] = os.getenv("MEXC_API_KEY")
     app.bot_data['mexc_secret_key'] = os.getenv("MEXC_API_SECRET")
     app.bot_data['bybit_api_key'] = os.getenv("BYBIT_API_KEY")
     app.bot_data['bybit_secret_key'] = os.getenv("BYBIT_API_SECRET")
 
+    # Диагностика при старте
+    if app.bot_data['mexc_api_key']: print("✅ Ключи MEXC успешно загружены.")
+    else: print("⚠️ Ключи MEXC не найдены.")
     if app.bot_data['bybit_api_key']: print("✅ Ключи Bybit успешно загружены.")
     else: print("⚠️ Ключи Bybit не найдены.")
-    print("ℹ️ Ключи для MEXC (публичные данные) больше не требуются.")
 
     conv_handler_funding = ConversationHandler(
         entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding'), pattern="^filters_funding$")],
