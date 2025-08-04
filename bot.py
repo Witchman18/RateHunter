@@ -36,6 +36,17 @@ user_settings = {}
 api_data_cache = {"last_update": None, "data": []}
 CACHE_LIFETIME_SECONDS = 60
 ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io', 'HTX', 'Bitget']
+def format_volume(volume_usdt: Decimal) -> str:
+    """Форматирует объем в читаемый вид (K, M, B)"""
+    vol = volume_usdt
+    if vol >= 1_000_000_000:
+        return f"{vol / 1_000_000_000:.1f}B"
+    elif vol >= 1_000_000:
+        return f"{vol / 1_000_000:.1f}M"
+    elif vol >= 1_000:
+        return f"{vol / 1_000:.0f}K"
+    else:
+        return f"{vol:.0f}"
 
 # --- Состояния для ConversationHandler ---
 SET_FUNDING_THRESHOLD, SET_VOLUME_THRESHOLD = range(2)
