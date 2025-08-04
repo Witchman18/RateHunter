@@ -769,6 +769,7 @@ if __name__ == "__main__":
         # Обработчик текстовых сообщений для команд меню
         MessageHandler(filters.TEXT, lambda update, context: start(update, context) if update.message.text == "/start" else None),
         # Обработчики кнопок
+        CallbackQueryHandler(filters_callback_handler, pattern="^filters_"),
         CallbackQueryHandler(drill_down_callback, pattern="^drill_"),
         CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"),
         CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
