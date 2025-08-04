@@ -428,7 +428,7 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for item in sorted(rate_filtered, key=lambda x: abs(x['rate']), reverse=True)[:3]:
                 rate_pct = abs(item['rate']) * 100
                 vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
-                direction = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
+                direction = "🟢" if item['rate'] < 0 else "🔴"
                 stats_msg += f"{direction} {item['symbol'].replace('USDT', '')} `{rate_pct:.2f}%` (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
         
         await msg.edit_text(stats_msg, parse_mode='Markdown')
