@@ -360,12 +360,45 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("😔 Не удалось получить данные с бирж. Попробуйте 🔧 Диагностика API для проверки.")
         return
 
+    # Диагностика фильтров
+    print(f"[DEBUG] Фильтры: биржи={settings['exchanges']}, ставка>={settings['funding_threshold']}, объем>={settings['volume_threshold_usdt']}")
+    
+    # Показываем топ-10 ставок без фильтров для диагностики
+    all_sorted = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:10]
+    print("[DEBUG] Топ-10 ставок без фильтров:")
+    for i, item in enumerate(all_sorted):
+        rate_pct = abs(item['rate']) * 100
+        vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%, объем: {vol_m:.1f}M USDT")
+
     filtered_data = [item for item in all_data if item['exchange'] in settings['exchanges'] and abs(item['rate']) >= settings['funding_threshold'] and item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']]
     filtered_data.sort(key=lambda x: abs(x['rate']), reverse=True)
     top_5 = filtered_data[:5]
 
+    print(f"[DEBUG] После фильтрации найдено: {len(filtered_data)} пар")
+
     if not top_5:
-        await msg.edit_text("😔 Не найдено пар, соответствующих вашим фильтрам.")
+        # Показываем альтернативную статистику
+        exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
+        rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
+        
+        stats_msg = f"😔 Не найдено пар, соответствующих всем фильтрам.\n\n"
+        stats_msg += f"📊 **Статистика:**\n"
+        stats_msg += f"• Всего инструментов: {len(all_data)}\n"
+        stats_msg += f"• На выбранных биржах: {len(exchange_filtered)}\n"
+        stats_msg += f"• Со ставкой ≥ {settings['funding_threshold']*100:.1f}%: {len(rate_filtered)}\n"
+        stats_msg += f"• С объемом ≥ {settings['volume_threshold_usdt']/1_000:.0f}K: {len(filtered_data)}\n\n"
+        
+        # Показываем топ-3 без фильтра объема
+        if rate_filtered:
+            stats_msg += f"🔥 **Топ-3 со ставкой ≥ {settings['funding_threshold']*100:.1f}%:**\n"
+            for item in sorted(rate_filtered, key=lambda x: abs(x['rate']), reverse=True)[:3]:
+                rate_pct = abs(item['rate']) * 100
+                vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+                direction = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
+                stats_msg += f"{direction} {item['symbol'].replace('USDT', '')} `{rate_pct:.2f}%` (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
+        
+        await msg.edit_text(stats_msg, parse_mode='Markdown')
         return
 
     message_text = f"🔥 **ТОП-5 фандингов > {settings['funding_threshold']*100:.2f}%**\n\n"
