@@ -696,7 +696,8 @@ if __name__ == "__main__":
         ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")], states={SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_rate'))]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
         ConversationHandler(entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")], states={SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
     ]
-    app.add_handlers(conv_handlers)
+    for handler in conv_handlers:
+      app.add_handler(handler)
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates))
