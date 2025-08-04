@@ -31,6 +31,10 @@ if os.path.exists(dotenv_path):
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MSK_TIMEZONE = timezone(timedelta(hours=3))
 
+# --- Состояния для ConversationHandler ---
+(SET_FUNDING_THRESHOLD, SET_VOLUME_THRESHOLD, 
+ SET_ALERT_RATE, SET_ALERT_TIME) = range(4)
+
 # --- Глобальные переменные и настройки ---
 user_settings = {}
 api_data_cache = {"last_update": None, "data": []}
@@ -49,7 +53,7 @@ def format_volume(volume_usdt: Decimal) -> str:
         return f"{vol / 1_000:.0f}K"
     else:
         return f"{vol:.0f}"
-
+        
 def get_default_settings():
     return {
         'exchanges': ['Bybit', 'MEXC'],
