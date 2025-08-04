@@ -400,9 +400,10 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             h, m = divmod(int(time_left.total_seconds()) // 60, 60)
             countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)" if m > 0 else " (меньше минуты)"
 
-        direction, rate_str = ("🟢 LONG", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 SHORT", f"{item['rate'] * 100:+.2f}%")
+        arrow = "🟢" if item['rate'] < 0 else "🔴"
+        rate_str = f"{item['rate'] * 100:+.2f}%"
         time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
-        message_text += f"{direction} *{symbol_only}* `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]\n"
+        message_text += f"{arrow} {symbol_only} {rate_str} | ⏰ {time_str}{countdown_str} | {item['exchange']}\n"
         buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
 
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
