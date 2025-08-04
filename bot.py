@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes,
+    Application, ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes,
     ConversationHandler, CallbackQueryHandler, filters
 )
 from dotenv import load_dotenv
@@ -36,6 +36,8 @@ user_settings = {}
 api_data_cache = {"last_update": None, "data": []}
 CACHE_LIFETIME_SECONDS = 60
 ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io', 'HTX', 'Bitget']
+
+# Функция форматирования объема
 def format_volume(volume_usdt: Decimal) -> str:
     """Форматирует объем в читаемый вид (K, M, B)"""
     vol = volume_usdt
@@ -47,10 +49,6 @@ def format_volume(volume_usdt: Decimal) -> str:
         return f"{vol / 1_000:.0f}K"
     else:
         return f"{vol:.0f}"
-
-# --- Состояния для ConversationHandler ---
-SET_FUNDING_THRESHOLD, SET_VOLUME_THRESHOLD = range(2)
-SET_ALERT_RATE, SET_ALERT_TIME = range(10, 12) 
 
 def get_default_settings():
     return {
@@ -236,15 +234,20 @@ async def get_mexc_data(api_key: str, secret_key: str):
     
     return results
 
-async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE, force_update=False):
+async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
-        print(f"[DEBUG] Используем кэш, возраст: {int(now - api_data_cache['last_update'])} сек")
         return api_data_cache["data"]
 
+    # Умное определение, откуда брать bot_data
+    bot_data = context.bot_data if isinstance(context, Application) else context.bot_data
+    
+    # Дальнейший код остается без изменений
     print("[DEBUG] Обновляем данные с API...")
-    mexc_api_key, mexc_secret_key = context.bot_data.get('mexc_api_key'), context.bot_data.get('mexc_secret_key')
-    bybit_api_key, bybit_secret_key = context.bot_data.get('bybit_api_key'), context.bot_data.get('bybit_secret_key')
+    mexc_api_key = bot_data.get('mexc_api_key')
+    mexc_secret_key = bot_data.get('mexc_secret_key')
+    bybit_api_key = bot_data.get('bybit_api_key')
+    bybit_secret_key = bot_data.get('bybit_secret_key')
     
     tasks = [
         get_bybit_data(api_key=bybit_api_key, secret_key=bybit_secret_key), 
@@ -270,6 +273,7 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE, force_update=False)
 # =================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("--- ПОЛУЧЕНА КОМАНДА /start ---") # Строка для отладки
     ensure_user_settings(update.effective_chat.id)
     main_menu_keyboard = [["🔥 Топ-ставки сейчас"], ["🔔 Настроить фильтры", "ℹ️ Мои настройки"], ["🔧 Диагностика API"]]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
@@ -453,7 +457,7 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)" if m > 0 else " (меньше минуты)"
         
         direction, rate_str = ("🟢 ЛОНГ", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 ШОРТ", f"{item['rate'] * 100:+.2f}%")
-        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
+        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%М МСК')
         vol = item.get('volume_24h_usdt', Decimal('0'))
         vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
             
@@ -479,7 +483,6 @@ async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🏦 Биржи", callback_data="filters_exchanges")],
         [InlineKeyboardButton(f"🔔 Ставка: > {settings['funding_threshold']*100:.2f}%", callback_data="filters_funding")],
         [InlineKeyboardButton(f"💧 Объем: > {format_volume(settings['volume_threshold_usdt'])}", callback_data="filters_volume")],
-        # --- НОВАЯ КНОПКА ---
         [InlineKeyboardButton("🚨 Настроить Уведомления", callback_data="alert_show_menu")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="filters_close")]
     ]
@@ -488,6 +491,7 @@ async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        
 async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_filters_menu(update, context)
 
@@ -590,7 +594,7 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🏦 **Биржи:** {exchanges_list}
 🔔 **Минимальная ставка:** > {settings['funding_threshold']*100:.2f}%
 💧 **Минимальный объем:** > {vol_str} USDT
-🔕 **Уведомления:** {'Включены' if settings['notifications_on'] else 'Выключены'}
+🔕 **Уведомления:** {'Включены' if settings['alerts_on'] else 'Выключены'}
 
 Для изменения настроек используйте "🔔 Настроить фильтры"
 """
@@ -631,7 +635,7 @@ async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif action == "back_filters":
         await send_filters_menu(update, context)
 
-async def background_scanner(app: ApplicationBuilder):
+async def background_scanner(app: Application):
     """Фоновый процесс для мониторинга и отправки кастомных уведомлений."""
     print("🚀 Фоновый сканер уведомлений запущен.")
     while True:
@@ -686,8 +690,10 @@ if __name__ == "__main__":
     if not BOT_TOKEN:
         raise ValueError("Не найден BOT_TOKEN. Убедитесь, что он задан в .env файле.")
     
+    # Импорт необходим для работы фоновой задачи
+    from telegram.ext import Application
+    
     # 1. Создаем приложение
-    from telegram.ext import Application  # Добавляем импорт здесь
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
     # 2. Загружаем ключи API
@@ -715,7 +721,30 @@ if __name__ == "__main__":
             fallbacks=fallbacks,
             allow_reentry=True
         ),
-        # ... остальные ConversationHandler ...
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume', send_filters_menu), pattern="^filters_volume$")],
+            states={
+                SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]
+            },
+            fallbacks=fallbacks,
+            allow_reentry=True
+        ),
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")],
+            states={
+                SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_rate'))]
+            },
+            fallbacks=fallbacks,
+            allow_reentry=True
+        ),
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")],
+            states={
+                SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]
+            },
+            fallbacks=fallbacks,
+            allow_reentry=True
+        ),
     ]
     
     # Список обычных обработчиков (команды, текст, кнопки)
@@ -725,8 +754,8 @@ if __name__ == "__main__":
         MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry),
         MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings),
         MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics),
-        # Обработчик для текстовых сообщений
-        MessageHandler(filters.TEXT & ~filters.COMMAND, lambda update, context: start(update, context) if update.message.text == "/start" else None),
+        # Обработчик текстовых сообщений для команд меню
+        MessageHandler(filters.TEXT, lambda update, context: start(update, context) if update.message.text == "/start" else None),
         # Обработчики кнопок
         CallbackQueryHandler(drill_down_callback, pattern="^drill_"),
         CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"),
@@ -740,7 +769,7 @@ if __name__ == "__main__":
     app.add_handlers(regular_handlers)
 
     # 4. ПРАВИЛЬНЫЙ запуск фонового сканера
-    async def post_init(app):  # Убрали аннотацию типа
+    async def post_init(app):
         # Создаем фоновую задачу, не блокируя основной поток
         asyncio.create_task(background_scanner(app))
 
