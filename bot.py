@@ -130,37 +130,103 @@ async def get_mexc_data(api_key: str, secret_key: str):
         print("[API_WARNING] MEXC: Ключи не настроены.")
         return []
 
-    # Попробуем публичный эндпоинт для фандинга
-    public_url = "https://contract.mexc.com/api/v1/contract/funding_rate"
+    # Попробуем получить данные напрямую из ticker API
+    ticker_url = "https://contract.mexc.com/api/v1/contract/ticker"
     
     results = []
     try:
-        print(f"[DEBUG] MEXC: Пробуем публичный эндпоинт {public_url}")
+        print(f"[DEBUG] MEXC: Пробуем ticker API {ticker_url}")
         async with aiohttp.ClientSession() as session:
-            async with session.get(public_url, timeout=15) as response:
+            async with session.get(ticker_url, timeout=15) as response:
                 response_text = await response.text()
-                print(f"[DEBUG] MEXC Public: Статус {response.status}, размер ответа: {len(response_text)} символов")
+                print(f"[DEBUG] MEXC Ticker: Статус {response.status}, размер ответа: {len(response_text)} символов")
                 
                 if response.status == 200:
                     try:
                         data = json.loads(response_text)
                         if data.get("success") and data.get("data"):
-                            print(f"[DEBUG] MEXC Public: Получено {len(data['data'])} записей фандинга")
+                            print(f"[DEBUG] MEXC Ticker: Получено {len(data['data'])} тикеров")
                             
-                            # Получаем дополнительную информацию о контрактах
-                            contracts_url = "https://contract.mexc.com/api/v1/contract/detail"
-                            async with session.get(contracts_url, timeout=15) as contracts_response:
-                                if contracts_response.status == 200:
-                                    contracts_data = await contracts_response.json()
-                                    contracts_info = {}
-                                    if contracts_data.get("success") and contracts_data.get("data"):
-                                        for contract in contracts_data["data"]:
+                            # Создаем словарь тикеров для быстрого поиска
+                            tickers_dict = {}
+                            for ticker in data["data"]:
+                                symbol = ticker.get("symbol", "").replace("_", "")
+                                if symbol.endswith("USDT"):
+                                    tickers_dict[symbol] = {
+                                        'volume24': ticker.get("volume24", "0"),
+                                        'lastPrice': ticker.get("lastPrice", "0"),
+                                        'fundingRate': ticker.get("fundingRate", "0"),
+                                        'nextSettleTime': ticker.get("nextSettleTime", 0)
+                                    }
+                            
+                            print(f"[DEBUG] MEXC: Обработано {len(tickers_dict)} USDT тикеров")
+                            
+                            # Создаем результаты из тикеров
+                            for symbol, ticker_data in tickers_dict.items():
+                                try:
+                                    rate = Decimal(str(ticker_data['fundingRate']))
+                                    next_funding = ticker_data['nextSettleTime']
+                                    
+                                    # Правильно рассчитываем объем
+                                    volume_in_coin = Decimal(str(ticker_data['volume24']))
+                                    last_price = Decimal(str(ticker_data['lastPrice']))
+                                    
+                                    # Объем уже в USDT, если это контракт USDT
+                                    volume_in_usdt = volume_in_coin if last_price > 0 else Decimal('0')
+                                    
+                                    print(f"[DEBUG] MEXC {symbol}: rate={rate}, volume_coin={volume_in_coin}, price={last_price}, volume_usdt={volume_in_usdt}")
+                                    
+                                    results.append({
+                                        'exchange': 'MEXC',
+                                        'symbol': symbol,
+                                        'rate': rate,
+                                        'next_funding_time': int(next_funding),
+                                        'volume_24h_usdt': volume_in_usdt,
+                                        'max_order_value_usdt': Decimal('0'),
+                                        'trade_url': f'https://futures.mexc.com/exchange/{symbol.replace("USDT", "_USDT")}'
+                                    })
+                                except (TypeError, ValueError, decimal.InvalidOperation) as e:
+                                    print(f"[DEBUG] MEXC: Ошибка обработки {symbol}: {e}")
+                                    continue
+                            
+                            print(f"[DEBUG] MEXC Ticker: Успешно обработано {len(results)} инструментов")
+                        else:
+                            print(f"[API_ERROR] MEXC Ticker: success={data.get('success')}, data length={len(data.get('data', []))}")
+                    except json.JSONDecodeError as e:
+                        print(f"[API_ERROR] MEXC Ticker: Ошибка парсинга JSON: {e}")
+                else:
+                    print(f"[API_ERROR] MEXC Ticker: Статус {response.status}")
+                    print(f"[API_ERROR] MEXC Ticker: Ответ: {response_text[:500]}...")
+                    
+    except asyncio.TimeoutError:
+        print("[API_ERROR] MEXC: Timeout при запросе к ticker API")
+    except Exception as e:
+        print(f"[API_ERROR] MEXC Ticker: Исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] MEXC Ticker: Traceback: {traceback.format_exc()}")
+    
+    # Если ticker API не дал результатов, пробуем публичный funding API
+    if not results:
+        print("[DEBUG] MEXC: Пробуем funding API как fallback")
+        try:
+            public_url = "https://contract.mexc.com/api/v1/contract/funding_rate"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(public_url, timeout=15) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("success") and data.get("data"):
+                            # Получаем дополнительные данные о контрактах
+                            detail_url = "https://contract.mexc.com/api/v1/contract/detail"
+                            async with session.get(detail_url, timeout=15) as detail_response:
+                                contracts_info = {}
+                                if detail_response.status == 200:
+                                    detail_data = await detail_response.json()
+                                    if detail_data.get("success") and detail_data.get("data"):
+                                        for contract in detail_data["data"]:
                                             symbol = contract.get("symbol", "").replace("_", "")
                                             contracts_info[symbol] = {
-                                                'volume': contract.get("volume24", "0"),
+                                                'volume24': contract.get("volume24", "0"),
                                                 'lastPrice': contract.get("lastPrice", "0")
                                             }
-                                        print(f"[DEBUG] MEXC: Получена информация о {len(contracts_info)} контрактах")
                             
                             for item in data["data"]:
                                 try:
@@ -171,11 +237,13 @@ async def get_mexc_data(api_key: str, secret_key: str):
                                     rate = Decimal(str(item.get("fundingRate", "0")))
                                     next_funding = item.get("nextSettleTime", 0)
                                     
-                                    # Получаем объем из контрактов
+                                    # Получаем объем из detail API
                                     contract_info = contracts_info.get(symbol, {})
-                                    volume_in_coin = Decimal(str(contract_info.get('volume', '0')))
-                                    last_price = Decimal(str(contract_info.get('lastPrice', '0')))
-                                    volume_in_usdt = volume_in_coin * last_price if last_price > 0 else Decimal('0')
+                                    volume_in_coin = Decimal(str(contract_info.get('volume24', '0')))
+                                    last_price = Decimal(str(contract_info.get('lastPrice', '1')))
+                                    
+                                    # Для USDT контрактов объем уже в USDT
+                                    volume_in_usdt = volume_in_coin
                                     
                                     results.append({
                                         'exchange': 'MEXC',
@@ -187,88 +255,12 @@ async def get_mexc_data(api_key: str, secret_key: str):
                                         'trade_url': f'https://futures.mexc.com/exchange/{item.get("symbol", "")}'
                                     })
                                 except (TypeError, ValueError, decimal.InvalidOperation) as e:
-                                    print(f"[DEBUG] MEXC: Ошибка обработки {item.get('symbol', 'unknown')}: {e}")
                                     continue
                             
-                            print(f"[DEBUG] MEXC Public: Успешно обработано {len(results)} инструментов")
-                        else:
-                            print(f"[API_ERROR] MEXC Public: success={data.get('success')}, data length={len(data.get('data', []))}")
-                    except json.JSONDecodeError as e:
-                        print(f"[API_ERROR] MEXC Public: Ошибка парсинга JSON: {e}")
-                else:
-                    print(f"[API_ERROR] MEXC Public: Статус {response.status}")
-                    print(f"[API_ERROR] MEXC Public: Ответ: {response_text[:500]}...")
-                    
-    except asyncio.TimeoutError:
-        print("[API_ERROR] MEXC: Timeout при запросе к публичному API")
-    except Exception as e:
-        print(f"[API_ERROR] MEXC Public: Исключение {type(e).__name__}: {e}")
-        print(f"[API_ERROR] MEXC Public: Traceback: {traceback.format_exc()}")
-    
-    # Если публичный API не работает, пробуем приватный
-    if not results:
-        print("[DEBUG] MEXC: Пробуем приватный API")
-        try:
-            request_path = "/api/v1/private/contract/open_contracts"
-            base_url = "https://contract.mexc.com"
-            timestamp = str(int(time.time() * 1000))
-            data_to_sign = timestamp + api_key
-            signature = hmac.new(secret_key.encode('utf-8'), data_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
-            headers = {
-                'ApiKey': api_key, 
-                'Request-Time': timestamp, 
-                'Signature': signature, 
-                'Content-Type': 'application/json'
-            }
-            
-            print(f"[DEBUG] MEXC Private: Отправляем запрос к {base_url + request_path}")
-            async with aiohttp.ClientSession() as session:
-                async with session.get(base_url + request_path, headers=headers, timeout=15) as response:
-                    response_text = await response.text()
-                    print(f"[DEBUG] MEXC Private: Статус {response.status}, размер ответа: {len(response_text)} символов")
-                    
-                    if response.status != 200:
-                        print(f"[API_ERROR] MEXC Private: Статус {response.status}")
-                        print(f"[API_ERROR] MEXC Private: Ответ: {response_text[:500]}...")
-                        return results
-                    
-                    try:
-                        data = json.loads(response_text)
-                    except json.JSONDecodeError as e:
-                        print(f"[API_ERROR] MEXC Private: Ошибка парсинга JSON: {e}")
-                        return results
-                    
-                    if data.get("success") and data.get("data"):
-                        print(f"[DEBUG] MEXC Private: Получено {len(data['data'])} инструментов")
-                        for t in data["data"]:
-                            try:
-                                rate_val, symbol_from_api, next_funding_ts = t.get("fundingRate"), t.get("symbol"), t.get("nextSettleTime")
-                                if rate_val is None or not symbol_from_api or not symbol_from_api.endswith("USDT") or not next_funding_ts: 
-                                    continue
-                                normalized_symbol = symbol_from_api.replace("_", "")
-                                volume_in_coin, last_price = Decimal(str(t.get("volume24", '0'))), Decimal(str(t.get("lastPrice", '0')))
-                                volume_in_usdt = volume_in_coin * last_price if last_price > 0 else Decimal('0')
-                                results.append({
-                                    'exchange': 'MEXC', 
-                                    'symbol': normalized_symbol, 
-                                    'rate': Decimal(str(rate_val)), 
-                                    'next_funding_time': int(next_funding_ts), 
-                                    'volume_24h_usdt': volume_in_usdt, 
-                                    'max_order_value_usdt': Decimal('0'), 
-                                    'trade_url': f'https://futures.mexc.com/exchange/{symbol_from_api}'
-                                })
-                            except (TypeError, ValueError, decimal.InvalidOperation) as e:
-                                print(f"[DEBUG] MEXC Private: Ошибка обработки {t.get('symbol', 'unknown')}: {e}")
-                                continue
-                        print(f"[DEBUG] MEXC Private: Успешно обработано {len(results)} инструментов")
-                    else:
-                        print(f"[API_ERROR] MEXC Private: success={data.get('success')}, data present={bool(data.get('data'))}")
-                        
-        except asyncio.TimeoutError:
-            print("[API_ERROR] MEXC Private: Timeout при запросе к приватному API")
+                            print(f"[DEBUG] MEXC Funding: Успешно обработано {len(results)} инструментов")
+                            
         except Exception as e:
-            print(f"[API_ERROR] MEXC Private: Исключение {type(e).__name__}: {e}")
-            print(f"[API_ERROR] MEXC Private: Traceback: {traceback.format_exc()}")
+            print(f"[API_ERROR] MEXC Funding fallback: {e}")
     
     return results
 
@@ -324,6 +316,28 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         exchange = item.get('exchange', 'Unknown')
         exchange_counts[exchange] = exchange_counts.get(exchange, 0) + 1
     
+    # Анализируем ставки и объемы
+    rates_analysis = {"high_rates": 0, "medium_rates": 0, "low_rates": 0}
+    volume_analysis = {"high_volume": 0, "medium_volume": 0, "low_volume": 0}
+    
+    for item in all_data:
+        rate_pct = abs(item['rate']) * 100
+        volume_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+        
+        if rate_pct >= 0.5:
+            rates_analysis["high_rates"] += 1
+        elif rate_pct >= 0.1:
+            rates_analysis["medium_rates"] += 1
+        else:
+            rates_analysis["low_rates"] += 1
+            
+        if volume_m >= 100:
+            volume_analysis["high_volume"] += 1
+        elif volume_m >= 10:
+            volume_analysis["medium_volume"] += 1
+        else:
+            volume_analysis["low_volume"] += 1
+    
     # Формируем отчет
     report = "🔧 **Диагностика API**\n\n"
     
@@ -333,6 +347,25 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += f"{status_emoji} **{exchange}**: {count} инструментов\n"
     else:
         report += "❌ Нет данных ни с одной биржи\n"
+    
+    report += f"\n📊 **Анализ ставок:**\n"
+    report += f"• ≥ 0.5%: {rates_analysis['high_rates']} пар\n"
+    report += f"• 0.1-0.5%: {rates_analysis['medium_rates']} пар\n"
+    report += f"• < 0.1%: {rates_analysis['low_rates']} пар\n"
+    
+    report += f"\n💰 **Анализ объемов:**\n"
+    report += f"• ≥ 100M USDT: {volume_analysis['high_volume']} пар\n"
+    report += f"• 10-100M USDT: {volume_analysis['medium_volume']} пар\n"
+    report += f"• < 10M USDT: {volume_analysis['low_volume']} пар\n"
+    
+    # Топ-5 по ставкам
+    if all_data:
+        top_rates = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:5]
+        report += f"\n🔥 **Топ-5 ставок:**\n"
+        for item in top_rates:
+            rate_pct = abs(item['rate']) * 100
+            vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+            report += f"• {item['symbol'].replace('USDT', '')}: {rate_pct:.3f}% (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
     
     report += f"\n⏰ Время обновления: {datetime.now(MSK_TIMEZONE).strftime('%H:%M:%S MSK')}"
     report += f"\n🕒 Кэш действителен: {CACHE_LIFETIME_SECONDS} сек"
