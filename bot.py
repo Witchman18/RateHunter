@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes,
+    Application,ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes,
     ConversationHandler, CallbackQueryHandler, filters
 )
 from dotenv import load_dotenv
@@ -225,15 +225,20 @@ async def get_mexc_data(api_key: str, secret_key: str):
     
     return results
 
-async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE, force_update=False):
+async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
-        print(f"[DEBUG] Используем кэш, возраст: {int(now - api_data_cache['last_update'])} сек")
         return api_data_cache["data"]
 
+    # Умное определение, откуда брать bot_data
+    bot_data = context.bot_data if isinstance(context, Application) else context.bot_data
+    
+    # Дальнейший код остается без изменений
     print("[DEBUG] Обновляем данные с API...")
-    mexc_api_key, mexc_secret_key = context.bot_data.get('mexc_api_key'), context.bot_data.get('mexc_secret_key')
-    bybit_api_key, bybit_secret_key = context.bot_data.get('bybit_api_key'), context.bot_data.get('bybit_secret_key')
+    mexc_api_key = bot_data.get('mexc_api_key')
+    mexc_secret_key = bot_data.get('mexc_secret_key')
+    bybit_api_key = bot_data.get('bybit_api_key')
+    bybit_secret_key = bot_data.get('bybit_secret_key')
     
     tasks = [
         get_bybit_data(api_key=bybit_api_key, secret_key=bybit_secret_key), 
@@ -621,7 +626,7 @@ async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif action == "back_filters":
         await send_filters_menu(update, context)
 
-async def background_scanner(app: ApplicationBuilder):
+async def background_scanner(app: Application):
     """Фоновый процесс для мониторинга и отправки кастомных уведомлений."""
     print("🚀 Фоновый сканер уведомлений запущен.")
     while True:
