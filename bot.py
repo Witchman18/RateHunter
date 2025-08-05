@@ -1,8 +1,7 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - v1.0.2 =========================
+# ===================== RateHunter 2.0 - v1.0.3 ИСПРАВЛЕНО =============
 # =========================================================================
-# Исправленная версия с улучшенной диагностикой API ошибок
-# И ОГРАНИЧЕНИЕМ ДОСТУПА ПО TELEGRAM ID
+# Исправлены критические ошибки с уведомлениями и проверкой доступа
 # =========================================================================
 
 import os
@@ -32,30 +31,63 @@ if os.path.exists(dotenv_path):
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MSK_TIMEZONE = timezone(timedelta(hours=3))
 
-# === НОВОЕ: СПИСОК РАЗРЕШЕННЫХ ПОЛЬЗОВАТЕЛЕЙ ===
+# === СПИСОК РАЗРЕШЕННЫХ ПОЛЬЗОВАТЕЛЕЙ ===
 ALLOWED_USERS = [
     518449824  # Замените на свой Telegram ID
-      # Можете добавить ID других пользователей
+    # Можете добавить ID других пользователей
 ]
 
 # Функция для проверки доступа
 def check_access(user_id: int) -> bool:
     """Проверяет, разрешен ли доступ пользователю"""
+    # Приводим к int для надежности
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        return False
     return user_id in ALLOWED_USERS
 
+# ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТКАЗА В ДОСТУПЕ =====
 async def access_denied_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет сообщение об отказе в доступе"""
+    """Отправляет сообщение об отказе в доступе (работает и с callback_query)"""
     user_id = update.effective_user.id
     username = update.effective_user.username or "неизвестно"
-    await update.message.reply_text(
+    
+    message_text = (
         f"⛔ **Доступ запрещён**\n\n"
         f"Ваш ID: `{user_id}`\n"
         f"Username: @{username}\n\n"
-        f"Обратитесь к администратору для получения доступа.",
-        parse_mode='Markdown'
+        f"Обратитесь к администратору для получения доступа."
     )
+    
     # Логируем попытку несанкционированного доступа
     print(f"[ACCESS_DENIED] Пользователь {user_id} (@{username}) попытался получить доступ")
+    
+    # Правильная обработка как для сообщений, так и для callback_query
+    try:
+        if update.callback_query:
+            await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+            # Пытаемся отредактировать сообщение, если возможно
+            try:
+                await update.callback_query.edit_message_text(message_text, parse_mode='Markdown')
+            except:
+                # Если не получается отредактировать, отправляем новое
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id, 
+                    text=message_text, 
+                    parse_mode='Markdown'
+                )
+        elif update.message:
+            await update.message.reply_text(message_text, parse_mode='Markdown')
+        else:
+            # Fallback
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, 
+                text=message_text, 
+                parse_mode='Markdown'
+            )
+    except Exception as e:
+        print(f"[ERROR] Не удалось отправить сообщение об отказе в доступе: {e}")
 
 # Декоратор для проверки доступа
 def require_access():
@@ -73,8 +105,9 @@ def require_access():
 (SET_FUNDING_THRESHOLD, SET_VOLUME_THRESHOLD, 
  SET_ALERT_RATE, SET_ALERT_TIME) = range(4)
 
-# --- Глобальные переменные и настройки ---
-user_settings = {}
+# === ИСПРАВЛЕННАЯ СТРУКТУРА ДАННЫХ ===
+# Теперь храним и user_id для корректной проверки доступа
+user_settings = {}  # Ключ: chat_id, значение: {'user_id': int, 'settings': dict}
 api_data_cache = {"last_update": None, "data": []}
 CACHE_LIFETIME_SECONDS = 60
 ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io', 'HTX', 'Bitget']
@@ -98,17 +131,28 @@ def get_default_settings():
         'funding_threshold': Decimal('0.005'),         
         'volume_threshold_usdt': Decimal('1000000'),   
         
-        # --- НОВЫЕ ПАРАМЕТРЫ ДЛЯ УВЕДОМЛЕНИЙ ---
+        # --- ПАРАМЕТРЫ ДЛЯ УВЕДОМЛЕНИЙ ---
         'alerts_on': False,                             
         'alert_rate_threshold': Decimal('0.015'),       
         'alert_time_window_minutes': 30,                
         'sent_notifications': set(),                    
     }
 
-def ensure_user_settings(chat_id: int):
-    if chat_id not in user_settings: user_settings[chat_id] = get_default_settings()
+# ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ НАСТРОЕК =====
+def ensure_user_settings(chat_id: int, user_id: int):
+    """Убеждается, что настройки пользователя существуют и сохраняет user_id"""
+    if chat_id not in user_settings:
+        user_settings[chat_id] = {
+            'user_id': user_id,
+            'settings': get_default_settings()
+        }
+    else:
+        # Обновляем user_id на случай, если он изменился
+        user_settings[chat_id]['user_id'] = user_id
+        
+    # Убеждаемся, что все настройки есть
     for key, value in get_default_settings().items():
-        user_settings[chat_id].setdefault(key, value)
+        user_settings[chat_id]['settings'].setdefault(key, value)
 
 # =================================================================
 # ===================== МОДУЛЬ СБОРА ДАННЫХ (API) =====================
@@ -185,11 +229,6 @@ async def get_bybit_data(api_key: str, secret_key: str):
     return results
 
 async def get_mexc_data(api_key: str, secret_key: str):
-    # API ключи для MEXC больше не требуются для публичных данных,
-    # но оставим проверку на случай будущих изменений.
-    # if not api_key or not secret_key:
-    #     print("[API_WARNING] MEXC: Ключи не настроены (для публичных данных не требуются).")
-
     results = []
     ticker_url = "https://contract.mexc.com/api/v1/contract/ticker"
     funding_rate_url = "https://contract.mexc.com/api/v1/contract/funding_rate"
@@ -197,14 +236,12 @@ async def get_mexc_data(api_key: str, secret_key: str):
     try:
         print("[DEBUG] MEXC: Запрашиваем данные по тикерам и ставкам...")
         async with aiohttp.ClientSession() as session:
-            # Используем asyncio.gather для параллельного выполнения запросов
             tasks = [
                 session.get(ticker_url, timeout=15),
                 session.get(funding_rate_url, timeout=15)
             ]
             responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Проверяем ответы и парсим JSON
             ticker_response, funding_response = responses
             
             if isinstance(ticker_response, Exception) or ticker_response.status != 200:
@@ -218,7 +255,6 @@ async def get_mexc_data(api_key: str, secret_key: str):
             ticker_data = await ticker_response.json()
             funding_data = await funding_response.json()
 
-            # 1. Создаем словарь с правильными данными о ставках и времени фандинга
             funding_info = {}
             if funding_data.get("success") and funding_data.get("data"):
                 for item in funding_data["data"]:
@@ -227,14 +263,13 @@ async def get_mexc_data(api_key: str, secret_key: str):
                         try:
                             funding_info[symbol] = {
                                 'rate': Decimal(str(item.get("fundingRate", "0"))),
-                                'next_funding_time': int(item.get("nextSettleTime", 0)) # В этом эндпоинте время верное
+                                'next_funding_time': int(item.get("nextSettleTime", 0))
                             }
                         except (TypeError, ValueError, decimal.InvalidOperation) as e:
                             print(f"[DEBUG] MEXC: Ошибка парсинга данных фандинга для {symbol}: {e}")
                             continue
             print(f"[DEBUG] MEXC: Обработано {len(funding_info)} ставок фандинга.")
 
-            # 2. Обрабатываем данные тикеров, используя информацию из funding_info
             if ticker_data.get("success") and ticker_data.get("data"):
                 print(f"[DEBUG] MEXC: Получено {len(ticker_data['data'])} тикеров.")
                 for ticker in ticker_data["data"]:
@@ -242,13 +277,10 @@ async def get_mexc_data(api_key: str, secret_key: str):
                     if not symbol or not symbol.endswith("_USDT"):
                         continue
 
-                    # Используем данные о ставке и времени из нашего словаря
                     if symbol in funding_info:
                         try:
                             rate = funding_info[symbol]['rate']
                             next_funding = funding_info[symbol]['next_funding_time']
-                            
-                            # Объем для USDT-M контрактов уже указан в USDT
                             volume_usdt = Decimal(str(ticker.get("amount24", "0")))
 
                             results.append({
@@ -281,10 +313,8 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
         return api_data_cache["data"]
 
-    # Умное определение, откуда брать bot_data
     bot_data = context.bot_data if isinstance(context, Application) else context.bot_data
     
-    # Дальнейший код остается без изменений
     print("[DEBUG] Обновляем данные с API...")
     mexc_api_key = bot_data.get('mexc_api_key')
     mexc_secret_key = bot_data.get('mexc_secret_key')
@@ -317,7 +347,7 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
 @require_access()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"--- ПОЛУЧЕНА КОМАНДА /start от пользователя {update.effective_user.id} ---")
-    ensure_user_settings(update.effective_chat.id)
+    ensure_user_settings(update.effective_chat.id, update.effective_user.id)
     main_menu_keyboard = [["🔥 Топ-ставки сейчас"], ["🔔 Настроить фильтры", "ℹ️ Мои настройки"], ["🔧 Диагностика API"]]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
     await update.message.reply_text("Добро пожаловать в RateHunter 2.0!", reply_markup=reply_markup)
@@ -327,16 +357,13 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Диагностика состояния API"""
     msg = await update.message.reply_text("🔧 Проверяю состояние API...")
     
-    # Принудительно обновляем данные
     all_data = await fetch_all_data(context, force_update=True)
     
-    # Подсчитываем данные по биржам
     exchange_counts = {}
     for item in all_data:
         exchange = item.get('exchange', 'Unknown')
         exchange_counts[exchange] = exchange_counts.get(exchange, 0) + 1
     
-    # Анализируем ставки и объемы
     rates_analysis = {"high_rates": 0, "medium_rates": 0, "low_rates": 0}
     volume_analysis = {"high_volume": 0, "medium_volume": 0, "low_volume": 0}
     
@@ -358,7 +385,6 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             volume_analysis["low_volume"] += 1
     
-    # Формируем отчет
     report = "🔧 **Диагностика API**\n\n"
     
     if exchange_counts:
@@ -378,7 +404,6 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"• 10-100M USDT: {volume_analysis['medium_volume']} пар\n"
     report += f"• < 10M USDT: {volume_analysis['low_volume']} пар\n"
     
-    # Топ-5 по ставкам
     if all_data:
         top_rates = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:5]
         report += f"\n🔥 **Топ-5 ставок:**\n"
@@ -390,7 +415,6 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"\n⏰ Время обновления: {datetime.now(MSK_TIMEZONE).strftime('%H:%M:%S MSK')}"
     report += f"\n🕒 Кэш действителен: {CACHE_LIFETIME_SECONDS} сек"
     
-    # Проверяем наличие ключей
     report += "\n\n🔑 **Статус ключей:**\n"
     mexc_key = context.bot_data.get('mexc_api_key')
     bybit_key = context.bot_data.get('bybit_api_key')
@@ -403,8 +427,9 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_access()
 async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    ensure_user_settings(chat_id)
-    settings = user_settings[chat_id]
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
 
     msg = update.callback_query.message if update.callback_query else await update.message.reply_text("🔄 Ищу...")
     await msg.edit_text("🔄 Ищу лучшие ставки по вашим фильтрам...")
@@ -414,10 +439,8 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("😔 Не удалось получить данные с бирж. Попробуйте 🔧 Диагностика API для проверки.")
         return
 
-    # Диагностика фильтров
     print(f"[DEBUG] Фильтры: биржи={settings['exchanges']}, ставка>={settings['funding_threshold']}, объем>={settings['volume_threshold_usdt']}")
     
-    # Показываем топ-10 ставок без фильтров для диагностики
     all_sorted = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:10]
     print("[DEBUG] Топ-10 ставок без фильтров:")
     for i, item in enumerate(all_sorted):
@@ -432,7 +455,6 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"[DEBUG] После фильтрации найдено: {len(filtered_data)} пар")
 
     if not top_5:
-        # Показываем альтернативную статистику
         exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
         rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
         
@@ -443,7 +465,6 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats_msg += f"• Со ставкой ≥ {settings['funding_threshold']*100:.1f}%: {len(rate_filtered)}\n"
         stats_msg += f"• С объемом ≥ {settings['volume_threshold_usdt']/1_000:.0f}K: {len(filtered_data)}\n\n"
         
-        # Показываем топ-3 без фильтра объема
         if rate_filtered:
             stats_msg += f"🔥 **Топ-3 со ставкой ≥ {settings['funding_threshold']*100:.1f}%:**\n"
             for item in sorted(rate_filtered, key=lambda x: abs(x['rate']), reverse=True)[:3]:
@@ -478,10 +499,10 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
 
+# ===== ИСПРАВЛЕННЫЕ CALLBACK ФУНКЦИИ =====
 async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
@@ -522,7 +543,6 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def back_to_top_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
@@ -534,8 +554,10 @@ async def back_to_top_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 @require_access()
 async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    ensure_user_settings(chat_id)
-    settings = user_settings[chat_id]
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
+    
     message_text = "🔔 **Настройки фильтров для ручного поиска**"
     keyboard = [
         [InlineKeyboardButton("🏦 Биржи", callback_data="filters_exchanges")],
@@ -557,7 +579,6 @@ async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
@@ -567,14 +588,19 @@ async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT
     if action == "close":
         await query.message.delete()
     elif action == "toggle_notif":
-        user_settings[update.effective_chat.id]['notifications_on'] ^= True
+        user_settings[update.effective_chat.id]['settings']['notifications_on'] ^= True  # <=== ИСПРАВЛЕНО!
         await send_filters_menu(update, context)
     elif action == "exchanges":
         await show_exchanges_menu(update, context)
 
 async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    active_exchanges = user_settings[query.message.chat_id]['exchanges']
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']  # <=== ИСПРАВЛЕНО!
     buttons = [InlineKeyboardButton(f"{'✅' if ex in active_exchanges else '⬜️'} {ex}", callback_data=f"exch_{ex}") for ex in ALL_AVAILABLE_EXCHANGES]
     keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)] + [[InlineKeyboardButton("⬅️ Назад", callback_data="exch_back")]]
     await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -582,31 +608,34 @@ async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
     await query.answer()
     action = query.data.split('_', 1)[1]
-    if action == "back": await send_filters_menu(update, context)
+    if action == "back": 
+        await send_filters_menu(update, context)
     else:
-        active_exchanges = user_settings[query.message.chat_id]['exchanges']
-        if action in active_exchanges: active_exchanges.remove(action)
-        else: active_exchanges.append(action)
+        active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']  # <=== ИСПРАВЛЕНО!
+        if action in active_exchanges: 
+            active_exchanges.remove(action)
+        else: 
+            active_exchanges.append(action)
         await show_exchanges_menu(update, context)
 
 async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str, menu_to_return: callable):
     query = update.callback_query
     
-    # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     await query.answer()
-    settings = user_settings[chat_id]
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
     
     prompts = {
         'funding': (f"Текущий порог ставки: `> {settings['funding_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `0.75`)."),
@@ -622,39 +651,41 @@ async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, sett
     return state_map.get(setting_type)
 
 async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
-    # Проверяем доступ для обычных сообщений
     if not check_access(update.effective_user.id):
         await update.message.reply_text("⛔ Доступ запрещён")
         return
         
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
+    
     try:
         value_str = update.message.text.strip().replace(",", ".").upper()
         if setting_type == 'funding' or setting_type == 'alert_rate':
             value = Decimal(value_str)
             if not (0 < value < 100): raise ValueError("Value out of range 0-100")
             key = 'funding_threshold' if setting_type == 'funding' else 'alert_rate_threshold'
-            user_settings[chat_id][key] = value / 100
+            settings[key] = value / 100
         elif setting_type == 'volume':
             num_part = value_str.replace('K', '').replace('M', '')
             multiplier = 1000 if 'K' in value_str else 1_000_000 if 'M' in value_str else 1
-            user_settings[chat_id]['volume_threshold_usdt'] = Decimal(num_part) * multiplier
+            settings['volume_threshold_usdt'] = Decimal(num_part) * multiplier
         elif setting_type == 'alert_time':
             value = int(value_str)
             if value <= 0: raise ValueError("Value must be positive")
-            user_settings[chat_id]['alert_time_window_minutes'] = value
+            settings['alert_time_window_minutes'] = value
     except (ValueError, TypeError, decimal.InvalidOperation):
         await update.message.reply_text("❌ Ошибка. Введите корректное значение. Попробуйте снова.", parse_mode='Markdown')
-        return # Остаемся в том же состоянии, чтобы пользователь мог попробовать снова
+        return
 
     if 'prompt_message_id' in context.user_data:
         await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
     await context.bot.delete_message(chat_id, update.message.message_id)
-    await context.user_data.pop('menu_to_return')(update, context) # Возвращаемся в нужное меню
+    await context.user_data.pop('menu_to_return')(update, context)
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Проверяем доступ
     if not check_access(update.effective_user.id):
         await update.message.reply_text("⛔ Доступ запрещён")
         return
@@ -673,8 +704,9 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
 @require_access()
 async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    ensure_user_settings(chat_id)
-    settings = user_settings[chat_id]
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
     
     exchanges_list = ", ".join(settings['exchanges'])
     vol = settings['volume_threshold_usdt']
@@ -695,7 +727,6 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает меню настройки кастомных уведомлений."""
     
-    # Проверяем доступ для callback'ов
     if update.callback_query and not check_access(update.effective_user.id):
         await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
         return
@@ -703,8 +734,9 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query := update.callback_query: 
         await query.answer()
     chat_id = update.effective_chat.id
-    ensure_user_settings(chat_id)
-    settings = user_settings[chat_id]
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
     
     status_emoji = "✅" if settings.get('alerts_on', False) else "🔴"
     status_text = "ВКЛЮЧЕНЫ" if settings.get('alerts_on', False) else "ВЫКЛЮЧЕНЫ"
@@ -727,58 +759,66 @@ async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     """Обрабатывает нажатия в меню уведомлений."""
     query = update.callback_query
     
-    # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    # А затем используем его для получения action
     action = query.data.split('_', 1)[1]
     
     await query.answer()
     if action == "toggle_on":
         chat_id = update.effective_chat.id
-        ensure_user_settings(chat_id) # На всякий случай убедимся, что настройки есть
-        user_settings[chat_id]['alerts_on'] ^= True # Безопасное переключение
+        user_id = update.effective_user.id
+        ensure_user_settings(chat_id, user_id)
+        user_settings[chat_id]['settings']['alerts_on'] ^= True  # <=== ИСПРАВЛЕНО!
         await show_alerts_menu(update, context)
     elif action == "back_filters":
         await send_filters_menu(update, context)
 
+# ===== ИСПРАВЛЕННЫЙ ФОНОВЫЙ СКАНЕР =====
 async def background_scanner(app: Application):
     """Фоновый процесс для мониторинга и отправки кастомных уведомлений."""
     print("🚀 Фоновый сканер уведомлений запущен.")
     while True:
-        await asyncio.sleep(60) # Проверка раз в минуту
+        await asyncio.sleep(60)  # Проверка раз в минуту
         try:
-            # Получаем свежие данные для всех
             all_data = await fetch_all_data(app, force_update=True)
-            if not all_data: continue
+            if not all_data: 
+                continue
 
             now_utc = datetime.now(timezone.utc)
             current_ts_ms = int(now_utc.timestamp() * 1000)
 
-            # Проходим по всем пользователям (только разрешенным)
-            for chat_id, settings in list(user_settings.items()):
-                # Проверяем, что пользователь имеет доступ
-                if not check_access(chat_id):
+            # ===== ГЛАВНОЕ ИСПРАВЛЕНИЕ =====
+            for chat_id, user_data in list(user_settings.items()):
+                # Теперь правильно получаем user_id для проверки доступа
+                stored_user_id = user_data.get('user_id')
+                if not stored_user_id or not check_access(stored_user_id):
+                    print(f"[BG_SCANNER] Пропускаем chat_id {chat_id}: нет доступа (user_id: {stored_user_id})")
                     continue
                     
-                if not settings.get('alerts_on', False): continue
+                settings = user_data['settings']  # <=== ИСПРАВЛЕНО!
+                if not settings.get('alerts_on', False): 
+                    continue
 
                 # Очистка старых ID уведомлений (старше 3 часов)
                 settings['sent_notifications'] = {nid for nid in settings['sent_notifications'] if int(nid.split('_')[-1]) > current_ts_ms - (3 * 60 * 60 * 1000)}
                 
                 # Ищем подходящие пары для этого пользователя
                 for item in all_data:
-                    if item['exchange'] not in settings['exchanges']: continue
-                    if abs(item['rate']) < settings['alert_rate_threshold']: continue
+                    if item['exchange'] not in settings['exchanges']: 
+                        continue
+                    if abs(item['rate']) < settings['alert_rate_threshold']: 
+                        continue
 
                     time_left = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc) - now_utc
-                    if not (0 < time_left.total_seconds() <= settings['alert_time_window_minutes'] * 60): continue
+                    if not (0 < time_left.total_seconds() <= settings['alert_time_window_minutes'] * 60): 
+                        continue
 
                     # Анти-спам
                     notification_id = f"{item['exchange']}_{item['symbol']}_{item['next_funding_time']}"
-                    if notification_id in settings['sent_notifications']: continue
+                    if notification_id in settings['sent_notifications']: 
+                        continue
                     
                     # Все условия выполнены! Отправляем уведомление.
                     h, m = divmod(int(time_left.total_seconds() // 60), 60)
@@ -789,11 +829,11 @@ async def background_scanner(app: Application):
                     try:
                         await app.bot.send_message(chat_id, message, parse_mode='Markdown')
                         settings['sent_notifications'].add(notification_id)
-                        print(f"[BG_SCANNER] Отправлено уведомление для {chat_id}: {notification_id}")
+                        print(f"[BG_SCANNER] ✅ Отправлено уведомление для chat_id {chat_id} (user_id {stored_user_id}): {notification_id}")
                     except Exception as e:
-                        print(f"[BG_SCANNER] Не удалось отправить уведомление для {chat_id}: {e}")
+                        print(f"[BG_SCANNER] ❌ Не удалось отправить уведомление для chat_id {chat_id}: {e}")
         except Exception as e:
-            print(f"[BG_SCANNER] Критическая ошибка в цикле сканера: {e}\n{traceback.format_exc()}")
+            print(f"[BG_SCANNER] ❌ Критическая ошибка в цикле сканера: {e}\n{traceback.format_exc()}")
 
 # Универсальный обработчик для неавторизованных пользователей
 async def handle_unauthorized_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -820,7 +860,6 @@ if __name__ == "__main__":
         print("⚠️  ВНИМАНИЕ: Не забудьте изменить ALLOWED_USERS на ваши реальные Telegram ID!")
         print("   Для получения своего ID напишите боту @userinfobot")
     
-    # Импорт необходим для работы фоновой задачи
     from telegram.ext import Application
     
     # 1. Создаем приложение
@@ -832,16 +871,16 @@ if __name__ == "__main__":
     app.bot_data['bybit_api_key'] = os.getenv("BYBIT_API_KEY")
     app.bot_data['bybit_secret_key'] = os.getenv("BYBIT_API_SECRET")
 
-    if app.bot_data['bybit_api_key']: print("✅ Ключи Bybit успешно загружены.")
-    else: print("⚠️ Ключи Bybit не найдены.")
+    if app.bot_data['bybit_api_key']: 
+        print("✅ Ключи Bybit успешно загружены.")
+    else: 
+        print("⚠️ Ключи Bybit не найдены.")
     print("ℹ️ Ключи для MEXC (публичные данные) больше не требуются.")
 
     # --- 3. РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
     
-    # Упрощенные fallbacks
     fallbacks = [CommandHandler("cancel", cancel_conversation)]
 
-    # Список всех диалогов (ConversationHandlers)
     conv_handlers = [
         ConversationHandler(
             entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding', send_filters_menu), pattern="^filters_funding$")],
@@ -877,7 +916,6 @@ if __name__ == "__main__":
         ),
     ]
     
-    # Список обычных обработчиков (команды, текст, кнопки)
     regular_handlers = [
         CommandHandler("start", start),
         MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates),
@@ -899,9 +937,8 @@ if __name__ == "__main__":
     app.add_handlers(conv_handlers)
     app.add_handlers(regular_handlers)
 
-    # 4. ПРАВИЛЬНЫЙ запуск фонового сканера
+    # 4. Запуск фонового сканера
     async def post_init(app):
-        # Создаем фоновую задачу, не блокируя основной поток
         asyncio.create_task(background_scanner(app))
 
     app.post_init = post_init
@@ -909,4 +946,5 @@ if __name__ == "__main__":
     # 5. Запускаем бота
     print("🤖 RateHunter 2.0 запущен с ограничением доступа!")
     print(f"🔒 Разрешенные пользователи: {ALLOWED_USERS}")
+    print("🚀 Фоновый сканер для уведомлений активен!")
     app.run_polling()
