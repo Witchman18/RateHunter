@@ -34,8 +34,8 @@ MSK_TIMEZONE = timezone(timedelta(hours=3))
 
 # === НОВОЕ: СПИСОК РАЗРЕШЕННЫХ ПОЛЬЗОВАТЕЛЕЙ ===
 ALLOWED_USERS = [
-    518449824  # Замените на свой Telegram ID
-      # Можете добавить ID других пользователей
+    123456789,  # Замените на свой Telegram ID
+    987654321,  # Можете добавить ID других пользователей
 ]
 
 # Функция для проверки доступа
@@ -479,12 +479,13 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
 
 async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
     # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
-        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    query = update.callback_query
     symbol_to_show = query.data.split('_')[1]
     await query.answer()
 
@@ -519,12 +520,13 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
 
 async def back_to_top_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
     # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
-        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    query = update.callback_query
     if query:
         await query.answer()
     await show_top_rates(update, context)
@@ -553,12 +555,14 @@ async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await send_filters_menu(update, context)
 
 async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
     # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
-        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    query = update.callback_query; await query.answer()
+    await query.answer()
     action = query.data.split('_', 1)[1]
     if action == "close":
         await query.message.delete()
@@ -576,12 +580,14 @@ async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
     # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
-        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    query = update.callback_query; await query.answer()
+    await query.answer()
     action = query.data.split('_', 1)[1]
     if action == "back": await send_filters_menu(update, context)
     else:
@@ -591,12 +597,14 @@ async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAU
         await show_exchanges_menu(update, context)
 
 async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str, menu_to_return: callable):
+    query = update.callback_query
+    
     # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
-        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    query, chat_id = update.callback_query, update.effective_chat.id
+    chat_id = update.effective_chat.id
     await query.answer()
     settings = user_settings[chat_id]
     
@@ -686,12 +694,14 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Блок для настройки уведомлений ---
 async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает меню настройки кастомных уведомлений."""
+    
     # Проверяем доступ для callback'ов
     if update.callback_query and not check_access(update.effective_user.id):
         await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    if query := update.callback_query: await query.answer()
+    if query := update.callback_query: 
+        await query.answer()
     chat_id = update.effective_chat.id
     ensure_user_settings(chat_id)
     settings = user_settings[chat_id]
@@ -715,13 +725,13 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатия в меню уведомлений."""
+    query = update.callback_query
+    
     # Проверяем доступ для callback'ов
     if not check_access(update.effective_user.id):
-        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    # Сначала получаем объект query
-    query = update.callback_query
     # А затем используем его для получения action
     action = query.data.split('_', 1)[1]
     
