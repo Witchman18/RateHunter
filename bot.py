@@ -2,6 +2,7 @@
 # ===================== RateHunter 2.0 - v1.0.2 =========================
 # =========================================================================
 # Исправленная версия с улучшенной диагностикой API ошибок
+# И ОГРАНИЧЕНИЕМ ДОСТУПА ПО TELEGRAM ID
 # =========================================================================
 
 import os
@@ -30,6 +31,43 @@ if os.path.exists(dotenv_path):
 # --- Конфигурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MSK_TIMEZONE = timezone(timedelta(hours=3))
+
+# === НОВОЕ: СПИСОК РАЗРЕШЕННЫХ ПОЛЬЗОВАТЕЛЕЙ ===
+ALLOWED_USERS = [
+    123456789,  # Замените на свой Telegram ID
+    987654321,  # Можете добавить ID других пользователей
+]
+
+# Функция для проверки доступа
+def check_access(user_id: int) -> bool:
+    """Проверяет, разрешен ли доступ пользователю"""
+    return user_id in ALLOWED_USERS
+
+async def access_denied_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет сообщение об отказе в доступе"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "неизвестно"
+    await update.message.reply_text(
+        f"⛔ **Доступ запрещён**\n\n"
+        f"Ваш ID: `{user_id}`\n"
+        f"Username: @{username}\n\n"
+        f"Обратитесь к администратору для получения доступа.",
+        parse_mode='Markdown'
+    )
+    # Логируем попытку несанкционированного доступа
+    print(f"[ACCESS_DENIED] Пользователь {user_id} (@{username}) попытался получить доступ")
+
+# Декоратор для проверки доступа
+def require_access():
+    """Декоратор для проверки доступа к функциям бота"""
+    def decorator(func):
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not check_access(update.effective_user.id):
+                await access_denied_message(update, context)
+                return
+            return await func(update, context)
+        return wrapper
+    return decorator
 
 # --- Состояния для ConversationHandler ---
 (SET_FUNDING_THRESHOLD, SET_VOLUME_THRESHOLD, 
@@ -276,13 +314,15 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
 # ================== ПОЛЬЗОВАТЕЛЬСКИЙ ИНТЕРФЕЙС ==================
 # =================================================================
 
+@require_access()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("--- ПОЛУЧЕНА КОМАНДА /start ---") # Строка для отладки
+    print(f"--- ПОЛУЧЕНА КОМАНДА /start от пользователя {update.effective_user.id} ---")
     ensure_user_settings(update.effective_chat.id)
     main_menu_keyboard = [["🔥 Топ-ставки сейчас"], ["🔔 Настроить фильтры", "ℹ️ Мои настройки"], ["🔧 Диагностика API"]]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
     await update.message.reply_text("Добро пожаловать в RateHunter 2.0!", reply_markup=reply_markup)
 
+@require_access()
 async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Диагностика состояния API"""
     msg = await update.message.reply_text("🔧 Проверяю состояние API...")
@@ -360,6 +400,7 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await msg.edit_text(report, parse_mode='Markdown')
 
+@require_access()
 async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ensure_user_settings(chat_id)
@@ -438,6 +479,11 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
 
 async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем доступ для callback'ов
+    if not check_access(update.effective_user.id):
+        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
     query = update.callback_query
     symbol_to_show = query.data.split('_')[1]
     await query.answer()
@@ -473,11 +519,17 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
 
 async def back_to_top_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем доступ для callback'ов
+    if not check_access(update.effective_user.id):
+        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
     query = update.callback_query
     if query:
         await query.answer()
     await show_top_rates(update, context)
 
+@require_access()
 async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ensure_user_settings(chat_id)
@@ -496,10 +548,16 @@ async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
         
+@require_access()
 async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_filters_menu(update, context)
 
 async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем доступ для callback'ов
+    if not check_access(update.effective_user.id):
+        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
     query = update.callback_query; await query.answer()
     action = query.data.split('_', 1)[1]
     if action == "close":
@@ -518,6 +576,11 @@ async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем доступ для callback'ов
+    if not check_access(update.effective_user.id):
+        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
     query = update.callback_query; await query.answer()
     action = query.data.split('_', 1)[1]
     if action == "back": await send_filters_menu(update, context)
@@ -528,6 +591,11 @@ async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAU
         await show_exchanges_menu(update, context)
 
 async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str, menu_to_return: callable):
+    # Проверяем доступ для callback'ов
+    if not check_access(update.effective_user.id):
+        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
     query, chat_id = update.callback_query, update.effective_chat.id
     await query.answer()
     settings = user_settings[chat_id]
@@ -546,6 +614,11 @@ async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, sett
     return state_map.get(setting_type)
 
 async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
+    # Проверяем доступ для обычных сообщений
+    if not check_access(update.effective_user.id):
+        await update.message.reply_text("⛔ Доступ запрещён")
+        return
+        
     chat_id = update.effective_chat.id
     try:
         value_str = update.message.text.strip().replace(",", ".").upper()
@@ -573,6 +646,11 @@ async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем доступ
+    if not check_access(update.effective_user.id):
+        await update.message.reply_text("⛔ Доступ запрещён")
+        return
+        
     chat_id = update.effective_chat.id
     if 'prompt_message_id' in context.user_data:
         try: await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
@@ -584,6 +662,7 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
         await context.user_data.pop('menu_to_return')(update, context)
     return ConversationHandler.END
     
+@require_access()
 async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ensure_user_settings(chat_id)
@@ -607,6 +686,11 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Блок для настройки уведомлений ---
 async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает меню настройки кастомных уведомлений."""
+    # Проверяем доступ для callback'ов
+    if update.callback_query and not check_access(update.effective_user.id):
+        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
     if query := update.callback_query: await query.answer()
     chat_id = update.effective_chat.id
     ensure_user_settings(chat_id)
@@ -631,12 +715,15 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатия в меню уведомлений."""
-    # --- ИСПРАВЛЕНИЕ ---
+    # Проверяем доступ для callback'ов
+    if not check_access(update.effective_user.id):
+        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
     # Сначала получаем объект query
     query = update.callback_query
     # А затем используем его для получения action
     action = query.data.split('_', 1)[1]
-    # -------------------
     
     await query.answer()
     if action == "toggle_on":
@@ -660,8 +747,12 @@ async def background_scanner(app: Application):
             now_utc = datetime.now(timezone.utc)
             current_ts_ms = int(now_utc.timestamp() * 1000)
 
-            # Проходим по всем пользователям
+            # Проходим по всем пользователям (только разрешенным)
             for chat_id, settings in list(user_settings.items()):
+                # Проверяем, что пользователь имеет доступ
+                if not check_access(chat_id):
+                    continue
+                    
                 if not settings.get('alerts_on', False): continue
 
                 # Очистка старых ID уведомлений (старше 3 часов)
@@ -694,6 +785,18 @@ async def background_scanner(app: Application):
         except Exception as e:
             print(f"[BG_SCANNER] Критическая ошибка в цикле сканера: {e}\n{traceback.format_exc()}")
 
+# Универсальный обработчик для неавторизованных пользователей
+async def handle_unauthorized_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает сообщения от неавторизованных пользователей"""
+    if not check_access(update.effective_user.id):
+        await access_denied_message(update, context)
+        return
+    
+    # Если пользователь авторизован, но сообщение не обработано другими хендлерами
+    await update.message.reply_text(
+        "🤖 Используйте кнопки меню или команду /start для начала работы."
+    )
+
 # =================================================================
 # ========================== ЗАПУСК БОТА ==========================
 # =================================================================
@@ -701,6 +804,11 @@ async def background_scanner(app: Application):
 if __name__ == "__main__":
     if not BOT_TOKEN:
         raise ValueError("Не найден BOT_TOKEN. Убедитесь, что он задан в .env файле.")
+    
+    # Проверяем, что список разрешенных пользователей настроен
+    if not ALLOWED_USERS or ALLOWED_USERS == [123456789, 987654321]:
+        print("⚠️  ВНИМАНИЕ: Не забудьте изменить ALLOWED_USERS на ваши реальные Telegram ID!")
+        print("   Для получения своего ID напишите боту @userinfobot")
     
     # Импорт необходим для работы фоновой задачи
     from telegram.ext import Application
@@ -766,8 +874,6 @@ if __name__ == "__main__":
         MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry),
         MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings),
         MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics),
-        # Обработчик текстовых сообщений для команд меню
-        MessageHandler(filters.TEXT, lambda update, context: start(update, context) if update.message.text == "/start" else None),
         # Обработчики кнопок
         CallbackQueryHandler(filters_callback_handler, pattern="^filters_"),
         CallbackQueryHandler(drill_down_callback, pattern="^drill_"),
@@ -775,6 +881,8 @@ if __name__ == "__main__":
         CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
         CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
         CallbackQueryHandler(alert_callback_handler, pattern="^alert_"),
+        # Универсальный обработчик для всех остальных сообщений (должен быть последним)
+        MessageHandler(filters.TEXT, handle_unauthorized_message),
     ]
 
     # Добавляем все обработчики в приложение
@@ -789,5 +897,6 @@ if __name__ == "__main__":
     app.post_init = post_init
 
     # 5. Запускаем бота
-    print("🤖 RateHunter 2.0 запущен!")
+    print("🤖 RateHunter 2.0 запущен с ограничением доступа!")
+    print(f"🔒 Разрешенные пользователи: {ALLOWED_USERS}")
     app.run_polling()
