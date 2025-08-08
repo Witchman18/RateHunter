@@ -940,6 +940,7 @@ async def get_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔️ Доступ запрещен.")
         return
 
+    print("--- КОМАНДА /getdata ЗАПУЩЕНА ---")
     # ## РЕКОМЕНДАЦИЯ: Делаем символ настраиваемым
     symbol_to_fetch = context.args[0].upper() if context.args else "MYX_USDT"
     
