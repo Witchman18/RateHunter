@@ -936,7 +936,7 @@ async def fetch_klines_v2(symbol, start_ts_ms, end_ts_ms):
 async def get_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для админа для сбора исторических данных."""
     # ## ИСПРАВЛЕНИЕ 1: Используем определенную переменную ADMIN_ID
-    if update.effective_user.id != ADMIN_ID:518449824
+    if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔️ Доступ запрещен.")
         return
 
