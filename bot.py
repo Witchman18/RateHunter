@@ -886,58 +886,100 @@ async def handle_unauthorized_message(update: Update, context: ContextTypes.DEFA
         "🤖 Используйте кнопки меню или команду /start для начала работы."
     )
 
+# =========================================================================
+# ===================== АДМИН-ПАНЕЛЬ: СБОР ДАННЫХ =======================
+# =========================================================================
+
+# ## ИСПРАВЛЕНИЕ 1: Определяем ADMIN_ID в одном месте ##
+ADMIN_ID = 123456789  # 👈 ЗАМЕНИ НА СВОЙ РЕАЛЬНЫЙ ID
+
+async def fetch_funding_history_v2(symbol, start_ts_ms, end_ts_ms):
+    """(Версия 2) Асинхронно и безопасно получает историю фандинга."""
+    url = "https://contract.mexc.com/api/v1/contract/funding_rate/history"
+    params = {'symbol': symbol, 'page_size': 100, 'start_time': start_ts_ms, 'end_time': end_ts_ms}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=15) as response:
+                response.raise_for_status()
+                data = await response.json()
+                if data.get("success"): return data.get('data', [])
+    except Exception as e:
+        print(f"[ERROR in fetch_funding_history]: {e}")
+    return []
+
+async def fetch_klines_v2(symbol, start_ts_ms, end_ts_ms):
+    """(Версия 2) Асинхронно и безопасно получает минутные свечи."""
+    url = f"https://contract.mexc.com/api/v1/contract/kline/{symbol}"
+    all_klines = []
+    current_time = start_ts_ms
+    try:
+        async with aiohttp.ClientSession() as session:
+            for _ in range(3): # ## ИСПРАВЛЕНИЕ 4: Ограничение на 3 запроса, чтобы избежать бесконечного цикла
+                if current_time >= end_ts_ms: break
+                params = {'symbol': symbol, 'interval': 'Min1', 'start': int(current_time / 1000), 'end': int(end_ts_ms / 1000)}
+                async with session.get(url, params=params, timeout=20) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+                    if data.get("success") and data.get('data', {}).get('time'):
+                        klines = data['data']
+                        for i in range(len(klines['time'])):
+                            all_klines.append([klines['time'][i] * 1000, klines['open'][i], klines['high'][i], klines['low'][i], klines['close'][i], klines['vol'][i]])
+                        last_time = klines['time'][-1] * 1000
+                        if last_time >= current_time: current_time = last_time + 60000
+                        else: break
+                    else: break
+                await asyncio.sleep(1) # ## ИСПРАВЛЕНИЕ 4: Пауза между запросами
+    except Exception as e:
+        print(f"[ERROR in fetch_klines]: {e}")
+    return all_klines
+
 async def get_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("Эта команда доступна только администратору.")
+    """Команда для админа для сбора исторических данных."""
+    # ## ИСПРАВЛЕНИЕ 1: Используем определенную переменную ADMIN_ID
+    if update.effective_user.id != ADMIN_ID:518449824
+        await update.message.reply_text("⛔️ Доступ запрещен.")
         return
 
-    message = await update.message.reply_text("Начинаю сбор данных по MYX_USDT за вчера. Это может занять до минуты...")
+    # ## РЕКОМЕНДАЦИЯ: Делаем символ настраиваемым
+    symbol_to_fetch = context.args[0].upper() if context.args else "MYX_USDT"
     
-    # Определяем символ и временной диапазон
-    symbol_to_fetch = "MYX_USDT"
-    today = datetime.utcnow().date()
-    end_of_yesterday = datetime.combine(today, datetime.min.time())
-    start_of_yesterday = end_of_yesterday - timedelta(days=1)
-    start_ts_ms = int(start_of_yesterday.timestamp() * 1000)
-    end_ts_ms = int(end_of_yesterday.timestamp() * 1000) - 1
+    message = await update.message.reply_text(f"⏳ Начинаю сбор данных по **{symbol_to_fetch}** за вчера. Пожалуйста, подождите...")
 
-    # Запускаем сбор данных
-    funding_data = await fetch_funding_history_async(symbol_to_fetch, start_ts_ms, end_ts_ms)
-    kline_data = await fetch_klines_async(symbol_to_fetch, start_ts_ms, end_ts_ms)
+    try:
+        today = datetime.utcnow().date()
+        end_of_yesterday = datetime.combine(today, datetime.min.time())
+        start_of_yesterday = end_of_yesterday - timedelta(days=3)
+        start_ts_ms = int(start_of_yesterday.timestamp() * 1000)
+        end_ts_ms = int(end_of_yesterday.timestamp() * 1000) - 1
 
-    if not funding_data and not kline_data:
-        await message.edit_text("Не удалось получить данные. Возможно, по этой монете вчера не было торгов или фандинга.")
-        return
+        funding_data, kline_data = await asyncio.gather(
+            fetch_funding_history_v2(symbol_to_fetch, start_ts_ms, end_ts_ms),
+            fetch_klines_v2(symbol_to_fetch, start_ts_ms, end_ts_ms)
+        )
+
+        if not funding_data and not kline_data:
+            await message.edit_text(f"❌ Не удалось получить данные по **{symbol_to_fetch}**. Проверьте тикер или попробуйте позже.")
+            return
+            
+        await message.edit_text("✅ Данные собраны, готовлю файлы...")
+
+        # ## ИСПРАВЛЕНИЕ 2: Улучшенная отправка файлов
+        if funding_data:
+            df_funding = pd.DataFrame(funding_data)
+            buffer = io.BytesIO(df_funding.to_json(orient="records", indent=4).encode('utf-8'))
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=buffer, filename="funding_history.json")
+
+        if kline_data:
+            df_klines = pd.DataFrame(kline_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            buffer = io.BytesIO(df_klines.to_json(orient="records", indent=4).encode('utf-8'))
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=buffer, filename="klines_1m.json")
         
-    await message.edit_text("Данные собраны, формирую файлы...")
+        await message.edit_text("✅ Готово! Файлы отправлены.")
 
-    # Отправляем файл с фандингом
-    if funding_data:
-        df_funding = pd.DataFrame(funding_data)
-        json_buffer = io.StringIO()
-        df_funding.to_json(json_buffer, orient="records", indent=4)
-        json_buffer.seek(0)
-        await context.bot.send_document(
-            chat_id=user_id,
-            document=io.BytesIO(json_buffer.read().encode()),
-            filename="funding_history.json"
-        )
-
-    # Отправляем файл со свечами
-    if kline_data:
-        df_klines = pd.DataFrame(kline_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        json_buffer = io.StringIO()
-        df_klines.to_json(json_buffer, orient="records", indent=4)
-        json_buffer.seek(0)
-        await context.bot.send_document(
-            chat_id=user_id,
-            document=io.BytesIO(json_buffer.read().encode()),
-            filename="klines_1m.json"
-        )
-    
-    await message.edit_text("Готово! Файлы отправлены вам в личку.")
-
+    except Exception as e:
+        # ## ИСПРАВЛЕНИЕ 3: Обработка любых других ошибок
+        print(f"[FATAL ERROR in get_data_command]: {e}")
+        await message.edit_text(f"Произошла критическая ошибка: `{e}`")
 # =================================================================
 # ========================== ЗАПУСК БОТА ==========================
 # =================================================================
