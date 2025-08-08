@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 # --- НАСТРОЙКИ ---
 SYMBOL = "MYX_USDT"  # Монета, которую анализируем. Можешь поменять на любую другую.
-DAYS_AGO = 1         # 1 = вчера, 2 = позавчера, и т.д.
+DAYS_AGO = 3         # 1 = вчера, 2 = позавчера, и т.д.
 # -----------------
 
 def fetch_funding_history(symbol, start_time, end_time):
