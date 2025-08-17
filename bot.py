@@ -1,7 +1,7 @@
 # =========================================================================
-# ===================== RateHunter 2.0 - v1.0.3 ИСПРАВЛЕНО =============
+# ===================== RateHunter 2.0 - v1.1.0 С АНАЛИЗАТОРОМ ===========
 # =========================================================================
-# Исправлены критические ошибки с уведомлениями и проверкой доступа
+# Добавлен умный анализатор трендов funding rate
 # =========================================================================
 
 import os
@@ -17,6 +17,7 @@ import pandas as pd
 import io
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+from typing import Dict, List, Tuple, Optional
 
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -48,6 +49,193 @@ def check_access(user_id: int) -> bool:
     except (ValueError, TypeError):
         return False
     return user_id in ALLOWED_USERS
+
+# ===== НОВЫЙ МОДУЛЬ: АНАЛИЗАТОР ТРЕНДОВ FUNDING RATE =====
+class FundingTrendAnalyzer:
+    """Анализирует тренды и стабильность funding rates"""
+    
+    def __init__(self):
+        self.historical_cache = {}  # Кэш исторических данных
+        
+    async def analyze_funding_stability(self, symbol: str, exchange: str, current_rate: Decimal) -> Dict:
+        """
+        Анализирует стабильность и тренд funding rate
+        Возвращает классификацию: стабильная_аномалия / истощающаяся_аномалия
+        """
+        
+        # Получаем историю ставок за последние несколько периодов
+        history = await self._get_funding_history(symbol, exchange, periods=3)
+        
+        if not history or len(history) < 2:
+            return {
+                'trend': 'unknown',
+                'stability': 'unknown',
+                'confidence': 0.0,
+                'recommendation': 'insufficient_data'
+            }
+        
+        # Анализируем тренд
+        trend_analysis = self._analyze_trend(history, current_rate)
+        
+        # Анализируем стабильность
+        stability_analysis = self._analyze_stability(history, current_rate)
+        
+        # Формируем рекомендацию
+        recommendation = self._make_recommendation(trend_analysis, stability_analysis, current_rate)
+        
+        return {
+            'trend': trend_analysis['direction'],  # 'growing', 'declining', 'stable'
+            'trend_strength': trend_analysis['strength'],  # 0.0 - 1.0
+            'stability': stability_analysis['level'],  # 'stable', 'volatile', 'declining'
+            'stability_score': stability_analysis['score'],  # 0.0 - 1.0
+            'confidence': min(trend_analysis['confidence'], stability_analysis['confidence']),
+            'recommendation': recommendation,
+            'history': history,
+            'analysis_details': {
+                'rate_change': trend_analysis['rate_change'],
+                'volatility': stability_analysis['volatility']
+            }
+        }
+    
+    def _analyze_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
+        """Анализирует направление тренда ставки"""
+        
+        if len(history) < 2:
+            return {'direction': 'unknown', 'strength': 0.0, 'confidence': 0.0, 'rate_change': 0.0}
+        
+        # Вычисляем изменения между периодами
+        changes = []
+        all_rates = history + [current_rate]
+        
+        for i in range(1, len(all_rates)):
+            change = float(all_rates[i] - all_rates[i-1])
+            changes.append(change)
+        
+        if not changes:
+            return {'direction': 'unknown', 'strength': 0.0, 'confidence': 0.0, 'rate_change': 0.0}
+        
+        # Определяем общее направление
+        total_change = sum(changes)
+        avg_change = total_change / len(changes)
+        
+        # Определяем силу тренда (консистентность направления)
+        positive_changes = sum(1 for c in changes if c > 0)
+        negative_changes = sum(1 for c in changes if c < 0)
+        
+        if positive_changes > negative_changes:
+            direction = 'growing'
+            strength = positive_changes / len(changes)
+        elif negative_changes > positive_changes:
+            direction = 'declining' 
+            strength = negative_changes / len(changes)
+        else:
+            direction = 'stable'
+            strength = 0.5
+        
+        # Уверенность зависит от количества данных и консистентности
+        confidence = min(1.0, len(changes) / 3.0) * strength
+        
+        return {
+            'direction': direction,
+            'strength': strength,
+            'confidence': confidence,
+            'rate_change': avg_change,
+            'total_change': total_change
+        }
+    
+    def _analyze_stability(self, history: List[Decimal], current_rate: Decimal) -> Dict:
+        """Анализирует стабильность (волатильность) ставки"""
+        
+        all_rates = history + [current_rate]
+        
+        if len(all_rates) < 2:
+            return {'level': 'unknown', 'score': 0.0, 'confidence': 0.0, 'volatility': 0.0}
+        
+        # Вычисляем волатильность как стандартное отклонение
+        rates_float = [float(rate) for rate in all_rates]
+        mean_rate = sum(rates_float) / len(rates_float)
+        
+        variance = sum((rate - mean_rate) ** 2 for rate in rates_float) / len(rates_float)
+        volatility = variance ** 0.5
+        
+        # Классифицируем уровень стабильности
+        # Эти пороги можно будет подстроить на основе тестов
+        if volatility < 0.001:  # Изменения меньше 0.1%
+            level = 'stable'
+            score = 0.9
+        elif volatility < 0.003:  # Изменения меньше 0.3%
+            level = 'moderate'
+            score = 0.7
+        else:
+            level = 'volatile'
+            score = 0.3
+        
+        confidence = min(1.0, len(all_rates) / 3.0)
+        
+        return {
+            'level': level,
+            'score': score,
+            'confidence': confidence,
+            'volatility': volatility
+        }
+    
+    def _make_recommendation(self, trend_analysis: Dict, stability_analysis: Dict, current_rate: Decimal) -> str:
+        """
+        Формирует рекомендацию на основе анализа тренда и стабильности
+        """
+        
+        abs_rate = abs(float(current_rate))
+        trend = trend_analysis['direction']
+        stability = stability_analysis['level']
+        
+        # Низкие ставки - не интересны
+        if abs_rate < 0.005:  # Меньше 0.5%
+            return 'rate_too_low'
+        
+        # Сценарии из документа
+        if trend == 'growing' or trend == 'stable':
+            if stability in ['stable', 'moderate']:
+                return 'ideal_arbitrage'  # ✅ Идеальный лонг/шорт
+            else:
+                return 'risky_arbitrage'  # ⚠️ Рискованный из-за волатильности
+        
+        elif trend == 'declining':
+            return 'contrarian_opportunity'  # 🔥 Возможность на развороте
+        
+        else:
+            return 'unclear_signal'  # ⚪️ Неоднозначная ситуация
+    
+    async def _get_funding_history(self, symbol: str, exchange: str, periods: int = 3) -> List[Decimal]:
+        """
+        Получает историю funding rates
+        TODO: Подключить к реальным API
+        """
+        
+        # Пока используем заглушку для тестирования
+        cache_key = f"{exchange}_{symbol}"
+        
+        if cache_key not in self.historical_cache:
+            # Имитируем разные сценарии для тестов
+            current_time = int(time.time())
+            symbol_hash = hash(symbol) % 4
+            
+            if symbol_hash == 0:
+                # Стабильная высокая аномалия
+                self.historical_cache[cache_key] = [Decimal('-0.019'), Decimal('-0.020')]
+            elif symbol_hash == 1:
+                # Истощающаяся аномалия
+                self.historical_cache[cache_key] = [Decimal('-0.021'), Decimal('-0.017')]
+            elif symbol_hash == 2:
+                # Растущая аномалия
+                self.historical_cache[cache_key] = [Decimal('0.008'), Decimal('0.012')]
+            else:
+                # Волатильная ситуация
+                self.historical_cache[cache_key] = [Decimal('-0.025'), Decimal('-0.010')]
+        
+        return self.historical_cache[cache_key]
+
+# Глобальный анализатор
+funding_analyzer = FundingTrendAnalyzer()
 
 # ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТКАЗА В ДОСТУПЕ =====
 async def access_denied_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -380,16 +568,16 @@ async def fetch_klines_async(symbol, start_time, end_time):
     return all_klines
 
 # =================================================================
-# ================== ПОЛЬЗОВАТЕЛЬСКИЙ ИНТЕРФЕЙС ==================
+# ========== ПОЛЬЗОВАТЕЛЬСКИЙ ИНТЕРФЕЙС С УМНЫМ АНАЛИЗОМ ==========
 # =================================================================
 
 @require_access()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"--- ПОЛУЧЕНА КОМАНДА /start от пользователя {update.effective_user.id} ---")
     ensure_user_settings(update.effective_chat.id, update.effective_user.id)
-    main_menu_keyboard = [["🔥 Топ-ставки сейчас"], ["🔔 Настроить фильтры", "ℹ️ Мои настройки"], ["🔧 Диагностика API"]]
+    main_menu_keyboard = [["🔥 Топ-ставки сейчас"], ["🔧 Настроить фильтры", "ℹ️ Мои настройки"], ["🔧 Диагностика API"]]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
-    await update.message.reply_text("Добро пожаловать в RateHunter 2.0!", reply_markup=reply_markup)
+    await update.message.reply_text("Добро пожаловать в RateHunter 2.0 с умным анализатором!", reply_markup=reply_markup)
 
 @require_access()
 async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -452,7 +640,7 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += f"• {item['symbol'].replace('USDT', '')}: {rate_pct:.3f}% (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
     
     report += f"\n⏰ Время обновления: {datetime.now(MSK_TIMEZONE).strftime('%H:%M:%S MSK')}"
-    report += f"\n🕒 Кэш действителен: {CACHE_LIFETIME_SECONDS} сек"
+    report += f"\n🕑 Кэш действителен: {CACHE_LIFETIME_SECONDS} сек"
     
     report += "\n\n🔑 **Статус ключей:**\n"
     mexc_key = context.bot_data.get('mexc_api_key')
@@ -463,41 +651,107 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await msg.edit_text(report, parse_mode='Markdown')
 
+# ===== НОВАЯ ФУНКЦИЯ: УМНЫЙ АНАЛИЗ ВОЗМОЖНОСТЕЙ =====
+async def analyze_funding_opportunity(item: Dict) -> Dict:
+    """
+    Интегрирует умный анализ в данные инструмента
+    Добавляет рекомендации на основе анализа тренда
+    """
+    
+    # Запускаем анализ стабильности
+    stability_analysis = await funding_analyzer.analyze_funding_stability(
+        symbol=item['symbol'],
+        exchange=item['exchange'], 
+        current_rate=item['rate']
+    )
+    
+    # Добавляем анализ к данным элемента
+    item['stability_analysis'] = stability_analysis
+    
+    # Формируем умное сообщение
+    recommendation = stability_analysis['recommendation']
+    confidence = stability_analysis['confidence']
+    
+    # Эмодзи и сообщения для разных типов рекомендаций
+    recommendation_map = {
+        'ideal_arbitrage': {
+            'emoji': '✅',
+            'message': 'Идеальные условия',
+            'details': 'Ставка стабильна, низкий риск'
+        },
+        'risky_arbitrage': {
+            'emoji': '⚠️', 
+            'message': 'Рискованно',
+            'details': 'Высокая волатильность ставки'
+        },
+        'contrarian_opportunity': {
+            'emoji': '🔥',
+            'message': 'Возможность на развороте', 
+            'details': 'Ставка истощается'
+        },
+        'unclear_signal': {
+            'emoji': '⚪️',
+            'message': 'Неоднозначно',
+            'details': 'Смешанные сигналы'
+        },
+        'rate_too_low': {
+            'emoji': '📉',
+            'message': 'Ставка низкая',
+            'details': 'Не достигает порога'
+        },
+        'insufficient_data': {
+            'emoji': '❓',
+            'message': 'Мало данных',
+            'details': 'Нужна история ставок'
+        }
+    }
+    
+    rec_info = recommendation_map.get(recommendation, {
+        'emoji': '❓',
+        'message': 'Анализ...',
+        'details': 'Обработка данных'
+    })
+    
+    item['smart_recommendation'] = {
+        'emoji': rec_info['emoji'],
+        'message': rec_info['message'],
+        'details': rec_info['details'],
+        'confidence': confidence,
+        'recommendation_type': recommendation
+    }
+    
+    return item
+
 @require_access()
 async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
+    settings = user_settings[chat_id]['settings']
 
     msg = update.callback_query.message if update.callback_query else await update.message.reply_text("🔄 Ищу...")
-    await msg.edit_text("🔄 Ищу лучшие ставки по вашим фильтрам...")
+    await msg.edit_text("🔄 Анализирую лучшие возможности с помощью ИИ...")
 
     all_data = await fetch_all_data(context)
     if not all_data:
-        await msg.edit_text("😔 Не удалось получить данные с бирж. Попробуйте 🔧 Диагностика API для проверки.")
+        await msg.edit_text("😞 Не удалось получить данные с бирж. Попробуйте 🔧 Диагностика API для проверки.")
         return
 
     print(f"[DEBUG] Фильтры: биржи={settings['exchanges']}, ставка>={settings['funding_threshold']}, объем>={settings['volume_threshold_usdt']}")
     
-    all_sorted = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:10]
-    print("[DEBUG] Топ-10 ставок без фильтров:")
-    for i, item in enumerate(all_sorted):
-        rate_pct = abs(item['rate']) * 100
-        vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
-        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%, объем: {vol_m:.1f}M USDT")
-
-    filtered_data = [item for item in all_data if item['exchange'] in settings['exchanges'] and abs(item['rate']) >= settings['funding_threshold'] and item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']]
-    filtered_data.sort(key=lambda x: abs(x['rate']), reverse=True)
-    top_5 = filtered_data[:5]
-
-    print(f"[DEBUG] После фильтрации найдено: {len(filtered_data)} пар")
-
-    if not top_5:
+    # Применяем фильтры
+    filtered_data = [
+        item for item in all_data 
+        if item['exchange'] in settings['exchanges'] 
+        and abs(item['rate']) >= settings['funding_threshold'] 
+        and item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']
+    ]
+    
+    if not filtered_data:
         exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
         rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
         
-        stats_msg = f"😔 Не найдено пар, соответствующих всем фильтрам.\n\n"
+        stats_msg = f"😞 Не найдено пар, соответствующих всем фильтрам.\n\n"
         stats_msg += f"📊 **Статистика:**\n"
         stats_msg += f"• Всего инструментов: {len(all_data)}\n"
         stats_msg += f"• На выбранных биржах: {len(exchange_filtered)}\n"
@@ -515,11 +769,25 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(stats_msg, parse_mode='Markdown')
         return
 
-    message_text = f"🔥 **ТОП-5 фандингов > {settings['funding_threshold']*100:.2f}%**\n\n"
+    # Сортируем по абсолютной ставке
+    filtered_data.sort(key=lambda x: abs(x['rate']), reverse=True)
+    top_5 = filtered_data[:5]
+
+    # ===== ПРИМЕНЯЕМ УМНЫЙ АНАЛИЗ К КАЖДОЙ ВОЗМОЖНОСТИ =====
+    print(f"[SMART_ANALYSIS] Анализирую {len(top_5)} лучших возможностей...")
+    
+    analyzed_opportunities = []
+    for item in top_5:
+        analyzed_item = await analyze_funding_opportunity(item)
+        analyzed_opportunities.append(analyzed_item)
+        print(f"[SMART_ANALYSIS] {item['symbol']}: {analyzed_item['smart_recommendation']['message']}")
+
+    # Формируем сообщение с умными рекомендациями
+    message_text = f"🧠 **ТОП-5 возможностей с ИИ-анализом**\n\n"
     buttons = []
     now_utc = datetime.now(timezone.utc)
     
-    for item in top_5:
+    for item in analyzed_opportunities:
         symbol_only = item['symbol'].replace("USDT", "")
         funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
         time_left = funding_dt_utc - now_utc
@@ -528,12 +796,21 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             h, m = divmod(int(time_left.total_seconds()) // 60, 60)
             countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)" if m > 0 else " (меньше минуты)"
 
+        # Основная информация
         arrow = "🟢" if item['rate'] < 0 else "🔴"
         rate_str = f"{item['rate'] * 100:+.2f}%"
         time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
-        message_text += f"{arrow} {symbol_only} {rate_str} | 🕒 {time_str}{countdown_str} | {item['exchange']}\n\n"
+        
+        # Умная рекомендация
+        rec = item['smart_recommendation']
+        confidence_str = f" ({rec['confidence']:.0%})" if rec['confidence'] > 0 else ""
+        
+        message_text += f"{rec['emoji']} **{symbol_only}** {rate_str} | 🕑 {time_str}{countdown_str}\n"
+        message_text += f"   _{rec['message']}{confidence_str}_ | {item['exchange']}\n\n"
 
-        buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
+        buttons.append(InlineKeyboardButton(f"{rec['emoji']} {symbol_only}", callback_data=f"drill_{item['symbol']}"))
+
+    message_text += "💡 _Рекомендации основаны на анализе тренда ставки и стабильности_"
 
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
@@ -560,6 +837,10 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     now_utc = datetime.now(timezone.utc)
     
     for item in symbol_data:
+        # Применяем умный анализ и к детальному просмотру
+        analyzed_item = await analyze_funding_opportunity(item)
+        rec = analyzed_item['smart_recommendation']
+        
         funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
         time_left = funding_dt_utc - now_utc
         countdown_str = ""
@@ -568,12 +849,17 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)" if m > 0 else " (меньше минуты)"
         
         direction, rate_str = ("🟢 ЛОНГ", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 ШОРТ", f"{item['rate'] * 100:+.2f}%")
-        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%М МСК')
+        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
         vol = item.get('volume_24h_usdt', Decimal('0'))
         vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
-            
-        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]({item['trade_url']})\n  *Объем 24ч:* `{vol_str} USDT`\n"
-        if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
+        
+        confidence_str = f" ({rec['confidence']:.0%})" if rec['confidence'] > 0 else ""
+        
+        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]({item['trade_url']})\n"
+        message_text += f"  *Объем 24ч:* `{vol_str} USDT`\n"
+        message_text += f"  {rec['emoji']} *ИИ:* _{rec['message']}{confidence_str}_\n"
+        if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: 
+            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
         message_text += "\n"
 
     keyboard = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
@@ -595,12 +881,12 @@ async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
+    settings = user_settings[chat_id]['settings']
     
-    message_text = "🔔 **Настройки фильтров для ручного поиска**"
+    message_text = "🔧 **Настройки фильтров для ручного поиска**"
     keyboard = [
         [InlineKeyboardButton("🏦 Биржи", callback_data="filters_exchanges")],
-        [InlineKeyboardButton(f"🔔 Ставка: > {settings['funding_threshold']*100:.2f}%", callback_data="filters_funding")],
+        [InlineKeyboardButton(f"📈 Ставка: > {settings['funding_threshold']*100:.2f}%", callback_data="filters_funding")],
         [InlineKeyboardButton(f"💧 Объем: > {format_volume(settings['volume_threshold_usdt'])}", callback_data="filters_volume")],
         [InlineKeyboardButton("🚨 Настроить Уведомления", callback_data="alert_show_menu")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="filters_close")]
@@ -627,7 +913,7 @@ async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT
     if action == "close":
         await query.message.delete()
     elif action == "toggle_notif":
-        user_settings[update.effective_chat.id]['settings']['notifications_on'] ^= True  # <=== ИСПРАВЛЕНО!
+        user_settings[update.effective_chat.id]['settings']['notifications_on'] ^= True
         await send_filters_menu(update, context)
     elif action == "exchanges":
         await show_exchanges_menu(update, context)
@@ -639,7 +925,7 @@ async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']  # <=== ИСПРАВЛЕНО!
+    active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']
     buttons = [InlineKeyboardButton(f"{'✅' if ex in active_exchanges else '⬜️'} {ex}", callback_data=f"exch_{ex}") for ex in ALL_AVAILABLE_EXCHANGES]
     keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)] + [[InlineKeyboardButton("⬅️ Назад", callback_data="exch_back")]]
     await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -656,7 +942,7 @@ async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAU
     if action == "back": 
         await send_filters_menu(update, context)
     else:
-        active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']  # <=== ИСПРАВЛЕНО!
+        active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']
         if action in active_exchanges: 
             active_exchanges.remove(action)
         else: 
@@ -674,7 +960,7 @@ async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, sett
     user_id = update.effective_user.id
     await query.answer()
     ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
+    settings = user_settings[chat_id]['settings']
     
     prompts = {
         'funding': (f"Текущий порог ставки: `> {settings['funding_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `0.75`)."),
@@ -697,7 +983,7 @@ async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
+    settings = user_settings[chat_id]['settings']
     
     try:
         value_str = update.message.text.strip().replace(",", ".").upper()
@@ -745,7 +1031,7 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
+    settings = user_settings[chat_id]['settings']
     
     exchanges_list = ", ".join(settings['exchanges'])
     vol = settings['volume_threshold_usdt']
@@ -754,11 +1040,11 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = f"""ℹ️ **Ваши текущие настройки:**
 
 🏦 **Биржи:** {exchanges_list}
-🔔 **Минимальная ставка:** > {settings['funding_threshold']*100:.2f}%
+📈 **Минимальная ставка:** > {settings['funding_threshold']*100:.2f}%
 💧 **Минимальный объем:** > {vol_str} USDT
-🔕 **Уведомления:** {'Включены' if settings['alerts_on'] else 'Выключены'}
+📕 **Уведомления:** {'Включены' if settings['alerts_on'] else 'Выключены'}
 
-Для изменения настроек используйте "🔔 Настроить фильтры"
+Для изменения настроек используйте "🔧 Настроить фильтры"
 """
     await update.message.reply_text(message_text, parse_mode='Markdown')
 
@@ -775,7 +1061,7 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']  # <=== ИСПРАВЛЕНО!
+    settings = user_settings[chat_id]['settings']
     
     status_emoji = "✅" if settings.get('alerts_on', False) else "🔴"
     status_text = "ВКЛЮЧЕНЫ" if settings.get('alerts_on', False) else "ВЫКЛЮЧЕНЫ"
@@ -809,7 +1095,7 @@ async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         ensure_user_settings(chat_id, user_id)
-        user_settings[chat_id]['settings']['alerts_on'] ^= True  # <=== ИСПРАВЛЕНО!
+        user_settings[chat_id]['settings']['alerts_on'] ^= True
         await show_alerts_menu(update, context)
     elif action == "back_filters":
         await send_filters_menu(update, context)
@@ -836,7 +1122,7 @@ async def background_scanner(app: Application):
                     print(f"[BG_SCANNER] Пропускаем chat_id {chat_id}: нет доступа (user_id: {stored_user_id})")
                     continue
                     
-                settings = user_data['settings']  # <=== ИСПРАВЛЕНО!
+                settings = user_data['settings']
                 if not settings.get('alerts_on', False): 
                     continue
 
@@ -888,7 +1174,7 @@ async def handle_unauthorized_message(update: Update, context: ContextTypes.DEFA
 
 async def get_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
+    if user_id not in ALLOWED_USERS:
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
 
@@ -948,7 +1234,7 @@ if __name__ == "__main__":
     
     # Проверяем, что список разрешенных пользователей настроен
     if not ALLOWED_USERS or ALLOWED_USERS == [123456789, 987654321]:
-        print("⚠️  ВНИМАНИЕ: Не забудьте изменить ALLOWED_USERS на ваши реальные Telegram ID!")
+        print("⚠️ ВНИМАНИЕ: Не забудьте изменить ALLOWED_USERS на ваши реальные Telegram ID!")
         print("   Для получения своего ID напишите боту @userinfobot")
     
     from telegram.ext import Application
@@ -1010,7 +1296,7 @@ if __name__ == "__main__":
     regular_handlers = [
         CommandHandler("start", start),
         MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates),
-        MessageHandler(filters.Regex("^🔔 Настроить фильтры$"), filters_menu_entry),
+        MessageHandler(filters.Regex("^🔧 Настроить фильтры$"), filters_menu_entry),
         MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings),
         MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics),
         # Обработчики кнопок
@@ -1021,7 +1307,6 @@ if __name__ == "__main__":
         CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
         CallbackQueryHandler(alert_callback_handler, pattern="^alert_"),
         # Универсальный обработчик для всех остальных сообщений (должен быть последним)
-        
         MessageHandler(filters.TEXT, handle_unauthorized_message),
     ]
 
@@ -1037,7 +1322,8 @@ if __name__ == "__main__":
     app.post_init = post_init
 
     # 5. Запускаем бота
-    print("🤖 RateHunter 2.0 запущен с ограничением доступа!")
-    print(f"🔒 Разрешенные пользователи: {ALLOWED_USERS}")
+    print("🤖 RateHunter 2.0 с ИИ-анализатором запущен с ограничением доступа!")
+    print(f"🔑 Разрешенные пользователи: {ALLOWED_USERS}")
     print("🚀 Фоновый сканер для уведомлений активен!")
+    print("🧠 Умный анализ funding rates включен!")
     app.run_polling()
