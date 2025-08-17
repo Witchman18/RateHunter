@@ -1347,6 +1347,8 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = "🚨 **Настройки уведомлений**\n\n"
     message_text += "*Бот пришлет сигнал, когда будут выполнены все условия.*\n\n"
     
+    print(f"[DEBUG] Alerts menu: alerts_on = {settings.get('alerts_on', False)}")
+    
     keyboard = [
         [InlineKeyboardButton(f"📈 Порог ставки: > {settings['alert_rate_threshold']*100:.2f}%", callback_data="alert_set_rate")],
         [InlineKeyboardButton(f"⏰ Окно до выплаты: < {settings['alert_time_window_minutes']} мин", callback_data="alert_set_time")],
@@ -1434,6 +1436,30 @@ async def alert_exchanges_callback_handler(update: Update, context: ContextTypes
     # Обновляем меню
     await show_alert_exchanges_menu(update, context)
 
+async def toggle_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Простая функция для переключения уведомлений"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    
+    # Переключаем состояние уведомлений
+    current_state = user_settings[chat_id]['settings']['alerts_on']
+    new_state = not current_state
+    user_settings[chat_id]['settings']['alerts_on'] = new_state
+    
+    print(f"[DEBUG] Уведомления переключены: {current_state} -> {new_state}")
+    
+    # Показываем обновленное меню
+    await show_alerts_menu(update, context)
+
 async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает основные кнопки в меню уведомлений."""
     query = update.callback_query
@@ -1442,17 +1468,25 @@ async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    action = query.data.split('_', 1)[1]
+    # Получаем action из callback_data
+    callback_data = query.data
+    print(f"[DEBUG] Alert callback: {callback_data}")
     
     await query.answer()
-    if action == "toggle_on":
+    
+    if callback_data == "alert_toggle_on":
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         ensure_user_settings(chat_id, user_id)
-        user_settings[chat_id]['settings']['alerts_on'] ^= True
+        # Переключаем состояние уведомлений
+        current_state = user_settings[chat_id]['settings']['alerts_on']
+        user_settings[chat_id]['settings']['alerts_on'] = not current_state
+        print(f"[DEBUG] Уведомления переключены: {current_state} -> {not current_state}")
         await show_alerts_menu(update, context)
-    elif action == "back_filters":
+    elif callback_data == "alert_back_filters":
         await send_filters_menu(update, context)
+    else:
+        print(f"[DEBUG] Неизвестный alert callback: {callback_data}")
     """Обрабатывает нажатия в меню уведомлений."""
     query = update.callback_query
     
