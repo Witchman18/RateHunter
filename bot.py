@@ -332,18 +332,27 @@ def get_default_settings():
 # ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ НАСТРОЕК =====
 def ensure_user_settings(chat_id: int, user_id: int):
     """Убеждается, что настройки пользователя существуют и сохраняет user_id"""
+    print(f"[DEBUG] ensure_user_settings: chat_id={chat_id}, user_id={user_id}")
+    
     if chat_id not in user_settings:
+        print(f"[DEBUG] Создаем новые настройки для chat_id {chat_id}")
         user_settings[chat_id] = {
             'user_id': user_id,
             'settings': get_default_settings()
         }
     else:
+        print(f"[DEBUG] Обновляем существующие настройки для chat_id {chat_id}")
         # Обновляем user_id на случай, если он изменился
         user_settings[chat_id]['user_id'] = user_id
         
     # Убеждаемся, что все настройки есть
-    for key, value in get_default_settings().items():
-        user_settings[chat_id]['settings'].setdefault(key, value)
+    default_settings = get_default_settings()
+    for key, value in default_settings.items():
+        if key not in user_settings[chat_id]['settings']:
+            print(f"[DEBUG] Добавляем отсутствующую настройку: {key} = {value}")
+            user_settings[chat_id]['settings'][key] = value
+    
+    print(f"[DEBUG] Финальные настройки alerts_on: {user_settings[chat_id]['settings'].get('alerts_on', 'НЕ НАЙДЕНО')}")
 
 # =================================================================
 # ===================== МОДУЛЬ СБОРА ДАННЫХ (API) =====================
@@ -1448,14 +1457,22 @@ async def toggle_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
+    
+    print(f"[DEBUG] Toggle alerts: chat_id={chat_id}, user_id={user_id}")
+    
     ensure_user_settings(chat_id, user_id)
     
-    # Переключаем состояние уведомлений
+    # Показываем текущее состояние ДО изменения
     current_state = user_settings[chat_id]['settings']['alerts_on']
+    print(f"[DEBUG] Состояние ДО изменения: {current_state}")
+    print(f"[DEBUG] Полные настройки: {user_settings[chat_id]['settings']}")
+    
+    # Переключаем состояние уведомлений
     new_state = not current_state
     user_settings[chat_id]['settings']['alerts_on'] = new_state
     
-    print(f"[DEBUG] Уведомления переключены: {current_state} -> {new_state}")
+    print(f"[DEBUG] Состояние ПОСЛЕ изменения: {user_settings[chat_id]['settings']['alerts_on']}")
+    print(f"[DEBUG] Ожидаемое состояние: {new_state}")
     
     # Показываем обновленное меню
     await show_alerts_menu(update, context)
@@ -1694,6 +1711,7 @@ if __name__ == "__main__":
         CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"),
         CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
         CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
+        CallbackQueryHandler(alert_callback_handler, pattern="^alert_"),
         # НОВЫЕ обработчики ИИ-анализа
         CallbackQueryHandler(show_ai_analysis, pattern="^ai_analysis$"),
         CallbackQueryHandler(show_ai_detail, pattern="^ai_detail_"),
