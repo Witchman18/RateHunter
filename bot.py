@@ -50,27 +50,29 @@ def check_access(user_id: int) -> bool:
     return user_id in ALLOWED_USERS
 
 # ===== НОВЫЙ МОДУЛЬ: АНАЛИЗАТОР ТРЕНДОВ FUNDING RATE =====
+# ===== НОВЫЙ МОДУЛЬ: АНАЛИЗАТОР ТРЕНДОВ FUNDING RATE С РЕАЛЬНЫМИ ДАННЫМИ =====
 class FundingTrendAnalyzer:
-    """Анализирует тренды и стабильность funding rates"""
+    """Анализирует тренды и стабильность funding rates с РЕАЛЬНЫМИ данными"""
     
     def __init__(self):
         self.historical_cache = {}  # Кэш исторических данных
+        self.cache_lifetime_minutes = 30  # Кэш действует 30 минут
         
     async def analyze_funding_stability(self, symbol: str, exchange: str, current_rate: Decimal) -> Dict:
         """
-        Анализирует стабильность и тренд funding rate
-        Возвращает классификацию: стабильная_аномалия / истощающаяся_аномалия
+        Анализирует стабильность и тренд funding rate используя РЕАЛЬНУЮ историю
         """
         
-        # Получаем историю ставок за последние несколько периодов
-        history = await self._get_funding_history(symbol, exchange, periods=3)
+        # Получаем РЕАЛЬНУЮ историю ставок за последние периоды
+        history = await self._get_funding_history_real(symbol, exchange, periods=5)
         
         if not history or len(history) < 2:
             return {
                 'trend': 'unknown',
-                'stability': 'unknown',
+                'stability': 'unknown', 
                 'confidence': 0.0,
-                'recommendation': 'insufficient_data'
+                'recommendation': 'insufficient_data',
+                'data_source': 'insufficient'
             }
         
         # Анализируем тренд
@@ -82,19 +84,154 @@ class FundingTrendAnalyzer:
         # Формируем рекомендацию
         recommendation = self._make_recommendation(trend_analysis, stability_analysis, current_rate)
         
+        # Вычисляем итоговую уверенность (теперь должна быть выше!)
+        confidence = min(trend_analysis['confidence'], stability_analysis['confidence'])
+        
+        # Бонус к уверенности за количество данных
+        data_bonus = min(0.2, len(history) * 0.05)  # +5% за каждую точку данных, макс +20%
+        confidence = min(1.0, confidence + data_bonus)
+        
         return {
-            'trend': trend_analysis['direction'],  # 'growing', 'declining', 'stable'
-            'trend_strength': trend_analysis['strength'],  # 0.0 - 1.0
-            'stability': stability_analysis['level'],  # 'stable', 'volatile', 'declining'
-            'stability_score': stability_analysis['score'],  # 0.0 - 1.0
-            'confidence': min(trend_analysis['confidence'], stability_analysis['confidence']),
+            'trend': trend_analysis['direction'],
+            'trend_strength': trend_analysis['strength'],
+            'stability': stability_analysis['level'],
+            'stability_score': stability_analysis['score'],
+            'confidence': confidence,
             'recommendation': recommendation,
             'history': history,
+            'data_source': 'real_api',
             'analysis_details': {
                 'rate_change': trend_analysis['rate_change'],
-                'volatility': stability_analysis['volatility']
+                'volatility': stability_analysis['volatility'],
+                'data_points': len(history)
             }
         }
+    
+    async def _get_funding_history_real(self, symbol: str, exchange: str, periods: int = 5) -> List[Decimal]:
+        """
+        Получает РЕАЛЬНУЮ историю funding rates с API бирж
+        """
+        
+        cache_key = f"{exchange}_{symbol}"
+        now = time.time()
+        
+        # Проверяем кэш
+        if cache_key in self.historical_cache:
+            cached_data, cached_time = self.historical_cache[cache_key]
+            if now - cached_time < self.cache_lifetime_minutes * 60:
+                print(f"[FUNDING_HISTORY] Используем кэш для {cache_key}")
+                return cached_data
+        
+        print(f"[FUNDING_HISTORY] Запрашиваем историю для {symbol} на {exchange}")
+        
+        # Получаем реальные данные в зависимости от биржи
+        if exchange.upper() == 'MEXC':
+            history = await self._fetch_mexc_funding_history(symbol)
+        elif exchange.upper() == 'BYBIT':
+            history = await self._fetch_bybit_funding_history(symbol)
+        else:
+            print(f"[FUNDING_HISTORY] Неподдерживаемая биржа: {exchange}")
+            return []
+        
+        # Сохраняем в кэш
+        if history:
+            self.historical_cache[cache_key] = (history, now)
+            print(f"[FUNDING_HISTORY] Получено {len(history)} точек истории для {symbol} ({exchange})")
+        
+        return history
+    
+    async def _fetch_mexc_funding_history(self, symbol: str) -> List[Decimal]:
+        """Получает историю funding rates с MEXC"""
+        
+        # Конвертируем символ в формат MEXC (BTCUSDT -> BTC_USDT)
+        mexc_symbol = symbol.replace('USDT', '_USDT')
+        
+        url = "https://contract.mexc.com/api/v1/contract/funding_rate/history"
+        params = {
+            'symbol': mexc_symbol,
+            'page_size': 10  # Последние 10 записей (примерно 2.5 дня)
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as response:
+                    if response.status != 200:
+                        print(f"[MEXC_HISTORY] Ошибка HTTP: {response.status}")
+                        return []
+                    
+                    data = await response.json()
+                    
+                    if not data.get('success') or not data.get('data'):
+                        print(f"[MEXC_HISTORY] API вернул ошибку или пустые данные")
+                        return []
+                    
+                    # Извлекаем ставки из ответа
+                    rates = []
+                    for item in data['data']:
+                        try:
+                            rate = Decimal(str(item.get('fundingRate', 0)))
+                            rates.append(rate)
+                        except (TypeError, ValueError) as e:
+                            print(f"[MEXC_HISTORY] Ошибка парсинга ставки: {e}")
+                            continue
+                    
+                    # Возвращаем в хронологическом порядке (самые старые сначала)
+                    rates.reverse()
+                    return rates
+                    
+        except asyncio.TimeoutError:
+            print(f"[MEXC_HISTORY] Timeout при запросе истории для {symbol}")
+        except Exception as e:
+            print(f"[MEXC_HISTORY] Ошибка: {e}")
+        
+        return []
+    
+    async def _fetch_bybit_funding_history(self, symbol: str) -> List[Decimal]:
+        """Получает историю funding rates с Bybit (требует API ключи)"""
+        
+        # TODO: Получить ключи из глобального контекста
+        # Пока используем публичное API (без подписи)
+        
+        url = "https://api.bybit.com/v5/market/funding/history"
+        params = {
+            'category': 'linear',
+            'symbol': symbol,
+            'limit': 10
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as response:
+                    if response.status != 200:
+                        print(f"[BYBIT_HISTORY] Ошибка HTTP: {response.status}")
+                        return []
+                    
+                    data = await response.json()
+                    
+                    if data.get('retCode') != 0 or not data.get('result', {}).get('list'):
+                        print(f"[BYBIT_HISTORY] API вернул ошибку: {data.get('retMsg', 'Unknown')}")
+                        return []
+                    
+                    # Извлекаем ставки из ответа
+                    rates = []
+                    for item in data['result']['list']:
+                        try:
+                            rate = Decimal(str(item.get('fundingRate', 0)))
+                            rates.append(rate)
+                        except (TypeError, ValueError) as e:
+                            print(f"[BYBIT_HISTORY] Ошибка парсинга ставки: {e}")
+                            continue
+                    
+                    # Bybit возвращает в обратном порядке, поэтому разворачиваем
+                    rates.reverse()
+                    return rates
+                    
+        except asyncio.TimeoutError:
+            print(f"[BYBIT_HISTORY] Timeout при запросе истории для {symbol}")
+        except Exception as e:
+            print(f"[BYBIT_HISTORY] Ошибка: {e}")
+        
+        return []
     
     def _analyze_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
         """Анализирует направление тренда ставки"""
@@ -132,7 +269,9 @@ class FundingTrendAnalyzer:
             strength = 0.5
         
         # Уверенность зависит от количества данных и консистентности
-        confidence = min(1.0, len(changes) / 3.0) * strength
+        # Теперь больше данных = больше уверенности
+        data_factor = min(1.0, len(changes) / 4.0)  # Полная уверенность при 4+ точках
+        confidence = data_factor * strength
         
         return {
             'direction': direction,
@@ -158,7 +297,6 @@ class FundingTrendAnalyzer:
         volatility = variance ** 0.5
         
         # Классифицируем уровень стабильности
-        # Эти пороги можно будет подстроить на основе тестов
         if volatility < 0.001:  # Изменения меньше 0.1%
             level = 'stable'
             score = 0.9
@@ -169,7 +307,8 @@ class FundingTrendAnalyzer:
             level = 'volatile'
             score = 0.3
         
-        confidence = min(1.0, len(all_rates) / 3.0)
+        # Больше данных = больше уверенности в оценке стабильности
+        confidence = min(1.0, len(all_rates) / 4.0)
         
         return {
             'level': level,
@@ -179,9 +318,7 @@ class FundingTrendAnalyzer:
         }
     
     def _make_recommendation(self, trend_analysis: Dict, stability_analysis: Dict, current_rate: Decimal) -> str:
-        """
-        Формирует рекомендацию на основе анализа тренда и стабильности
-        """
+        """Формирует рекомендацию на основе анализа тренда и стабильности"""
         
         abs_rate = abs(float(current_rate))
         trend = trend_analysis['direction']
@@ -203,35 +340,6 @@ class FundingTrendAnalyzer:
         
         else:
             return 'unclear_signal'  # ⚪️ Неоднозначная ситуация
-    
-    async def _get_funding_history(self, symbol: str, exchange: str, periods: int = 3) -> List[Decimal]:
-        """
-        Получает историю funding rates
-        TODO: Подключить к реальным API
-        """
-        
-        # Пока используем заглушку для тестирования
-        cache_key = f"{exchange}_{symbol}"
-        
-        if cache_key not in self.historical_cache:
-            # Имитируем разные сценарии для тестов
-            current_time = int(time.time())
-            symbol_hash = hash(symbol) % 4
-            
-            if symbol_hash == 0:
-                # Стабильная высокая аномалия
-                self.historical_cache[cache_key] = [Decimal('-0.019'), Decimal('-0.020')]
-            elif symbol_hash == 1:
-                # Истощающаяся аномалия
-                self.historical_cache[cache_key] = [Decimal('-0.021'), Decimal('-0.017')]
-            elif symbol_hash == 2:
-                # Растущая аномалия
-                self.historical_cache[cache_key] = [Decimal('0.008'), Decimal('0.012')]
-            else:
-                # Волатильная ситуация
-                self.historical_cache[cache_key] = [Decimal('-0.025'), Decimal('-0.010')]
-        
-        return self.historical_cache[cache_key]
 
 # Глобальный анализатор
 funding_analyzer = FundingTrendAnalyzer()
