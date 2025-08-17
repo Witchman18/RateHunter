@@ -1433,6 +1433,26 @@ async def alert_exchanges_callback_handler(update: Update, context: ContextTypes
     
     # Обновляем меню
     await show_alert_exchanges_menu(update, context)
+
+async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает основные кнопки в меню уведомлений."""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    action = query.data.split('_', 1)[1]
+    
+    await query.answer()
+    if action == "toggle_on":
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        ensure_user_settings(chat_id, user_id)
+        user_settings[chat_id]['settings']['alerts_on'] ^= True
+        await show_alerts_menu(update, context)
+    elif action == "back_filters":
+        await send_filters_menu(update, context)
     """Обрабатывает нажатия в меню уведомлений."""
     query = update.callback_query
     
@@ -1668,7 +1688,7 @@ if __name__ == "__main__":
         CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"),
         CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
         CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
-        CallbackQueryHandler(alert_callback_handler, pattern="^alert_(toggle_on|back_filters)$"),
+        CallbackQueryHandler(alert_callback_handler, pattern="^alert_"),
         # НОВЫЕ обработчики ИИ-анализа
         CallbackQueryHandler(show_ai_analysis, pattern="^ai_analysis$"),
         CallbackQueryHandler(show_ai_detail, pattern="^ai_detail_"),
