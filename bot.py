@@ -790,7 +790,6 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ===== ЧИСТЫЙ ИНТЕРФЕЙС БЕЗ ИИ =====
     # Сохраняем данные для ИИ-анализа, но не показываем их сразу
-    context.chat_data = context.chat_data or {}
     context.chat_data['current_opportunities'] = top_5
     print(f"[DEBUG] Сохранил данные в context.chat_data")
 
