@@ -1711,7 +1711,6 @@ if __name__ == "__main__":
         CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"),
         CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
         CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
-        CallbackQueryHandler(alert_callback_handler, pattern="^alert_"),
         # НОВЫЕ обработчики ИИ-анализа
         CallbackQueryHandler(show_ai_analysis, pattern="^ai_analysis$"),
         CallbackQueryHandler(show_ai_detail, pattern="^ai_detail_"),
