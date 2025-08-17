@@ -783,15 +783,39 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     print(f"[DEBUG] Сортирую {len(filtered_data)} инструментов...")
-    # Сортируем по абсолютной ставке
-    filtered_data.sort(key=lambda x: abs(x['rate']), reverse=True)
-    top_5 = filtered_data[:5]
-    print(f"[DEBUG] Выбрано топ-5 инструментов для отображения")
+    
+    # ===== УБИРАЕМ ДУБЛИКАТЫ ПО СИМВОЛАМ =====
+    # Группируем по символам и выбираем лучшую ставку для каждого
+    symbol_groups = {}
+    for item in filtered_data:
+        symbol = item['symbol']
+        if symbol not in symbol_groups:
+            symbol_groups[symbol] = []
+        symbol_groups[symbol].append(item)
+    
+    # Для каждого символа выбираем инструмент с максимальной абсолютной ставкой
+    unique_opportunities = []
+    for symbol, items in symbol_groups.items():
+        best_item = max(items, key=lambda x: abs(x['rate']))
+        unique_opportunities.append(best_item)
+    
+    # Сортируем уникальные возможности по абсолютной ставке
+    unique_opportunities.sort(key=lambda x: abs(x['rate']), reverse=True)
+    top_5 = unique_opportunities[:5]
+    
+    print(f"[DEBUG] После удаления дубликатов: {len(unique_opportunities)} уникальных символов")
+    print(f"[DEBUG] Топ-5 уникальных возможностей:")
+    for i, item in enumerate(top_5):
+        rate_pct = abs(item['rate']) * 100
+        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%")
+    
+    print(f"[DEBUG] Выбрано топ-5 уникальных инструментов для отображения")
 
     # ===== ЧИСТЫЙ ИНТЕРФЕЙС БЕЗ ИИ =====
-    # Сохраняем данные для ИИ-анализа, но не показываем их сразу
-    context.chat_data['current_opportunities'] = top_5
-    print(f"[DEBUG] Сохранил данные в context.chat_data")
+    # Сохраняем данные для ИИ-анализа и детального просмотра
+    context.user_data['current_opportunities'] = top_5
+    context.user_data['all_symbol_data'] = symbol_groups  # Сохраняем все данные по символам
+    print(f"[DEBUG] Сохранил данные в context.user_data")
 
     print(f"[DEBUG] Формирую сообщение...")
     # Формируем чистое сообщение
@@ -846,7 +870,7 @@ async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("🧠 Анализирую с помощью ИИ...")
 
     # Получаем сохраненные данные
-    opportunities = context.chat_data.get('current_opportunities', [])
+    opportunities = context.user_data.get('current_opportunities', [])
     
     if not opportunities:
         await query.edit_message_text(
@@ -911,7 +935,7 @@ async def show_ai_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     # Получаем сохраненные данные
-    opportunities = context.chat_data.get('current_opportunities', [])
+    opportunities = context.user_data.get('current_opportunities', [])
     target_item = None
     
     for item in opportunities:
@@ -1015,15 +1039,36 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     symbol_to_show = query.data.split('_')[1]
     await query.answer()
 
-    all_data = api_data_cache.get("data", [])
-    if not all_data:
-        await query.edit_message_text("🔄 Обновляю данные...")
-        all_data = await fetch_all_data(context, force_update=True)
+    # Сначала пытаемся получить данные из сохраненных (более точные)
+    all_symbol_data = context.user_data.get('all_symbol_data', {})
+    
+    if symbol_to_show in all_symbol_data:
+        symbol_data = all_symbol_data[symbol_to_show]
+        print(f"[DEBUG] Используем сохраненные данные для {symbol_to_show}: {len(symbol_data)} записей")
+    else:
+        # Fallback - получаем из кэша
+        print(f"[DEBUG] Данные не найдены в user_data, используем кэш API")
+        all_data = api_data_cache.get("data", [])
+        if not all_data:
+            await query.edit_message_text("🔄 Обновляю данные...")
+            all_data = await fetch_all_data(context, force_update=True)
+        symbol_data = [item for item in all_data if item['symbol'] == symbol_to_show]
         
-    symbol_data = sorted([item for item in all_data if item['symbol'] == symbol_to_show], key=lambda x: abs(x['rate']), reverse=True)
+    # Сортируем по абсолютной ставке
+    symbol_data = sorted(symbol_data, key=lambda x: abs(x['rate']), reverse=True)
     symbol_only = symbol_to_show.replace("USDT", "")
+    
+    if not symbol_data:
+        await query.edit_message_text(
+            f"❓ Данные по {symbol_only} не найдены.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]])
+        )
+        return
+    
     message_text = f"💎 **Детали по {symbol_only}**\n\n"
     now_utc = datetime.now(timezone.utc)
+    
+    print(f"[DEBUG] Отображаем {len(symbol_data)} записей для {symbol_only}")
     
     for item in symbol_data:
         funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
@@ -1038,7 +1083,7 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         vol = item.get('volume_24h_usdt', Decimal('0'))
         vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
         
-        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]({item['trade_url']})\n"
+        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` **[{item['exchange']}]({item['trade_url']})**\n"
         message_text += f"  *Объем 24ч:* `{vol_str} USDT`\n"
         if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: 
             message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
