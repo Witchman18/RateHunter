@@ -1,7 +1,1093 @@
+if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: 
+            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
+        message_text += "\n"
+
+    # Добавляем кнопку ИИ-анализа для этой конкретной монеты
+    keyboard = [
+        [InlineKeyboardButton("🧠 ИИ-Анализ этой монеты", callback_data=f"ai_detail_{symbol_to_show}")],
+        [InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]
+    ]
+    await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
+
+async def back_to_top_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    if query:
+        await query.answer()
+    await show_top_rates(update, context)
+
+@require_access()
+async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    message_text = "🔧 **Настройки фильтров для ручного поиска**"
+    keyboard = [
+        [InlineKeyboardButton("🏦 Биржи", callback_data="filters_exchanges")],
+        [InlineKeyboardButton(f"📈 Ставка: > {settings['funding_threshold']*100:.2f}%", callback_data="filters_funding")],
+        [InlineKeyboardButton(f"💧 Объем: > {format_volume(settings['volume_threshold_usdt'])}", callback_data="filters_volume")],
+        [InlineKeyboardButton("🚨 Настроить Уведомления", callback_data="alert_show_menu")],
+        [InlineKeyboardButton("❌ Закрыть", callback_data="filters_close")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+@require_access()
+async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_filters_menu(update, context)
+
+async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    action = query.data.split('_', 1)[1]
+    if action == "close":
+        await query.message.delete()
+    elif action == "toggle_notif":
+        user_settings[update.effective_chat.id]['settings']['notifications_on'] ^= True
+        await send_filters_menu(update, context)
+    elif action == "exchanges":
+        await show_exchanges_menu(update, context)
+
+async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']
+    buttons = [InlineKeyboardButton(f"{'✅' if ex in active_exchanges else '⬜️'} {ex}", callback_data=f"exch_{ex}") for ex in ALL_AVAILABLE_EXCHANGES]
+    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)] + [[InlineKeyboardButton("⬅️ Назад", callback_data="exch_back")]]
+    await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    action = query.data.split('_', 1)[1]
+    if action == "back": 
+        await send_filters_menu(update, context)
+    else:
+        active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']
+        if action in active_exchanges: 
+            active_exchanges.remove(action)
+        else: 
+            active_exchanges.append(action)
+        await show_exchanges_menu(update, context)
+
+async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str, menu_to_return: callable):
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    await query.answer()
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    prompts = {
+        'funding': (f"Текущий порог ставки: `> {settings['funding_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `0.75`)."),
+        'volume': (f"Текущий порог объема: `{format_volume(settings['volume_threshold_usdt'])}`.\n\nОтправьте новое значение (например, `500k` или `2M`)."),
+        'alert_rate': (f"Текущий порог для уведомлений: `> {settings['alert_rate_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `1.5`)."),
+        'alert_time': (f"Текущее временное окно: `< {settings['alert_time_window_minutes']} минут`.\n\nОтправьте новое значение в минутах (например, `45`).")
+    }
+    await query.message.delete()
+    sent_message = await context.bot.send_message(chat_id=chat_id, text=prompts[setting_type] + "\n\nДля отмены введите /cancel.", parse_mode='Markdown')
+    context.user_data.update({'prompt_message_id': sent_message.message_id, 'menu_to_return': menu_to_return})
+    
+    state_map = {'funding': SET_FUNDING_THRESHOLD, 'volume': SET_VOLUME_THRESHOLD, 'alert_rate': SET_ALERT_RATE, 'alert_time': SET_ALERT_TIME}
+    return state_map.get(setting_type)
+
+async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
+    if not check_access(update.effective_user.id):
+        await update.message.reply_text("⛔ Доступ запрещён")
+        return
+        
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    try:
+        value_str = update.message.text.strip().replace(",", ".").upper()
+        if setting_type == 'funding' or setting_type == 'alert_rate':
+            value = Decimal(value_str)
+            if not (0 < value < 100): raise ValueError("Value out of range 0-100")
+            key = 'funding_threshold' if setting_type == 'funding' else 'alert_rate_threshold'
+            settings[key] = value / 100
+        elif setting_type == 'volume':
+            num_part = value_str.replace('K', '').replace('M', '')
+            multiplier = 1000 if 'K' in value_str else 1_000_000 if 'M' in value_str else 1
+            settings['volume_threshold_usdt'] = Decimal(num_part) * multiplier
+        elif setting_type == 'alert_time':
+            value = int(value_str)
+            if value <= 0: raise ValueError("Value must be positive")
+            settings['alert_time_window_minutes'] = value
+    except (ValueError, TypeError, decimal.InvalidOperation):
+        await update.message.reply_text("❌ Ошибка. Введите корректное значение. Попробуйте снова.", parse_mode='Markdown')
+        return
+
+    if 'prompt_message_id' in context.user_data:
+        await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
+    await context.bot.delete_message(chat_id, update.message.message_id)
+    await context.user_data.pop('menu_to_return')(update, context)
+    return ConversationHandler.END
+
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_access(update.effective_user.id):
+        await update.message.reply_text("⛔ Доступ запрещён")
+        return
+        
+    chat_id = update.effective_chat.id
+    if 'prompt_message_id' in context.user_data:
+        try: await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
+        except Exception: pass
+    try: await context.bot.delete_message(chat_id, update.message.id)
+    except Exception: pass
+    await context.bot.send_message(chat_id, "Действие отменено.")
+    if 'menu_to_return' in context.user_data:
+        await context.user_data.pop('menu_to_return')(update, context)
+    return ConversationHandler.END
+    
+@require_access()
+async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    exchanges_list = ", ".join(settings['exchanges'])
+    vol = settings['volume_threshold_usdt']
+    vol_str = f"{vol / 1_000_000:.1f}M" if vol >= 1_000_000 else f"{vol / 1_000:.0f}K"
+    
+    message_text = f"""ℹ️ **Ваши текущие настройки:**
+
+🏦 **Биржи:** {exchanges_list}
+📈 **Минимальная ставка:** > {settings['funding_threshold']*100:.2f}%
+💧 **Минимальный объем:** > {vol_str} USDT
+📕 **Уведомления:** {'Включены' if settings['alerts_on'] else 'Выключены'}
+
+Для изменения настроек используйте "🔧 Настроить фильтры"
+"""
+    await update.message.reply_text(message_text, parse_mode='Markdown')
+
+# --- Блок для настройки уведомлений ---
+async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает меню настройки кастомных уведомлений."""
+    
+    if update.callback_query and not check_access(update.effective_user.id):
+        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    if query := update.callback_query: 
+        await query.answer()
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    status_emoji = "✅" if settings.get('alerts_on', False) else "🔴"
+    status_text = "ВКЛЮЧЕНЫ" if settings.get('alerts_on', False) else "ВЫКЛЮЧЕНЫ"
+    
+    # Определяем какие биржи используются для уведомлений
+    alert_exchanges = settings.get('alert_exchanges', [])
+    if alert_exchanges:
+        exchanges_text = ", ".join(alert_exchanges)
+        exchanges_status = f"Свои: {exchanges_text}"
+    else:
+        main_exchanges = ", ".join(settings.get('exchanges', ['Не выбраны']))
+        exchanges_status = f"Основные: {main_exchanges}"
+    
+    message_text = "🚨 **Настройки уведомлений**\n\n"
+    message_text += "*Бот пришлет сигнал, когда будут выполнены все условия.*\n\n"
+    
+    print(f"[DEBUG] Alerts menu: alerts_on = {settings.get('alerts_on', False)}")
+    
+    keyboard = [
+        [InlineKeyboardButton(f"📈 Порог ставки: > {settings['alert_rate_threshold']*100:.2f}%", callback_data="alert_set_rate")],
+        [InlineKeyboardButton(f"⏰ Окно до выплаты: < {settings['alert_time_window_minutes']} мин", callback_data="alert_set_time")],
+        [InlineKeyboardButton(f"🏦 Биржи: {exchanges_status}", callback_data="alert_exchanges_menu")],
+        [InlineKeyboardButton(f"{status_emoji} Уведомления: {status_text}", callback_data="alert_toggle_on")],
+        [InlineKeyboardButton("⬅️ Назад к фильтрам", callback_data="alert_back_filters")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+async def show_alert_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает меню выбора бирж для уведомлений"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    alert_exchanges = settings.get('alert_exchanges', [])
+    main_exchanges = settings.get('exchanges', [])
+    
+    message_text = "🏦 **Биржи для уведомлений**\n\n"
+    message_text += "*Выберите биржи, по которым получать уведомления.*\n"
+    message_text += "*Если ничего не выбрано - используются основные настройки.*\n\n"
+    message_text += f"🔧 **Основные биржи:** {', '.join(main_exchanges)}\n\n"
+    
+    # Кнопки выбора бирж
+    buttons = []
+    for exchange in ALL_AVAILABLE_EXCHANGES:
+        if exchange in alert_exchanges:
+            emoji = "✅"
+        else:
+            emoji = "⬜️"
+        buttons.append(InlineKeyboardButton(f"{emoji} {exchange}", callback_data=f"alert_exch_{exchange}"))
+    
+    # Группируем кнопки по 2 в ряд
+    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    
+    # Дополнительные кнопки
+    keyboard.append([InlineKeyboardButton("🗑️ Очистить выбор", callback_data="alert_exch_clear")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к уведомлениям", callback_data="alert_show_menu")])
+    
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def alert_exchanges_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает выбор бирж для уведомлений"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    action = query.data.split('_', 2)[2]  # alert_exch_ACTION
+    
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    alert_exchanges = settings.get('alert_exchanges', [])
+    
+    if action == "clear":
+        # Очищаем выбор
+        settings['alert_exchanges'] = []
+        await query.answer("🗑️ Выбор очищен. Будут использоваться основные биржи.", show_alert=True)
+    elif action in ALL_AVAILABLE_EXCHANGES:
+        # Переключаем биржу
+        if action in alert_exchanges:
+            alert_exchanges.remove(action)
+        else:
+            alert_exchanges.append(action)
+        settings['alert_exchanges'] = alert_exchanges
+    
+    # Обновляем меню
+    await show_alert_exchanges_menu(update, context)
+
+# ИСПРАВЛЕННАЯ функция переключения уведомлений
+async def toggle_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Простая функция для переключения уведомлений"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    
+    print(f"[DEBUG] Toggle alerts: chat_id={chat_id}, user_id={user_id}")
+    
+    ensure_user_settings(chat_id, user_id)
+    
+    # Показываем текущее состояние ДО изменения
+    current_state = user_settings[chat_id]['settings']['alerts_on']
+    print(f"[DEBUG] Состояние ДО изменения: {current_state}")
+    print(f"[DEBUG] Полные настройки: {user_settings[chat_id]['settings']}")
+    
+    # Переключаем состояние уведомлений
+    new_state = not current_state
+    user_settings[chat_id]['settings']['alerts_on'] = new_state
+    
+    print(f"[DEBUG] Состояние ПОСЛЕ изменения: {user_settings[chat_id]['settings']['alerts_on']}")
+    print(f"[DEBUG] Ожидаемое состояние: {new_state}")
+    
+    # Показываем обновленное меню
+    await show_alerts_menu(update, context)
+
+# ===== ИСПРАВЛЕННЫЙ ФОНОВЫЙ СКАНЕР =====
+async def background_scanner(app: Application):
+    """Фоновый процесс для мониторинга и отправки кастомных уведомлений."""
+    print("🚀 Фоновый сканер уведомлений запущен.")
+    while True:
+        await asyncio.sleep(60)  # Проверка раз в минуту
+        try:
+            all_data = await fetch_all_data(app, force_update=True)
+            if not all_data: 
+                continue
+
+            now_utc = datetime.now(timezone.utc)
+            current_ts_ms = int(now_utc.timestamp() * 1000)
+
+            # ===== ГЛАВНОЕ ИСПРАВЛЕНИЕ =====
+            for chat_id, user_data in list(user_settings.items()):
+                # Теперь правильно получаем user_id для проверки доступа
+                stored_user_id = user_data.get('user_id')
+                if not stored_user_id or not check_access(stored_user_id):
+                    print(f"[BG_SCANNER] Пропускаем chat_id {chat_id}: нет доступа (user_id: {stored_user_id})")
+                    continue
+                    
+                settings = user_data['settings']
+                if not settings.get('alerts_on', False): 
+                    continue
+
+                # Очистка старых ID уведомлений (старше 3 часов)
+                settings['sent_notifications'] = {nid for nid in settings['sent_notifications'] if int(nid.split('_')[-1]) > current_ts_ms - (3 * 60 * 60 * 1000)}
+                
+                # Определяем какие биржи использовать для уведомлений
+                alert_exchanges = settings.get('alert_exchanges', [])
+                if alert_exchanges:
+                    # Используем выбранные биржи для уведомлений
+                    target_exchanges = alert_exchanges
+                    print(f"[BG_SCANNER] Используем биржи для уведомлений: {target_exchanges}")
+                else:
+                    # Используем основные биржи
+                    target_exchanges = settings.get('exchanges', [])
+                    print(f"[BG_SCANNER] Используем основные биржи: {target_exchanges}")
+                
+                # Ищем подходящие пары для этого пользователя
+                for item in all_data:
+                    if item['exchange'] not in target_exchanges: 
+                        continue
+                    if abs(item['rate']) < settings['alert_rate_threshold']: 
+                        continue
+
+                    time_left = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc) - now_utc
+                    if not (0 < time_left.total_seconds() <= settings['alert_time_window_minutes'] * 60): 
+                        continue
+
+                    # Анти-спам
+                    notification_id = f"{item['exchange']}_{item['symbol']}_{item['next_funding_time']}"
+                    if notification_id in settings['sent_notifications']: 
+                        continue
+                    
+                    # Все условия выполнены! Отправляем уведомление.
+                    h, m = divmod(int(time_left.total_seconds() // 60), 60)
+                    countdown_str = f"{h}ч {m}м" if h > 0 else f"{m}м"
+                    message = (f"⚠️ **Найден фандинг по вашему фильтру!**\n\n"
+                               f"{'🟢' if item['rate'] < 0 else '🔴'} **{item['symbol'].replace('USDT', '')}** `{item['rate'] * 100:+.2f}%`\n"
+                               f"⏰ Выплата через *{countdown_str}* на *{item['exchange']}*")
+                    try:
+                        await app.bot.send_message(chat_id, message, parse_mode='Markdown')
+                        settings['sent_notifications'].add(notification_id)
+                        print(f"[BG_SCANNER] ✅ Отправлено уведомление для chat_id {chat_id} (user_id {stored_user_id}): {notification_id}")
+                    except Exception as e:
+                        print(f"[BG_SCANNER] ❌ Не удалось отправить уведомление для chat_id {chat_id}: {e}")
+        except Exception as e:
+            print(f"[BG_SCANNER] ❌ Критическая ошибка в цикле сканера: {e}\n{traceback.format_exc()}")
+
+# Универсальный обработчик для неавторизованных пользователей
+async def handle_unauthorized_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает сообщения от неавторизованных пользователей"""
+    if not check_access(update.effective_user.id):
+        await access_denied_message(update, context)
+        return
+    
+    # Если пользователь авторизован, но сообщение не обработано другими хендлерами
+    await update.message.reply_text(
+        "🤖 Используйте кнопки меню или команду /start для начала работы."
+    )
+
+async def get_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        await update.message.reply_text("Эта команда доступна только администратору.")
+        return
+
+    message = await update.message.reply_text("Начинаю сбор данных по MYX_USDT за вчера. Это может занять до минуты...")
+    
+    # Определяем символ и временной диапазон
+    symbol_to_fetch = "MYX_USDT"
+    today = datetime.utcnow().date()
+    end_of_yesterday = datetime.combine(today, datetime.min.time())
+    start_of_yesterday = end_of_yesterday - timedelta(days=1)
+    start_ts_ms = int(start_of_yesterday.timestamp() * 1000)
+    end_ts_ms = int(end_of_yesterday.timestamp() * 1000) - 1
+
+    # Запускаем сбор данных
+    funding_data = await fetch_funding_history_async(symbol_to_fetch, start_ts_ms, end_ts_ms)
+    kline_data = await fetch_klines_async(symbol_to_fetch, start_ts_ms, end_ts_ms)
+
+    if not funding_data and not kline_data:
+        await message.edit_text("Не удалось получить данные. Возможно, по этой монете вчера не было торгов или фандинга.")
+        return
+        
+    await message.edit_text("Данные собраны, формирую файлы...")
+
+    # Отправляем файл с фандингом
+    if funding_data:
+        df_funding = pd.DataFrame(funding_data)
+        json_buffer = io.StringIO()
+        df_funding.to_json(json_buffer, orient="records", indent=4)
+        json_buffer.seek(0)
+        await context.bot.send_document(
+            chat_id=user_id,
+            document=io.BytesIO(json_buffer.read().encode()),
+            filename="funding_history.json"
+        )
+
+    # Отправляем файл со свечами
+    if kline_data:
+        df_klines = pd.DataFrame(kline_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        json_buffer = io.StringIO()
+        df_klines.to_json(json_buffer, orient="records", indent=4)
+        json_buffer.seek(0)
+        await context.bot.send_document(
+            chat_id=user_id,
+            document=io.BytesIO(json_buffer.read().encode()),
+            filename="klines_1m.json"
+        )
+    
+    await message.edit_text("Готово! Файлы отправлены вам в личку.")
+
+# =================================================================
+# ========================== ЗАПУСК БОТА ==========================
+# =================================================================
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        raise ValueError("Не найден BOT_TOKEN. Убедитесь, что он задан в .env файле.")
+    
+    # Проверяем, что список разрешенных пользователей настроен
+    if not ALLOWED_USERS or ALLOWED_USERS == [123456789, 987654321]:
+        print("⚠️ ВНИМАНИЕ: Не забудьте изменить ALLOWED_USERS на ваши реальные Telegram ID!")
+        print("   Для получения своего ID напишите боту @userinfobot")
+    
+    from telegram.ext import Application
+    
+    # 1. Создаем приложение
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # 2. Загружаем ключи API
+    app.bot_data['mexc_api_key'] = os.getenv("MEXC_API_KEY")
+    app.bot_data['mexc_secret_key'] = os.getenv("MEXC_API_SECRET")
+    app.bot_data['bybit_api_key'] = os.getenv("BYBIT_API_KEY")
+    app.bot_data['bybit_secret_key'] = os.getenv("BYBIT_API_SECRET")
+
+    if app.bot_data['bybit_api_key']: 
+        print("✅ Ключи Bybit успешно загружены.")
+    else: 
+        print("⚠️ Ключи Bybit не найдены.")
+    print("ℹ️ Ключи для MEXC (публичные данные) больше не требуются.")
+
+    # --- 3. РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
+    
+    fallbacks = [CommandHandler("cancel", cancel_conversation)]
+
+    conv_handlers = [
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding', send_filters_menu), pattern="^filters_funding$")],
+            states={
+                SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]
+            },
+            fallbacks=fallbacks,
+            allow_reentry=True
+        ),
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume', send_filters_menu), pattern="^filters_volume$")],
+            states={
+                SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]
+            },
+            fallbacks=fallbacks,
+            allow_reentry=True
+        ),
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")],
+            states={
+                SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_rate'))]
+            },
+            fallbacks=fallbacks,
+            allow_reentry=True
+        ),
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")],
+            states={
+                SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]
+            },
+            fallbacks=fallbacks,
+            allow_reentry=True
+        ),
+    ]
+    
+    regular_handlers = [
+        CommandHandler("start", start),
+        MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates),
+        MessageHandler(filters.Regex("^🔧 Настроить фильтры$"), filters_menu_entry),
+        MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings),
+        MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics),
+        # Обработчики кнопок
+        CallbackQueryHandler(filters_callback_handler, pattern="^filters_"),
+        CallbackQueryHandler(drill_down_callback, pattern="^drill_"),
+        CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"),
+        CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
+        # ИСПРАВЛЕННЫЕ обработчики уведомлений
+        CallbackQueryHandler(toggle_alerts, pattern="^alert_toggle_on$"),  # ИСПРАВЛЕНО: прямая ссылка
+        CallbackQueryHandler(send_filters_menu, pattern="^alert_back_filters$"),  # ИСПРАВЛЕНО: прямая ссылка
+        CallbackQueryHandler(show_alert_exchanges_menu, pattern="^alert_exchanges_menu$"),
+        CallbackQueryHandler(alert_exchanges_callback_handler, pattern="^alert_exch_"),
+        CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
+        # Обработчики ИИ-анализа
+        CallbackQueryHandler(show_ai_analysis, pattern="^ai_analysis$"),
+        CallbackQueryHandler(show_ai_detail, pattern="^ai_detail_"),
+        # Универсальный обработчик для всех остальных сообщений (должен быть последним)
+        MessageHandler(filters.TEXT, handle_unauthorized_message),
+    ]
+
+    # Добавляем все обработчики в приложение
+    app.add_handlers(conv_handlers)
+    app.add_handlers(regular_handlers)
+    app.add_handler(CommandHandler("getdata", get_data_command))
+
+    # 4. Запуск фонового сканера
+    async def post_init(app):
+        asyncio.create_task(background_scanner(app))
+
+    app.post_init = post_init
+
+    # 5. Запускаем бота
+    print("🤖 RateHunter 2.0 с ИИ-анализатором запущен с ограничением доступа!")
+    print(f"🔑 Разрешенные пользователи: {ALLOWED_USERS}")
+    print("🚀 Фоновый сканер для уведомлений активен!")
+    print("🧠 Умный анализ funding rates включен!")
+    print("⚙️ Настройки бирж для уведомлений добавлены!")
+    app.run_polling()
+                rates_analysis = {"high_rates": 0, "medium_rates": 0, "low_rates": 0}
+    volume_analysis = {"high_volume": 0, "medium_volume": 0, "low_volume": 0}
+    
+    for item in all_data:
+        rate_pct = abs(item['rate']) * 100
+        volume_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+        
+        if rate_pct >= 0.5:
+            rates_analysis["high_rates"] += 1
+        elif rate_pct >= 0.1:
+            rates_analysis["medium_rates"] += 1
+        else:
+            rates_analysis["low_rates"] += 1
+            
+        if volume_m >= 100:
+            volume_analysis["high_volume"] += 1
+        elif volume_m >= 10:
+            volume_analysis["medium_volume"] += 1
+        else:
+            volume_analysis["low_volume"] += 1
+    
+    report = "🔧 **Диагностика API**\n\n"
+    
+    if exchange_counts:
+        for exchange, count in exchange_counts.items():
+            status_emoji = "✅" if count > 0 else "❌"
+            report += f"{status_emoji} **{exchange}**: {count} инструментов\n"
+    else:
+        report += "❌ Нет данных ни с одной биржи\n"
+    
+    report += f"\n📊 **Анализ ставок:**\n"
+    report += f"• ≥ 0.5%: {rates_analysis['high_rates']} пар\n"
+    report += f"• 0.1-0.5%: {rates_analysis['medium_rates']} пар\n"
+    report += f"• < 0.1%: {rates_analysis['low_rates']} пар\n"
+    
+    report += f"\n💰 **Анализ объемов:**\n"
+    report += f"• ≥ 100M USDT: {volume_analysis['high_volume']} пар\n"
+    report += f"• 10-100M USDT: {volume_analysis['medium_volume']} пар\n"
+    report += f"• < 10M USDT: {volume_analysis['low_volume']} пар\n"
+    
+    if all_data:
+        top_rates = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:5]
+        report += f"\n🔥 **Топ-5 ставок:**\n"
+        for item in top_rates:
+            rate_pct = abs(item['rate']) * 100
+            vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+            report += f"• {item['symbol'].replace('USDT', '')}: {rate_pct:.3f}% (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
+    
+    report += f"\n⏰ Время обновления: {datetime.now(MSK_TIMEZONE).strftime('%H:%M:%S MSK')}"
+    report += f"\n🕑 Кэш действителен: {CACHE_LIFETIME_SECONDS} сек"
+    
+    report += "\n\n🔑 **Статус ключей:**\n"
+    mexc_key = context.bot_data.get('mexc_api_key')
+    bybit_key = context.bot_data.get('bybit_api_key')
+    
+    report += f"{'✅' if mexc_key else '❌'} MEXC: {'Настроены' if mexc_key else 'Отсутствуют'}\n"
+    report += f"{'✅' if bybit_key else '❌'} Bybit: {'Настроены' if bybit_key else 'Отсутствуют'}\n"
+    
+    await msg.edit_text(report, parse_mode='Markdown')
+
+# ===== НОВАЯ ФУНКЦИЯ: УМНЫЙ АНАЛИЗ ВОЗМОЖНОСТЕЙ =====
+async def analyze_funding_opportunity(item: Dict) -> Dict:
+    """
+    Интегрирует умный анализ в данные инструмента
+    Добавляет рекомендации на основе анализа тренда
+    """
+    
+    # Запускаем анализ стабильности
+    stability_analysis = await funding_analyzer.analyze_funding_stability(
+        symbol=item['symbol'],
+        exchange=item['exchange'], 
+        current_rate=item['rate']
+    )
+    
+    # Добавляем анализ к данным элемента
+    item['stability_analysis'] = stability_analysis
+    
+    # Формируем умное сообщение
+    recommendation = stability_analysis['recommendation']
+    confidence = stability_analysis['confidence']
+    
+    # Эмодзи и сообщения для разных типов рекомендаций
+    recommendation_map = {
+        'ideal_arbitrage': {
+            'emoji': '✅',
+            'message': 'Идеальные условия',
+            'details': 'Ставка стабильна, низкий риск'
+        },
+        'risky_arbitrage': {
+            'emoji': '⚠️', 
+            'message': 'Рискованно',
+            'details': 'Высокая волатильность ставки'
+        },
+        'contrarian_opportunity': {
+            'emoji': '🔥',
+            'message': 'Возможность на развороте', 
+            'details': 'Ставка истощается'
+        },
+        'unclear_signal': {
+            'emoji': '⚪️',
+            'message': 'Неоднозначно',
+            'details': 'Смешанные сигналы'
+        },
+        'rate_too_low': {
+            'emoji': '📉',
+            'message': 'Ставка низкая',
+            'details': 'Не достигает порога'
+        },
+        'insufficient_data': {
+            'emoji': '❓',
+            'message': 'Мало данных',
+            'details': 'Нужна история ставок'
+        }
+    }
+    
+    rec_info = recommendation_map.get(recommendation, {
+        'emoji': '❓',
+        'message': 'Анализ...',
+        'details': 'Обработка данных'
+    })
+    
+    item['smart_recommendation'] = {
+        'emoji': rec_info['emoji'],
+        'message': rec_info['message'],
+        'details': rec_info['details'],
+        'confidence': confidence,
+        'recommendation_type': recommendation
+    }
+    
+    return item
+
+@require_access()
+async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+
+    msg = update.callback_query.message if update.callback_query else await update.message.reply_text("🔄 Ищу...")
+    await msg.edit_text("🔄 Ищу лучшие возможности...")
+
+    all_data = await fetch_all_data(context)
+    if not all_data:
+        await msg.edit_text("😞 Не удалось получить данные с бирж. Попробуйте 🔧 Диагностика API для проверки.")
+        return
+
+    print(f"[DEBUG] Фильтры: биржи={settings['exchanges']}, ставка>={settings['funding_threshold']}, объем>={settings['volume_threshold_usdt']}")
+    print(f"[DEBUG] Всего данных для фильтрации: {len(all_data)}")
+    
+    # Применяем фильтры ПОЭТАПНО с отладкой
+    print(f"[DEBUG] Этап 1: Фильтр по биржам...")
+    exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
+    print(f"[DEBUG] После фильтра по биржам: {len(exchange_filtered)} инструментов")
+    
+    print(f"[DEBUG] Этап 2: Фильтр по ставке...")
+    rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
+    print(f"[DEBUG] После фильтра по ставке: {len(rate_filtered)} инструментов")
+    
+    print(f"[DEBUG] Этап 3: Фильтр по объему...")
+    volume_filtered = [item for item in rate_filtered if item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']]
+    print(f"[DEBUG] После фильтра по объему: {len(volume_filtered)} инструментов")
+    
+    # Показываем топ-10 по ставке для отладки
+    top_rates_debug = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:10]
+    print(f"[DEBUG] Топ-10 ставок (без фильтров):")
+    for i, item in enumerate(top_rates_debug):
+        rate_pct = abs(item['rate']) * 100
+        vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%, объем: {vol_m:.1f}M USDT")
+    
+    filtered_data = volume_filtered
+    
+    if not filtered_data:
+        stats_msg = f"😞 Не найдено пар, соответствующих всем фильтрам.\n\n"
+        stats_msg += f"📊 **Статистика:**\n"
+        stats_msg += f"• Всего инструментов: {len(all_data)}\n"
+        stats_msg += f"• На выбранных биржах: {len(exchange_filtered)}\n"
+        stats_msg += f"• Со ставкой ≥ {settings['funding_threshold']*100:.1f}%: {len(rate_filtered)}\n"
+        stats_msg += f"• С объемом ≥ {settings['volume_threshold_usdt']/1_000:.0f}K: {len(filtered_data)}\n\n"
+        
+        if rate_filtered:
+            stats_msg += f"🔥 **Топ-3 со ставкой ≥ {settings['funding_threshold']*100:.1f}%:**\n"
+            for item in sorted(rate_filtered, key=lambda x: abs(x['rate']), reverse=True)[:3]:
+                rate_pct = abs(item['rate']) * 100
+                vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+                direction = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
+                stats_msg += f"{direction} {item['symbol'].replace('USDT', '')} `{rate_pct:.2f}%` (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
+        
+        await msg.edit_text(stats_msg, parse_mode='Markdown')
+        return
+
+    print(f"[DEBUG] Сортирую {len(filtered_data)} инструментов...")
+    
+    # ===== УБИРАЕМ ДУБЛИКАТЫ ПО СИМВОЛАМ =====
+    # Группируем по символам и выбираем лучшую ставку для каждого
+    symbol_groups = {}
+    for item in filtered_data:
+        symbol = item['symbol']
+        if symbol not in symbol_groups:
+            symbol_groups[symbol] = []
+        symbol_groups[symbol].append(item)
+    
+    # Для каждого символа выбираем инструмент с максимальной абсолютной ставкой
+    unique_opportunities = []
+    for symbol, items in symbol_groups.items():
+        best_item = max(items, key=lambda x: abs(x['rate']))
+        unique_opportunities.append(best_item)
+    
+    # Сортируем уникальные возможности по абсолютной ставке
+    unique_opportunities.sort(key=lambda x: abs(x['rate']), reverse=True)
+    top_5 = unique_opportunities[:5]
+    
+    print(f"[DEBUG] После удаления дубликатов: {len(unique_opportunities)} уникальных символов")
+    print(f"[DEBUG] Топ-5 уникальных возможностей:")
+    for i, item in enumerate(top_5):
+        rate_pct = abs(item['rate']) * 100
+        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%")
+    
+    print(f"[DEBUG] Выбрано топ-5 уникальных инструментов для отображения")
+
+    # ===== ЧИСТЫЙ ИНТЕРФЕЙС БЕЗ ИИ =====
+    # Сохраняем данные для ИИ-анализа и детального просмотра
+    context.user_data['current_opportunities'] = top_5
+    context.user_data['all_symbol_data'] = symbol_groups  # Сохраняем все данные по символам
+    print(f"[DEBUG] Сохранил данные в context.user_data")
+
+    print(f"[DEBUG] Формирую сообщение...")
+    # Формируем чистое сообщение
+    message_text = f"🔥 **ТОП-5 фандинг возможностей**\n\n"
+    buttons = []
+    now_utc = datetime.now(timezone.utc)
+    
+    for i, item in enumerate(top_5):
+        print(f"[DEBUG] Обрабатываю инструмент {i+1}: {item['symbol']}")
+        symbol_only = item['symbol'].replace("USDT", "")
+        funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
+        time_left = funding_dt_utc - now_utc
+        countdown_str = ""
+        if time_left.total_seconds() > 0:
+            h, m = divmod(int(time_left.total_seconds()) // 60, 60)
+            countdown_str = f" ({h}ч {m}м)" if h > 0 else f" ({m}м)" if m > 0 else " (<1м)"
+
+        # Основная информация - ЧИСТО И ПОНЯТНО
+        arrow = "🟢" if item['rate'] < 0 else "🔴"
+        rate_str = f"{item['rate'] * 100:+.2f}%"
+        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
+        
+        message_text += f"{arrow} **{symbol_only}** {rate_str} | 🕑 {time_str} {countdown_str} | {item['exchange']}\n"
+
+        buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
+
+    message_text += "\n💡 *Хотите ИИ-анализ? Нажмите кнопку ниже* ↓"
+    print(f"[DEBUG] Сообщение сформировано, создаю кнопки...")
+
+    # Кнопки: детали монет + ИИ-анализ
+    detail_buttons = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+    ai_buttons = [
+        [InlineKeyboardButton("🧠 ИИ-Анализ", callback_data="ai_analysis")],
+        [InlineKeyboardButton("🔄 Обновить", callback_data="back_to_top")]
+    ]
+    
+    keyboard = detail_buttons + ai_buttons
+    print(f"[DEBUG] Отправляю ответ пользователю...")
+    await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
+    print(f"[DEBUG] Ответ отправлен успешно!")
+
+# ===== НОВАЯ ФУНКЦИЯ: ИИ-АНАЛИЗ =====
+async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает экран с ИИ-анализом возможностей"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    await query.edit_message_text("🧠 Анализирую с помощью ИИ...")
+
+    # Получаем сохраненные данные
+    opportunities = context.user_data.get('current_opportunities', [])
+    
+    if not opportunities:
+        await query.edit_message_text(
+            "❓ Нет данных для анализа. Сначала получите список возможностей.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]])
+        )
+        return
+
+    # ===== ПРИМЕНЯЕМ ИИ-АНАЛИЗ =====
+    print(f"[AI_ANALYSIS] Анализирую {len(opportunities)} возможностей...")
+    
+    analyzed_opportunities = []
+    for item in opportunities:
+        analyzed_item = await analyze_funding_opportunity(item)
+        analyzed_opportunities.append(analyzed_item)
+        print(f"[AI_ANALYSIS] {item['symbol']}: {analyzed_item['smart_recommendation']['message']}")
+
+    # Формируем сообщение ИИ-анализа
+    message_text = "🧠 **ИИ-Анализ возможностей**\n\n"
+    message_text += "*Выберите монету для подробного анализа:*\n\n"
+    
+    buttons = []
+    for item in analyzed_opportunities:
+        symbol_only = item['symbol'].replace("USDT", "")
+        rec = item['smart_recommendation']
+        confidence = rec['confidence']
+        
+        # Определяем уровень уверенности простыми словами
+        if confidence >= 0.8:
+            confidence_text = "ИИ очень уверен"
+        elif confidence >= 0.6:
+            confidence_text = "ИИ довольно уверен"  
+        elif confidence >= 0.4:
+            confidence_text = "ИИ сомневается"
+        else:
+            confidence_text = "ИИ не уверен"
+            
+        message_text += f"{rec['emoji']} **{symbol_only}** - {rec['message']}\n"
+        message_text += f"   _{confidence_text} ({confidence:.0%})_\n\n"
+
+        buttons.append(InlineKeyboardButton(f"{rec['emoji']} {symbol_only}", callback_data=f"ai_detail_{item['symbol']}"))
+
+    message_text += "💡 *Нажмите на монету для подробного анализа*"
+
+    # Кнопки: выбор монет + назад
+    coin_buttons = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    back_button = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
+    
+    keyboard = coin_buttons + back_button
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+# ===== НОВАЯ ФУНКЦИЯ: ДЕТАЛЬНЫЙ ИИ-АНАЛИЗ МОНЕТЫ =====
+async def show_ai_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает детальный ИИ-анализ конкретной монеты"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    symbol_to_analyze = query.data.split('_')[2]  # ai_detail_SYMBOLUSDT
+    await query.answer()
+
+    # Получаем сохраненные данные
+    opportunities = context.user_data.get('current_opportunities', [])
+    target_item = None
+    
+    for item in opportunities:
+        if item['symbol'] == symbol_to_analyze:
+            target_item = item
+            break
+    
+    if not target_item:
+        await query.edit_message_text(
+            "❓ Монета не найдена в текущем списке.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к ИИ", callback_data="ai_analysis")]])
+        )
+        return
+
+    # Применяем ИИ-анализ к конкретной монете
+    analyzed_item = await analyze_funding_opportunity(target_item)
+    symbol_only = symbol_to_analyze.replace("USDT", "")
+    rec = analyzed_item['smart_recommendation']
+    stability = analyzed_item['stability_analysis']
+    
+    # Формируем детальный анализ
+    message_text = f"🧠 **ИИ-Анализ: {symbol_only}**\n\n"
+    
+    # Основные данные
+    rate_pct = abs(target_item['rate']) * 100
+    message_text += f"📈 **Ставка:** {target_item['rate'] * 100:+.2f}%\n"
+    message_text += f"📊 **Тренд:** {stability['trend'].title()}\n"
+    message_text += f"⚡ **Стабильность:** {stability['stability'].title()}\n"
+    message_text += f"🎯 **Рекомендация:** {rec['message'].upper()}\n\n"
+    
+    # Объяснение что это значит
+    message_text += "❓ **Что это значит?**\n"
+    
+    explanation_map = {
+        'ideal_arbitrage': "Ставка стабильна и предсказуема. Низкий риск резких изменений. Хорошие условия для заработка на фандинге.",
+        'risky_arbitrage': "Ставка нестабильна и может резко измениться. Риск потерь выше обычного. Торговать осторожно.",
+        'contrarian_opportunity': "Ставка истощается - возможен разворот цены. Можно рассмотреть противоположную позицию после выплаты.",
+        'unclear_signal': "Смешанные сигналы от ИИ. Ситуация неоднозначная. Лучше дождаться более четкого сигнала.",
+        'rate_too_low': "Ставка слишком низкая для получения значимой прибыли. Не рекомендуется к торговле.",
+        'insufficient_data': "Недостаточно исторических данных для точного анализа. ИИ не может дать надежную рекомендацию."
+    }
+    
+    explanation = explanation_map.get(rec['recommendation_type'], "Требуется дополнительный анализ.")
+    message_text += f"_{explanation}_\n\n"
+    
+    # Практические советы
+    if rec['recommendation_type'] == 'ideal_arbitrage':
+        message_text += "✅ **Что делать:**\n"
+        message_text += "• Можно входить в позицию стандартным размером\n"
+        message_text += "• Держать до выплаты фандинга\n"
+        message_text += "• Риск минимален\n\n"
+    elif rec['recommendation_type'] == 'risky_arbitrage':
+        message_text += "⚠️ **Что делать:**\n"
+        message_text += "• Используйте уменьшенный размер позиции\n"
+        message_text += "• Установите тесный стоп-лосс\n"
+        message_text += "• Следите за рынком внимательно\n\n"
+    elif rec['recommendation_type'] == 'contrarian_opportunity':
+        message_text += "🔥 **Что делать:**\n"
+        message_text += "• Дождитесь выплаты фандинга\n"
+        message_text += "• Рассмотрите противоположную позицию\n"
+        message_text += "• Следите за разворотом тренда\n\n"
+    else:
+        message_text += "⏸️ **Что делать:**\n"
+        message_text += "• Лучше пропустить эту возможность\n"
+        message_text += "• Дождаться более четкого сигнала\n"
+        message_text += "• Искать другие варианты\n\n"
+    
+    # Уверенность ИИ
+    confidence = rec['confidence']
+    if confidence >= 0.8:
+        confidence_text = "очень уверен"
+        confidence_explanation = "(как прогноз погоды с вероятностью 90%)"
+    elif confidence >= 0.6:
+        confidence_text = "довольно уверен"
+        confidence_explanation = "(как мнение опытного трейдера)"
+    elif confidence >= 0.4:
+        confidence_text = "сомневается"
+        confidence_explanation = "(смешанные сигналы)"
+    else:
+        confidence_text = "не уверен"
+        confidence_explanation = "(мало данных для анализа)"
+        
+    message_text += f"🎯 **Уверенность ИИ:** {confidence:.0%}\n"
+    message_text += f"_ИИ {confidence_text} {confidence_explanation}_"
+
+    keyboard = [
+        [InlineKeyboardButton("⬅️ Назад к ИИ-анализу", callback_data="ai_analysis")],
+        [InlineKeyboardButton("🏠 К топу возможностей", callback_data="back_to_top")]
+    ]
+    
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+# ===== ИСПРАВЛЕННЫЕ CALLBACK ФУНКЦИИ =====
+async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    symbol_to_show = query.data.split('_')[1]
+    await query.answer()
+
+    # Сначала пытаемся получить данные из сохраненных (более точные)
+    all_symbol_data = context.user_data.get('all_symbol_data', {})
+    
+    if symbol_to_show in all_symbol_data:
+        symbol_data = all_symbol_data[symbol_to_show]
+        print(f"[DEBUG] Используем сохраненные данные для {symbol_to_show}: {len(symbol_data)} записей")
+    else:
+        # Fallback - получаем из кэша
+        print(f"[DEBUG] Данные не найдены в user_data, используем кэш API")
+        all_data = api_data_cache.get("data", [])
+        if not all_data:
+            await query.edit_message_text("🔄 Обновляю данные...")
+            all_data = await fetch_all_data(context, force_update=True)
+        symbol_data = [item for item in all_data if item['symbol'] == symbol_to_show]
+        
+    # Сортируем по абсолютной ставке
+    symbol_data = sorted(symbol_data, key=lambda x: abs(x['rate']), reverse=True)
+    symbol_only = symbol_to_show.replace("USDT", "")
+    
+    if not symbol_data:
+        await query.edit_message_text(
+            f"❓ Данные по {symbol_only} не найдены.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]])
+        )
+        return
+    
+    message_text = f"💎 **Детали по {symbol_only}**\n\n"
+    now_utc = datetime.now(timezone.utc)
+    
+    print(f"[DEBUG] Отображаем {len(symbol_data)} записей для {symbol_only}")
+    
+    for item in symbol_data:
+        funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
+        time_left = funding_dt_utc - now_utc
+        countdown_str = ""
+        if time_left.total_seconds() > 0:
+            h, m = divmod(int(time_left.total_seconds()) // 60, 60)
+            countdown_str = f" ({h}ч {m}м)" if h > 0 else f" ({m}м)" if m > 0 else " (<1м)"
+        
+        direction, rate_str = ("🟢 ЛОНГ", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 ШОРТ", f"{item['rate'] * 100:+.2f}%")
+        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
+        vol = item.get('volume_24h_usdt', Decimal('0'))
+        vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
+        
+        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` **[{item['exchange']}]({item['trade_url']})**\n"
+        message_text += f"  *Объем 24ч:* `{vol_str} USDT`\n"
+        if (max_pos := item.get('max_order_value_usdt', Decimal('0'# =========================================================================
+# ===================== RateHunter 2.0 - v1.2.0 ИСПРАВЛЕНО ===============
 # =========================================================================
-# ===================== RateHunter 2.0 - v1.1.0 С АНАЛИЗАТОРОМ ===========
-# =========================================================================
-# Добавлен умный анализатор трендов funding rate
+# Исправлены проблемы с обработчиками уведомлений
 # =========================================================================
 
 import os
@@ -601,1140 +1687,4 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         exchange = item.get('exchange', 'Unknown')
         exchange_counts[exchange] = exchange_counts.get(exchange, 0) + 1
     
-    rates_analysis = {"high_rates": 0, "medium_rates": 0, "low_rates": 0}
-    volume_analysis = {"high_volume": 0, "medium_volume": 0, "low_volume": 0}
-    
-    for item in all_data:
-        rate_pct = abs(item['rate']) * 100
-        volume_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
-        
-        if rate_pct >= 0.5:
-            rates_analysis["high_rates"] += 1
-        elif rate_pct >= 0.1:
-            rates_analysis["medium_rates"] += 1
-        else:
-            rates_analysis["low_rates"] += 1
-            
-        if volume_m >= 100:
-            volume_analysis["high_volume"] += 1
-        elif volume_m >= 10:
-            volume_analysis["medium_volume"] += 1
-        else:
-            volume_analysis["low_volume"] += 1
-    
-    report = "🔧 **Диагностика API**\n\n"
-    
-    if exchange_counts:
-        for exchange, count in exchange_counts.items():
-            status_emoji = "✅" if count > 0 else "❌"
-            report += f"{status_emoji} **{exchange}**: {count} инструментов\n"
-    else:
-        report += "❌ Нет данных ни с одной биржи\n"
-    
-    report += f"\n📊 **Анализ ставок:**\n"
-    report += f"• ≥ 0.5%: {rates_analysis['high_rates']} пар\n"
-    report += f"• 0.1-0.5%: {rates_analysis['medium_rates']} пар\n"
-    report += f"• < 0.1%: {rates_analysis['low_rates']} пар\n"
-    
-    report += f"\n💰 **Анализ объемов:**\n"
-    report += f"• ≥ 100M USDT: {volume_analysis['high_volume']} пар\n"
-    report += f"• 10-100M USDT: {volume_analysis['medium_volume']} пар\n"
-    report += f"• < 10M USDT: {volume_analysis['low_volume']} пар\n"
-    
-    if all_data:
-        top_rates = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:5]
-        report += f"\n🔥 **Топ-5 ставок:**\n"
-        for item in top_rates:
-            rate_pct = abs(item['rate']) * 100
-            vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
-            report += f"• {item['symbol'].replace('USDT', '')}: {rate_pct:.3f}% (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
-    
-    report += f"\n⏰ Время обновления: {datetime.now(MSK_TIMEZONE).strftime('%H:%M:%S MSK')}"
-    report += f"\n🕑 Кэш действителен: {CACHE_LIFETIME_SECONDS} сек"
-    
-    report += "\n\n🔑 **Статус ключей:**\n"
-    mexc_key = context.bot_data.get('mexc_api_key')
-    bybit_key = context.bot_data.get('bybit_api_key')
-    
-    report += f"{'✅' if mexc_key else '❌'} MEXC: {'Настроены' if mexc_key else 'Отсутствуют'}\n"
-    report += f"{'✅' if bybit_key else '❌'} Bybit: {'Настроены' if bybit_key else 'Отсутствуют'}\n"
-    
-    await msg.edit_text(report, parse_mode='Markdown')
-
-# ===== НОВАЯ ФУНКЦИЯ: УМНЫЙ АНАЛИЗ ВОЗМОЖНОСТЕЙ =====
-async def analyze_funding_opportunity(item: Dict) -> Dict:
-    """
-    Интегрирует умный анализ в данные инструмента
-    Добавляет рекомендации на основе анализа тренда
-    """
-    
-    # Запускаем анализ стабильности
-    stability_analysis = await funding_analyzer.analyze_funding_stability(
-        symbol=item['symbol'],
-        exchange=item['exchange'], 
-        current_rate=item['rate']
-    )
-    
-    # Добавляем анализ к данным элемента
-    item['stability_analysis'] = stability_analysis
-    
-    # Формируем умное сообщение
-    recommendation = stability_analysis['recommendation']
-    confidence = stability_analysis['confidence']
-    
-    # Эмодзи и сообщения для разных типов рекомендаций
-    recommendation_map = {
-        'ideal_arbitrage': {
-            'emoji': '✅',
-            'message': 'Идеальные условия',
-            'details': 'Ставка стабильна, низкий риск'
-        },
-        'risky_arbitrage': {
-            'emoji': '⚠️', 
-            'message': 'Рискованно',
-            'details': 'Высокая волатильность ставки'
-        },
-        'contrarian_opportunity': {
-            'emoji': '🔥',
-            'message': 'Возможность на развороте', 
-            'details': 'Ставка истощается'
-        },
-        'unclear_signal': {
-            'emoji': '⚪️',
-            'message': 'Неоднозначно',
-            'details': 'Смешанные сигналы'
-        },
-        'rate_too_low': {
-            'emoji': '📉',
-            'message': 'Ставка низкая',
-            'details': 'Не достигает порога'
-        },
-        'insufficient_data': {
-            'emoji': '❓',
-            'message': 'Мало данных',
-            'details': 'Нужна история ставок'
-        }
-    }
-    
-    rec_info = recommendation_map.get(recommendation, {
-        'emoji': '❓',
-        'message': 'Анализ...',
-        'details': 'Обработка данных'
-    })
-    
-    item['smart_recommendation'] = {
-        'emoji': rec_info['emoji'],
-        'message': rec_info['message'],
-        'details': rec_info['details'],
-        'confidence': confidence,
-        'recommendation_type': recommendation
-    }
-    
-    return item
-
-@require_access()
-async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']
-
-    msg = update.callback_query.message if update.callback_query else await update.message.reply_text("🔄 Ищу...")
-    await msg.edit_text("🔄 Ищу лучшие возможности...")
-
-    all_data = await fetch_all_data(context)
-    if not all_data:
-        await msg.edit_text("😞 Не удалось получить данные с бирж. Попробуйте 🔧 Диагностика API для проверки.")
-        return
-
-    print(f"[DEBUG] Фильтры: биржи={settings['exchanges']}, ставка>={settings['funding_threshold']}, объем>={settings['volume_threshold_usdt']}")
-    print(f"[DEBUG] Всего данных для фильтрации: {len(all_data)}")
-    
-    # Применяем фильтры ПОЭТАПНО с отладкой
-    print(f"[DEBUG] Этап 1: Фильтр по биржам...")
-    exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
-    print(f"[DEBUG] После фильтра по биржам: {len(exchange_filtered)} инструментов")
-    
-    print(f"[DEBUG] Этап 2: Фильтр по ставке...")
-    rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
-    print(f"[DEBUG] После фильтра по ставке: {len(rate_filtered)} инструментов")
-    
-    print(f"[DEBUG] Этап 3: Фильтр по объему...")
-    volume_filtered = [item for item in rate_filtered if item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']]
-    print(f"[DEBUG] После фильтра по объему: {len(volume_filtered)} инструментов")
-    
-    # Показываем топ-10 по ставке для отладки
-    top_rates_debug = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:10]
-    print(f"[DEBUG] Топ-10 ставок (без фильтров):")
-    for i, item in enumerate(top_rates_debug):
-        rate_pct = abs(item['rate']) * 100
-        vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
-        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%, объем: {vol_m:.1f}M USDT")
-    
-    filtered_data = volume_filtered
-    
-    if not filtered_data:
-        stats_msg = f"😞 Не найдено пар, соответствующих всем фильтрам.\n\n"
-        stats_msg += f"📊 **Статистика:**\n"
-        stats_msg += f"• Всего инструментов: {len(all_data)}\n"
-        stats_msg += f"• На выбранных биржах: {len(exchange_filtered)}\n"
-        stats_msg += f"• Со ставкой ≥ {settings['funding_threshold']*100:.1f}%: {len(rate_filtered)}\n"
-        stats_msg += f"• С объемом ≥ {settings['volume_threshold_usdt']/1_000:.0f}K: {len(filtered_data)}\n\n"
-        
-        if rate_filtered:
-            stats_msg += f"🔥 **Топ-3 со ставкой ≥ {settings['funding_threshold']*100:.1f}%:**\n"
-            for item in sorted(rate_filtered, key=lambda x: abs(x['rate']), reverse=True)[:3]:
-                rate_pct = abs(item['rate']) * 100
-                vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
-                direction = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
-                stats_msg += f"{direction} {item['symbol'].replace('USDT', '')} `{rate_pct:.2f}%` (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
-        
-        await msg.edit_text(stats_msg, parse_mode='Markdown')
-        return
-
-    print(f"[DEBUG] Сортирую {len(filtered_data)} инструментов...")
-    
-    # ===== УБИРАЕМ ДУБЛИКАТЫ ПО СИМВОЛАМ =====
-    # Группируем по символам и выбираем лучшую ставку для каждого
-    symbol_groups = {}
-    for item in filtered_data:
-        symbol = item['symbol']
-        if symbol not in symbol_groups:
-            symbol_groups[symbol] = []
-        symbol_groups[symbol].append(item)
-    
-    # Для каждого символа выбираем инструмент с максимальной абсолютной ставкой
-    unique_opportunities = []
-    for symbol, items in symbol_groups.items():
-        best_item = max(items, key=lambda x: abs(x['rate']))
-        unique_opportunities.append(best_item)
-    
-    # Сортируем уникальные возможности по абсолютной ставке
-    unique_opportunities.sort(key=lambda x: abs(x['rate']), reverse=True)
-    top_5 = unique_opportunities[:5]
-    
-    print(f"[DEBUG] После удаления дубликатов: {len(unique_opportunities)} уникальных символов")
-    print(f"[DEBUG] Топ-5 уникальных возможностей:")
-    for i, item in enumerate(top_5):
-        rate_pct = abs(item['rate']) * 100
-        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%")
-    
-    print(f"[DEBUG] Выбрано топ-5 уникальных инструментов для отображения")
-
-    # ===== ЧИСТЫЙ ИНТЕРФЕЙС БЕЗ ИИ =====
-    # Сохраняем данные для ИИ-анализа и детального просмотра
-    context.user_data['current_opportunities'] = top_5
-    context.user_data['all_symbol_data'] = symbol_groups  # Сохраняем все данные по символам
-    print(f"[DEBUG] Сохранил данные в context.user_data")
-
-    print(f"[DEBUG] Формирую сообщение...")
-    # Формируем чистое сообщение
-    message_text = f"🔥 **ТОП-5 фандинг возможностей**\n\n"
-    buttons = []
-    now_utc = datetime.now(timezone.utc)
-    
-    for i, item in enumerate(top_5):
-        print(f"[DEBUG] Обрабатываю инструмент {i+1}: {item['symbol']}")
-        symbol_only = item['symbol'].replace("USDT", "")
-        funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
-        time_left = funding_dt_utc - now_utc
-        countdown_str = ""
-        if time_left.total_seconds() > 0:
-            h, m = divmod(int(time_left.total_seconds()) // 60, 60)
-            countdown_str = f" ({h}ч {m}м)" if h > 0 else f" ({m}м)" if m > 0 else " (<1м)"
-
-        # Основная информация - ЧИСТО И ПОНЯТНО
-        arrow = "🟢" if item['rate'] < 0 else "🔴"
-        rate_str = f"{item['rate'] * 100:+.2f}%"
-        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
-        
-        message_text += f"{arrow} **{symbol_only}** {rate_str} | 🕑 {time_str} {countdown_str} | {item['exchange']}\n"
-
-        buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
-
-    message_text += "\n💡 *Хотите ИИ-анализ? Нажмите кнопку ниже* ↓"
-    print(f"[DEBUG] Сообщение сформировано, создаю кнопки...")
-
-    # Кнопки: детали монет + ИИ-анализ
-    detail_buttons = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
-    ai_buttons = [
-        [InlineKeyboardButton("🧠 ИИ-Анализ", callback_data="ai_analysis")],
-        [InlineKeyboardButton("🔄 Обновить", callback_data="back_to_top")]
-    ]
-    
-    keyboard = detail_buttons + ai_buttons
-    print(f"[DEBUG] Отправляю ответ пользователю...")
-    await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
-    print(f"[DEBUG] Ответ отправлен успешно!")
-
-# ===== НОВАЯ ФУНКЦИЯ: ИИ-АНАЛИЗ =====
-async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает экран с ИИ-анализом возможностей"""
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    await query.answer()
-    await query.edit_message_text("🧠 Анализирую с помощью ИИ...")
-
-    # Получаем сохраненные данные
-    opportunities = context.user_data.get('current_opportunities', [])
-    
-    if not opportunities:
-        await query.edit_message_text(
-            "❓ Нет данных для анализа. Сначала получите список возможностей.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]])
-        )
-        return
-
-    # ===== ПРИМЕНЯЕМ ИИ-АНАЛИЗ =====
-    print(f"[AI_ANALYSIS] Анализирую {len(opportunities)} возможностей...")
-    
-    analyzed_opportunities = []
-    for item in opportunities:
-        analyzed_item = await analyze_funding_opportunity(item)
-        analyzed_opportunities.append(analyzed_item)
-        print(f"[AI_ANALYSIS] {item['symbol']}: {analyzed_item['smart_recommendation']['message']}")
-
-    # Формируем сообщение ИИ-анализа
-    message_text = "🧠 **ИИ-Анализ возможностей**\n\n"
-    message_text += "*Выберите монету для подробного анализа:*\n\n"
-    
-    buttons = []
-    for item in analyzed_opportunities:
-        symbol_only = item['symbol'].replace("USDT", "")
-        rec = item['smart_recommendation']
-        confidence = rec['confidence']
-        
-        # Определяем уровень уверенности простыми словами
-        if confidence >= 0.8:
-            confidence_text = "ИИ очень уверен"
-        elif confidence >= 0.6:
-            confidence_text = "ИИ довольно уверен"  
-        elif confidence >= 0.4:
-            confidence_text = "ИИ сомневается"
-        else:
-            confidence_text = "ИИ не уверен"
-            
-        message_text += f"{rec['emoji']} **{symbol_only}** - {rec['message']}\n"
-        message_text += f"   _{confidence_text} ({confidence:.0%})_\n\n"
-
-        buttons.append(InlineKeyboardButton(f"{rec['emoji']} {symbol_only}", callback_data=f"ai_detail_{item['symbol']}"))
-
-    message_text += "💡 *Нажмите на монету для подробного анализа*"
-
-    # Кнопки: выбор монет + назад
-    coin_buttons = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    back_button = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
-    
-    keyboard = coin_buttons + back_button
-    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-# ===== НОВАЯ ФУНКЦИЯ: ДЕТАЛЬНЫЙ ИИ-АНАЛИЗ МОНЕТЫ =====
-async def show_ai_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает детальный ИИ-анализ конкретной монеты"""
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    symbol_to_analyze = query.data.split('_')[2]  # ai_detail_SYMBOLUSDT
-    await query.answer()
-
-    # Получаем сохраненные данные
-    opportunities = context.user_data.get('current_opportunities', [])
-    target_item = None
-    
-    for item in opportunities:
-        if item['symbol'] == symbol_to_analyze:
-            target_item = item
-            break
-    
-    if not target_item:
-        await query.edit_message_text(
-            "❓ Монета не найдена в текущем списке.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к ИИ", callback_data="ai_analysis")]])
-        )
-        return
-
-    # Применяем ИИ-анализ к конкретной монете
-    analyzed_item = await analyze_funding_opportunity(target_item)
-    symbol_only = symbol_to_analyze.replace("USDT", "")
-    rec = analyzed_item['smart_recommendation']
-    stability = analyzed_item['stability_analysis']
-    
-    # Формируем детальный анализ
-    message_text = f"🧠 **ИИ-Анализ: {symbol_only}**\n\n"
-    
-    # Основные данные
-    rate_pct = abs(target_item['rate']) * 100
-    message_text += f"📈 **Ставка:** {target_item['rate'] * 100:+.2f}%\n"
-    message_text += f"📊 **Тренд:** {stability['trend'].title()}\n"
-    message_text += f"⚡ **Стабильность:** {stability['stability'].title()}\n"
-    message_text += f"🎯 **Рекомендация:** {rec['message'].upper()}\n\n"
-    
-    # Объяснение что это значит
-    message_text += "❓ **Что это значит?**\n"
-    
-    explanation_map = {
-        'ideal_arbitrage': "Ставка стабильна и предсказуема. Низкий риск резких изменений. Хорошие условия для заработка на фандинге.",
-        'risky_arbitrage': "Ставка нестабильна и может резко измениться. Риск потерь выше обычного. Торговать осторожно.",
-        'contrarian_opportunity': "Ставка истощается - возможен разворот цены. Можно рассмотреть противоположную позицию после выплаты.",
-        'unclear_signal': "Смешанные сигналы от ИИ. Ситуация неоднозначная. Лучше дождаться более четкого сигнала.",
-        'rate_too_low': "Ставка слишком низкая для получения значимой прибыли. Не рекомендуется к торговле.",
-        'insufficient_data': "Недостаточно исторических данных для точного анализа. ИИ не может дать надежную рекомендацию."
-    }
-    
-    explanation = explanation_map.get(rec['recommendation_type'], "Требуется дополнительный анализ.")
-    message_text += f"_{explanation}_\n\n"
-    
-    # Практические советы
-    if rec['recommendation_type'] == 'ideal_arbitrage':
-        message_text += "✅ **Что делать:**\n"
-        message_text += "• Можно входить в позицию стандартным размером\n"
-        message_text += "• Держать до выплаты фандинга\n"
-        message_text += "• Риск минимален\n\n"
-    elif rec['recommendation_type'] == 'risky_arbitrage':
-        message_text += "⚠️ **Что делать:**\n"
-        message_text += "• Используйте уменьшенный размер позиции\n"
-        message_text += "• Установите тесный стоп-лосс\n"
-        message_text += "• Следите за рынком внимательно\n\n"
-    elif rec['recommendation_type'] == 'contrarian_opportunity':
-        message_text += "🔥 **Что делать:**\n"
-        message_text += "• Дождитесь выплаты фандинга\n"
-        message_text += "• Рассмотрите противоположную позицию\n"
-        message_text += "• Следите за разворотом тренда\n\n"
-    else:
-        message_text += "⏸️ **Что делать:**\n"
-        message_text += "• Лучше пропустить эту возможность\n"
-        message_text += "• Дождаться более четкого сигнала\n"
-        message_text += "• Искать другие варианты\n\n"
-    
-    # Уверенность ИИ
-    confidence = rec['confidence']
-    if confidence >= 0.8:
-        confidence_text = "очень уверен"
-        confidence_explanation = "(как прогноз погоды с вероятностью 90%)"
-    elif confidence >= 0.6:
-        confidence_text = "довольно уверен"
-        confidence_explanation = "(как мнение опытного трейдера)"
-    elif confidence >= 0.4:
-        confidence_text = "сомневается"
-        confidence_explanation = "(смешанные сигналы)"
-    else:
-        confidence_text = "не уверен"
-        confidence_explanation = "(мало данных для анализа)"
-        
-    message_text += f"🎯 **Уверенность ИИ:** {confidence:.0%}\n"
-    message_text += f"_ИИ {confidence_text} {confidence_explanation}_"
-
-    keyboard = [
-        [InlineKeyboardButton("⬅️ Назад к ИИ-анализу", callback_data="ai_analysis")],
-        [InlineKeyboardButton("🏠 К топу возможностей", callback_data="back_to_top")]
-    ]
-    
-    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-# ===== ИСПРАВЛЕННЫЕ CALLBACK ФУНКЦИИ =====
-async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    symbol_to_show = query.data.split('_')[1]
-    await query.answer()
-
-    # Сначала пытаемся получить данные из сохраненных (более точные)
-    all_symbol_data = context.user_data.get('all_symbol_data', {})
-    
-    if symbol_to_show in all_symbol_data:
-        symbol_data = all_symbol_data[symbol_to_show]
-        print(f"[DEBUG] Используем сохраненные данные для {symbol_to_show}: {len(symbol_data)} записей")
-    else:
-        # Fallback - получаем из кэша
-        print(f"[DEBUG] Данные не найдены в user_data, используем кэш API")
-        all_data = api_data_cache.get("data", [])
-        if not all_data:
-            await query.edit_message_text("🔄 Обновляю данные...")
-            all_data = await fetch_all_data(context, force_update=True)
-        symbol_data = [item for item in all_data if item['symbol'] == symbol_to_show]
-        
-    # Сортируем по абсолютной ставке
-    symbol_data = sorted(symbol_data, key=lambda x: abs(x['rate']), reverse=True)
-    symbol_only = symbol_to_show.replace("USDT", "")
-    
-    if not symbol_data:
-        await query.edit_message_text(
-            f"❓ Данные по {symbol_only} не найдены.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]])
-        )
-        return
-    
-    message_text = f"💎 **Детали по {symbol_only}**\n\n"
-    now_utc = datetime.now(timezone.utc)
-    
-    print(f"[DEBUG] Отображаем {len(symbol_data)} записей для {symbol_only}")
-    
-    for item in symbol_data:
-        funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
-        time_left = funding_dt_utc - now_utc
-        countdown_str = ""
-        if time_left.total_seconds() > 0:
-            h, m = divmod(int(time_left.total_seconds()) // 60, 60)
-            countdown_str = f" ({h}ч {m}м)" if h > 0 else f" ({m}м)" if m > 0 else " (<1м)"
-        
-        direction, rate_str = ("🟢 ЛОНГ", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 ШОРТ", f"{item['rate'] * 100:+.2f}%")
-        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
-        vol = item.get('volume_24h_usdt', Decimal('0'))
-        vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
-        
-        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` **[{item['exchange']}]({item['trade_url']})**\n"
-        message_text += f"  *Объем 24ч:* `{vol_str} USDT`\n"
-        if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: 
-            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
-        message_text += "\n"
-
-    # Добавляем кнопку ИИ-анализа для этой конкретной монеты
-    keyboard = [
-        [InlineKeyboardButton("🧠 ИИ-Анализ этой монеты", callback_data=f"ai_detail_{symbol_to_show}")],
-        [InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]
-    ]
-    await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
-    if not all_data:
-        await query.edit_message_text("🔄 Обновляю данные...")
-        all_data = await fetch_all_data(context, force_update=True)
-        
-    symbol_data = sorted([item for item in all_data if item['symbol'] == symbol_to_show], key=lambda x: abs(x['rate']), reverse=True)
-    symbol_only = symbol_to_show.replace("USDT", "")
-    message_text = f"💎 **Детали по {symbol_only}**\n\n"
-    now_utc = datetime.now(timezone.utc)
-    
-    for item in symbol_data:
-        # Применяем умный анализ и к детальному просмотру
-        analyzed_item = await analyze_funding_opportunity(item)
-        rec = analyzed_item['smart_recommendation']
-        
-        funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
-        time_left = funding_dt_utc - now_utc
-        countdown_str = ""
-        if time_left.total_seconds() > 0:
-            h, m = divmod(int(time_left.total_seconds()) // 60, 60)
-            countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)" if m > 0 else " (меньше минуты)"
-        
-        direction, rate_str = ("🟢 ЛОНГ", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 ШОРТ", f"{item['rate'] * 100:+.2f}%")
-        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
-        vol = item.get('volume_24h_usdt', Decimal('0'))
-        vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
-        
-        confidence_str = f" ({rec['confidence']:.0%})" if rec['confidence'] > 0 else ""
-        
-        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]({item['trade_url']})\n"
-        message_text += f"  *Объем 24ч:* `{vol_str} USDT`\n"
-        message_text += f"  {rec['emoji']} *ИИ:* _{rec['message']}{confidence_str}_\n"
-        if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: 
-            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
-        message_text += "\n"
-
-    keyboard = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
-    await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
-
-async def back_to_top_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    if query:
-        await query.answer()
-    await show_top_rates(update, context)
-
-@require_access()
-async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']
-    
-    message_text = "🔧 **Настройки фильтров для ручного поиска**"
-    keyboard = [
-        [InlineKeyboardButton("🏦 Биржи", callback_data="filters_exchanges")],
-        [InlineKeyboardButton(f"📈 Ставка: > {settings['funding_threshold']*100:.2f}%", callback_data="filters_funding")],
-        [InlineKeyboardButton(f"💧 Объем: > {format_volume(settings['volume_threshold_usdt'])}", callback_data="filters_volume")],
-        [InlineKeyboardButton("🚨 Настроить Уведомления", callback_data="alert_show_menu")],
-        [InlineKeyboardButton("❌ Закрыть", callback_data="filters_close")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query:
-        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
-        
-@require_access()
-async def filters_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_filters_menu(update, context)
-
-async def filters_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    await query.answer()
-    action = query.data.split('_', 1)[1]
-    if action == "close":
-        await query.message.delete()
-    elif action == "toggle_notif":
-        user_settings[update.effective_chat.id]['settings']['notifications_on'] ^= True
-        await send_filters_menu(update, context)
-    elif action == "exchanges":
-        await show_exchanges_menu(update, context)
-
-async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']
-    buttons = [InlineKeyboardButton(f"{'✅' if ex in active_exchanges else '⬜️'} {ex}", callback_data=f"exch_{ex}") for ex in ALL_AVAILABLE_EXCHANGES]
-    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)] + [[InlineKeyboardButton("⬅️ Назад", callback_data="exch_back")]]
-    await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    await query.answer()
-    action = query.data.split('_', 1)[1]
-    if action == "back": 
-        await send_filters_menu(update, context)
-    else:
-        active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']
-        if action in active_exchanges: 
-            active_exchanges.remove(action)
-        else: 
-            active_exchanges.append(action)
-        await show_exchanges_menu(update, context)
-
-async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str, menu_to_return: callable):
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    await query.answer()
-    ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']
-    
-    prompts = {
-        'funding': (f"Текущий порог ставки: `> {settings['funding_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `0.75`)."),
-        'volume': (f"Текущий порог объема: `{format_volume(settings['volume_threshold_usdt'])}`.\n\nОтправьте новое значение (например, `500k` или `2M`)."),
-        'alert_rate': (f"Текущий порог для уведомлений: `> {settings['alert_rate_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `1.5`)."),
-        'alert_time': (f"Текущее временное окно: `< {settings['alert_time_window_minutes']} минут`.\n\nОтправьте новое значение в минутах (например, `45`).")
-    }
-    await query.message.delete()
-    sent_message = await context.bot.send_message(chat_id=chat_id, text=prompts[setting_type] + "\n\nДля отмены введите /cancel.", parse_mode='Markdown')
-    context.user_data.update({'prompt_message_id': sent_message.message_id, 'menu_to_return': menu_to_return})
-    
-    state_map = {'funding': SET_FUNDING_THRESHOLD, 'volume': SET_VOLUME_THRESHOLD, 'alert_rate': SET_ALERT_RATE, 'alert_time': SET_ALERT_TIME}
-    return state_map.get(setting_type)
-
-async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
-    if not check_access(update.effective_user.id):
-        await update.message.reply_text("⛔ Доступ запрещён")
-        return
-        
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']
-    
-    try:
-        value_str = update.message.text.strip().replace(",", ".").upper()
-        if setting_type == 'funding' or setting_type == 'alert_rate':
-            value = Decimal(value_str)
-            if not (0 < value < 100): raise ValueError("Value out of range 0-100")
-            key = 'funding_threshold' if setting_type == 'funding' else 'alert_rate_threshold'
-            settings[key] = value / 100
-        elif setting_type == 'volume':
-            num_part = value_str.replace('K', '').replace('M', '')
-            multiplier = 1000 if 'K' in value_str else 1_000_000 if 'M' in value_str else 1
-            settings['volume_threshold_usdt'] = Decimal(num_part) * multiplier
-        elif setting_type == 'alert_time':
-            value = int(value_str)
-            if value <= 0: raise ValueError("Value must be positive")
-            settings['alert_time_window_minutes'] = value
-    except (ValueError, TypeError, decimal.InvalidOperation):
-        await update.message.reply_text("❌ Ошибка. Введите корректное значение. Попробуйте снова.", parse_mode='Markdown')
-        return
-
-    if 'prompt_message_id' in context.user_data:
-        await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
-    await context.bot.delete_message(chat_id, update.message.message_id)
-    await context.user_data.pop('menu_to_return')(update, context)
-    return ConversationHandler.END
-
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_access(update.effective_user.id):
-        await update.message.reply_text("⛔ Доступ запрещён")
-        return
-        
-    chat_id = update.effective_chat.id
-    if 'prompt_message_id' in context.user_data:
-        try: await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
-        except Exception: pass
-    try: await context.bot.delete_message(chat_id, update.message.id)
-    except Exception: pass
-    await context.bot.send_message(chat_id, "Действие отменено.")
-    if 'menu_to_return' in context.user_data:
-        await context.user_data.pop('menu_to_return')(update, context)
-    return ConversationHandler.END
-    
-@require_access()
-async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']
-    
-    exchanges_list = ", ".join(settings['exchanges'])
-    vol = settings['volume_threshold_usdt']
-    vol_str = f"{vol / 1_000_000:.1f}M" if vol >= 1_000_000 else f"{vol / 1_000:.0f}K"
-    
-    message_text = f"""ℹ️ **Ваши текущие настройки:**
-
-🏦 **Биржи:** {exchanges_list}
-📈 **Минимальная ставка:** > {settings['funding_threshold']*100:.2f}%
-💧 **Минимальный объем:** > {vol_str} USDT
-📕 **Уведомления:** {'Включены' if settings['alerts_on'] else 'Выключены'}
-
-Для изменения настроек используйте "🔧 Настроить фильтры"
-"""
-    await update.message.reply_text(message_text, parse_mode='Markdown')
-
-# --- Блок для настройки уведомлений ---
-async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню настройки кастомных уведомлений."""
-    
-    if update.callback_query and not check_access(update.effective_user.id):
-        await update.callback_query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    if query := update.callback_query: 
-        await query.answer()
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']
-    
-    status_emoji = "✅" if settings.get('alerts_on', False) else "🔴"
-    status_text = "ВКЛЮЧЕНЫ" if settings.get('alerts_on', False) else "ВЫКЛЮЧЕНЫ"
-    
-    # Определяем какие биржи используются для уведомлений
-    alert_exchanges = settings.get('alert_exchanges', [])
-    if alert_exchanges:
-        exchanges_text = ", ".join(alert_exchanges)
-        exchanges_status = f"Свои: {exchanges_text}"
-    else:
-        main_exchanges = ", ".join(settings.get('exchanges', ['Не выбраны']))
-        exchanges_status = f"Основные: {main_exchanges}"
-    
-    message_text = "🚨 **Настройки уведомлений**\n\n"
-    message_text += "*Бот пришлет сигнал, когда будут выполнены все условия.*\n\n"
-    
-    print(f"[DEBUG] Alerts menu: alerts_on = {settings.get('alerts_on', False)}")
-    
-    keyboard = [
-        [InlineKeyboardButton(f"📈 Порог ставки: > {settings['alert_rate_threshold']*100:.2f}%", callback_data="alert_set_rate")],
-        [InlineKeyboardButton(f"⏰ Окно до выплаты: < {settings['alert_time_window_minutes']} мин", callback_data="alert_set_time")],
-        [InlineKeyboardButton(f"🏦 Биржи: {exchanges_status}", callback_data="alert_exchanges_menu")],
-        [InlineKeyboardButton(f"{status_emoji} Уведомления: {status_text}", callback_data="alert_toggle_on")],
-        [InlineKeyboardButton("⬅️ Назад к фильтрам", callback_data="alert_back_filters")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def show_alert_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню выбора бирж для уведомлений"""
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    await query.answer()
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']
-    
-    alert_exchanges = settings.get('alert_exchanges', [])
-    main_exchanges = settings.get('exchanges', [])
-    
-    message_text = "🏦 **Биржи для уведомлений**\n\n"
-    message_text += "*Выберите биржи, по которым получать уведомления.*\n"
-    message_text += "*Если ничего не выбрано - используются основные настройки.*\n\n"
-    message_text += f"🔧 **Основные биржи:** {', '.join(main_exchanges)}\n\n"
-    
-    # Кнопки выбора бирж
-    buttons = []
-    for exchange in ALL_AVAILABLE_EXCHANGES:
-        if exchange in alert_exchanges:
-            emoji = "✅"
-        else:
-            emoji = "⬜️"
-        buttons.append(InlineKeyboardButton(f"{emoji} {exchange}", callback_data=f"alert_exch_{exchange}"))
-    
-    # Группируем кнопки по 2 в ряд
-    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    
-    # Дополнительные кнопки
-    keyboard.append([InlineKeyboardButton("🗑️ Очистить выбор", callback_data="alert_exch_clear")])
-    keyboard.append([InlineKeyboardButton("⬅️ Назад к уведомлениям", callback_data="alert_show_menu")])
-    
-    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-async def alert_exchanges_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает выбор бирж для уведомлений"""
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    await query.answer()
-    action = query.data.split('_', 2)[2]  # alert_exch_ACTION
-    
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    ensure_user_settings(chat_id, user_id)
-    settings = user_settings[chat_id]['settings']
-    
-    alert_exchanges = settings.get('alert_exchanges', [])
-    
-    if action == "clear":
-        # Очищаем выбор
-        settings['alert_exchanges'] = []
-        await query.answer("🗑️ Выбор очищен. Будут использоваться основные биржи.", show_alert=True)
-    elif action in ALL_AVAILABLE_EXCHANGES:
-        # Переключаем биржу
-        if action in alert_exchanges:
-            alert_exchanges.remove(action)
-        else:
-            alert_exchanges.append(action)
-        settings['alert_exchanges'] = alert_exchanges
-    
-    # Обновляем меню
-    await show_alert_exchanges_menu(update, context)
-
-async def toggle_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Простая функция для переключения уведомлений"""
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    await query.answer()
-    
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    
-    print(f"[DEBUG] Toggle alerts: chat_id={chat_id}, user_id={user_id}")
-    
-    ensure_user_settings(chat_id, user_id)
-    
-    # Показываем текущее состояние ДО изменения
-    current_state = user_settings[chat_id]['settings']['alerts_on']
-    print(f"[DEBUG] Состояние ДО изменения: {current_state}")
-    print(f"[DEBUG] Полные настройки: {user_settings[chat_id]['settings']}")
-    
-    # Переключаем состояние уведомлений
-    new_state = not current_state
-    user_settings[chat_id]['settings']['alerts_on'] = new_state
-    
-    print(f"[DEBUG] Состояние ПОСЛЕ изменения: {user_settings[chat_id]['settings']['alerts_on']}")
-    print(f"[DEBUG] Ожидаемое состояние: {new_state}")
-    
-    # Показываем обновленное меню
-    await show_alerts_menu(update, context)
-    """Обрабатывает нажатия в меню уведомлений."""
-    query = update.callback_query
-    
-    if not check_access(update.effective_user.id):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-        
-    action = query.data.split('_', 1)[1]
-    
-    await query.answer()
-    if action == "toggle_on":
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
-        ensure_user_settings(chat_id, user_id)
-        user_settings[chat_id]['settings']['alerts_on'] ^= True
-        await show_alerts_menu(update, context)
-    elif action == "back_filters":
-        await send_filters_menu(update, context)
-
-# ===== ИСПРАВЛЕННЫЙ ФОНОВЫЙ СКАНЕР =====
-async def background_scanner(app: Application):
-    """Фоновый процесс для мониторинга и отправки кастомных уведомлений."""
-    print("🚀 Фоновый сканер уведомлений запущен.")
-    while True:
-        await asyncio.sleep(60)  # Проверка раз в минуту
-        try:
-            all_data = await fetch_all_data(app, force_update=True)
-            if not all_data: 
-                continue
-
-            now_utc = datetime.now(timezone.utc)
-            current_ts_ms = int(now_utc.timestamp() * 1000)
-
-            # ===== ГЛАВНОЕ ИСПРАВЛЕНИЕ =====
-            for chat_id, user_data in list(user_settings.items()):
-                # Теперь правильно получаем user_id для проверки доступа
-                stored_user_id = user_data.get('user_id')
-                if not stored_user_id or not check_access(stored_user_id):
-                    print(f"[BG_SCANNER] Пропускаем chat_id {chat_id}: нет доступа (user_id: {stored_user_id})")
-                    continue
-                    
-                settings = user_data['settings']
-                if not settings.get('alerts_on', False): 
-                    continue
-
-                # Очистка старых ID уведомлений (старше 3 часов)
-                settings['sent_notifications'] = {nid for nid in settings['sent_notifications'] if int(nid.split('_')[-1]) > current_ts_ms - (3 * 60 * 60 * 1000)}
-                
-                # Определяем какие биржи использовать для уведомлений
-                alert_exchanges = settings.get('alert_exchanges', [])
-                if alert_exchanges:
-                    # Используем выбранные биржи для уведомлений
-                    target_exchanges = alert_exchanges
-                    print(f"[BG_SCANNER] Используем биржи для уведомлений: {target_exchanges}")
-                else:
-                    # Используем основные биржи
-                    target_exchanges = settings.get('exchanges', [])
-                    print(f"[BG_SCANNER] Используем основные биржи: {target_exchanges}")
-                
-                # Ищем подходящие пары для этого пользователя
-                for item in all_data:
-                    if item['exchange'] not in target_exchanges: 
-                        continue
-                    if abs(item['rate']) < settings['alert_rate_threshold']: 
-                        continue
-
-                    time_left = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc) - now_utc
-                    if not (0 < time_left.total_seconds() <= settings['alert_time_window_minutes'] * 60): 
-                        continue
-
-                    # Анти-спам
-                    notification_id = f"{item['exchange']}_{item['symbol']}_{item['next_funding_time']}"
-                    if notification_id in settings['sent_notifications']: 
-                        continue
-                    
-                    # Все условия выполнены! Отправляем уведомление.
-                    h, m = divmod(int(time_left.total_seconds() // 60), 60)
-                    countdown_str = f"{h}ч {m}м" if h > 0 else f"{m}м"
-                    message = (f"⚠️ **Найден фандинг по вашему фильтру!**\n\n"
-                               f"{'🟢' if item['rate'] < 0 else '🔴'} **{item['symbol'].replace('USDT', '')}** `{item['rate'] * 100:+.2f}%`\n"
-                               f"⏰ Выплата через *{countdown_str}* на *{item['exchange']}*")
-                    try:
-                        await app.bot.send_message(chat_id, message, parse_mode='Markdown')
-                        settings['sent_notifications'].add(notification_id)
-                        print(f"[BG_SCANNER] ✅ Отправлено уведомление для chat_id {chat_id} (user_id {stored_user_id}): {notification_id}")
-                    except Exception as e:
-                        print(f"[BG_SCANNER] ❌ Не удалось отправить уведомление для chat_id {chat_id}: {e}")
-        except Exception as e:
-            print(f"[BG_SCANNER] ❌ Критическая ошибка в цикле сканера: {e}\n{traceback.format_exc()}")
-
-# Универсальный обработчик для неавторизованных пользователей
-async def handle_unauthorized_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает сообщения от неавторизованных пользователей"""
-    if not check_access(update.effective_user.id):
-        await access_denied_message(update, context)
-        return
-    
-    # Если пользователь авторизован, но сообщение не обработано другими хендлерами
-    await update.message.reply_text(
-        "🤖 Используйте кнопки меню или команду /start для начала работы."
-    )
-
-async def get_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS:
-        await update.message.reply_text("Эта команда доступна только администратору.")
-        return
-
-    message = await update.message.reply_text("Начинаю сбор данных по MYX_USDT за вчера. Это может занять до минуты...")
-    
-    # Определяем символ и временной диапазон
-    symbol_to_fetch = "MYX_USDT"
-    today = datetime.utcnow().date()
-    end_of_yesterday = datetime.combine(today, datetime.min.time())
-    start_of_yesterday = end_of_yesterday - timedelta(days=1)
-    start_ts_ms = int(start_of_yesterday.timestamp() * 1000)
-    end_ts_ms = int(end_of_yesterday.timestamp() * 1000) - 1
-
-    # Запускаем сбор данных
-    funding_data = await fetch_funding_history_async(symbol_to_fetch, start_ts_ms, end_ts_ms)
-    kline_data = await fetch_klines_async(symbol_to_fetch, start_ts_ms, end_ts_ms)
-
-    if not funding_data and not kline_data:
-        await message.edit_text("Не удалось получить данные. Возможно, по этой монете вчера не было торгов или фандинга.")
-        return
-        
-    await message.edit_text("Данные собраны, формирую файлы...")
-
-    # Отправляем файл с фандингом
-    if funding_data:
-        df_funding = pd.DataFrame(funding_data)
-        json_buffer = io.StringIO()
-        df_funding.to_json(json_buffer, orient="records", indent=4)
-        json_buffer.seek(0)
-        await context.bot.send_document(
-            chat_id=user_id,
-            document=io.BytesIO(json_buffer.read().encode()),
-            filename="funding_history.json"
-        )
-
-    # Отправляем файл со свечами
-    if kline_data:
-        df_klines = pd.DataFrame(kline_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        json_buffer = io.StringIO()
-        df_klines.to_json(json_buffer, orient="records", indent=4)
-        json_buffer.seek(0)
-        await context.bot.send_document(
-            chat_id=user_id,
-            document=io.BytesIO(json_buffer.read().encode()),
-            filename="klines_1m.json"
-        )
-    
-    await message.edit_text("Готово! Файлы отправлены вам в личку.")
-
-# =================================================================
-# ========================== ЗАПУСК БОТА ==========================
-# =================================================================
-
-if __name__ == "__main__":
-    if not BOT_TOKEN:
-        raise ValueError("Не найден BOT_TOKEN. Убедитесь, что он задан в .env файле.")
-    
-    # Проверяем, что список разрешенных пользователей настроен
-    if not ALLOWED_USERS or ALLOWED_USERS == [123456789, 987654321]:
-        print("⚠️ ВНИМАНИЕ: Не забудьте изменить ALLOWED_USERS на ваши реальные Telegram ID!")
-        print("   Для получения своего ID напишите боту @userinfobot")
-    
-    from telegram.ext import Application
-    
-    # 1. Создаем приложение
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    # 2. Загружаем ключи API
-    app.bot_data['mexc_api_key'] = os.getenv("MEXC_API_KEY")
-    app.bot_data['mexc_secret_key'] = os.getenv("MEXC_API_SECRET")
-    app.bot_data['bybit_api_key'] = os.getenv("BYBIT_API_KEY")
-    app.bot_data['bybit_secret_key'] = os.getenv("BYBIT_API_SECRET")
-
-    if app.bot_data['bybit_api_key']: 
-        print("✅ Ключи Bybit успешно загружены.")
-    else: 
-        print("⚠️ Ключи Bybit не найдены.")
-    print("ℹ️ Ключи для MEXC (публичные данные) больше не требуются.")
-
-    # --- 3. РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
-    
-    fallbacks = [CommandHandler("cancel", cancel_conversation)]
-
-    conv_handlers = [
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding', send_filters_menu), pattern="^filters_funding$")],
-            states={
-                SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume', send_filters_menu), pattern="^filters_volume$")],
-            states={
-                SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")],
-            states={
-                SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_rate'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")],
-            states={
-                SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-    ]
-    
-    regular_handlers = [
-        CommandHandler("start", start),
-        MessageHandler(filters.Regex("^🔥 Топ-ставки сейчас$"), show_top_rates),
-        MessageHandler(filters.Regex("^🔧 Настроить фильтры$"), filters_menu_entry),
-        MessageHandler(filters.Regex("^ℹ️ Мои настройки$"), show_my_settings),
-        MessageHandler(filters.Regex("^🔧 Диагностика API$"), api_diagnostics),
-        # Обработчики кнопок
-        CallbackQueryHandler(filters_callback_handler, pattern="^filters_"),
-        CallbackQueryHandler(drill_down_callback, pattern="^drill_"),
-        CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"),
-        CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
-        CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
-        # НОВЫЕ обработчики ИИ-анализа
-        CallbackQueryHandler(show_ai_analysis, pattern="^ai_analysis$"),
-        CallbackQueryHandler(show_ai_detail, pattern="^ai_detail_"),
-        # НОВЫЕ обработчики бирж для уведомлений
-        CallbackQueryHandler(show_alert_exchanges_menu, pattern="^alert_exchanges_menu$"),
-        CallbackQueryHandler(alert_exchanges_callback_handler, pattern="^alert_exch_"),
-        # Универсальный обработчик для всех остальных сообщений (должен быть последним)
-        MessageHandler(filters.TEXT, handle_unauthorized_message),
-    ]
-
-    # Добавляем все обработчики в приложение
-    app.add_handlers(conv_handlers)
-    app.add_handlers(regular_handlers)
-    app.add_handler(CommandHandler("getdata", get_data_command))
-
-    # 4. Запуск фонового сканера
-    async def post_init(app):
-        asyncio.create_task(background_scanner(app))
-
-    app.post_init = post_init
-
-    # 5. Запускаем бота
-    print("🤖 RateHunter 2.0 с ИИ-анализатором запущен с ограничением доступа!")
-    print(f"🔑 Разрешенные пользователи: {ALLOWED_USERS}")
-    print("🚀 Фоновый сканер для уведомлений активен!")
-    print("🧠 Умный анализ funding rates включен!")
-    app.run_polling()
+    rates_analysis = {"high_rates": 0, "medium_rates": 0, "
