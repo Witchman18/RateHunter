@@ -140,51 +140,90 @@ class FundingTrendAnalyzer:
         
         return history
     
-    async def _fetch_mexc_funding_history(self, symbol: str) -> List[Decimal]:
-        """Получает историю funding rates с MEXC"""
-        
-        # Конвертируем символ в формат MEXC (BTCUSDT -> BTC_USDT)
-        mexc_symbol = symbol.replace('USDT', '_USDT')
-        
-        url = "https://contract.mexc.com/api/v1/contract/funding_rate/history"
-        params = {
-            'symbol': mexc_symbol,
-            'page_size': 10  # Последние 10 записей (примерно 2.5 дня)
-        }
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=10) as response:
-                    if response.status != 200:
-                        print(f"[MEXC_HISTORY] Ошибка HTTP: {response.status}")
-                        return []
+async def _fetch_mexc_funding_history(self, symbol: str) -> List[Decimal]:
+    """Получает историю funding rates с MEXC с исправленной обработкой ошибок"""
+    
+    # Конвертируем символ в формат MEXC (BTCUSDT -> BTC_USDT)
+    mexc_symbol = symbol.replace('USDT', '_USDT')
+    
+    url = "https://contract.mexc.com/api/v1/contract/funding_rate/history"
+    params = {
+        'symbol': mexc_symbol,
+        'page_size': 10  # Последние 10 записей
+    }
+    
+    print(f"[MEXC_HISTORY] Запрос для {mexc_symbol}: {url}")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=10) as response:
+                print(f"[MEXC_HISTORY] HTTP статус: {response.status}")
+                
+                if response.status != 200:
+                    error_text = await response.text()
+                    print(f"[MEXC_HISTORY] HTTP ошибка {response.status}: {error_text[:100]}")
+                    return []
+                
+                # ИСПРАВЛЕНИЕ: Сначала получаем текст, потом проверяем JSON
+                response_text = await response.text()
+                print(f"[MEXC_HISTORY] Ответ (первые 200 символов): {response_text[:200]}")
+                
+                try:
+                    data = json.loads(response_text)
+                except json.JSONDecodeError as e:
+                    print(f"[MEXC_HISTORY] Ошибка парсинга JSON: {e}")
+                    print(f"[MEXC_HISTORY] Полный ответ: {response_text}")
+                    return []
+                
+                # Проверяем структуру ответа
+                if not isinstance(data, dict):
+                    print(f"[MEXC_HISTORY] Ответ не является словарем: {type(data)}")
+                    return []
+                
+                if not data.get('success'):
+                    print(f"[MEXC_HISTORY] API вернул ошибку: {data}")
+                    return []
+                
+                funding_data = data.get('data')
+                if not funding_data:
+                    print(f"[MEXC_HISTORY] Нет данных для символа {mexc_symbol}")
+                    return []
+                
+                if not isinstance(funding_data, list):
+                    print(f"[MEXC_HISTORY] Данные не являются списком: {type(funding_data)}")
+                    return []
+                
+                # Извлекаем ставки из ответа
+                rates = []
+                print(f"[MEXC_HISTORY] Обрабатываем {len(funding_data)} записей")
+                
+                for i, item in enumerate(funding_data):
+                    if not isinstance(item, dict):
+                        print(f"[MEXC_HISTORY] Запись {i} не является словарем: {type(item)}")
+                        continue
                     
-                    data = await response.json()
-                    
-                    if not data.get('success') or not data.get('data'):
-                        print(f"[MEXC_HISTORY] API вернул ошибку или пустые данные")
-                        return []
-                    
-                    # Извлекаем ставки из ответа
-                    rates = []
-                    for item in data['data']:
-                        try:
-                            rate = Decimal(str(item.get('fundingRate', 0)))
-                            rates.append(rate)
-                        except (TypeError, ValueError) as e:
-                            print(f"[MEXC_HISTORY] Ошибка парсинга ставки: {e}")
-                            continue
-                    
-                    # Возвращаем в хронологическом порядке (самые старые сначала)
-                    rates.reverse()
-                    return rates
-                    
-        except asyncio.TimeoutError:
-            print(f"[MEXC_HISTORY] Timeout при запросе истории для {symbol}")
-        except Exception as e:
-            print(f"[MEXC_HISTORY] Ошибка: {e}")
-        
-        return []
+                    try:
+                        rate = Decimal(str(item.get('fundingRate', 0)))
+                        rates.append(rate)
+                        if i < 3:  # Показываем первые 3 для отладки
+                            print(f"[MEXC_HISTORY] Запись {i}: rate={rate}")
+                    except (TypeError, ValueError) as e:
+                        print(f"[MEXC_HISTORY] Ошибка парсинга ставки в записи {i}: {e}")
+                        continue
+                
+                # Возвращаем в хронологическом порядке (самые старые сначала)
+                rates.reverse()
+                print(f"[MEXC_HISTORY] Успешно получено {len(rates)} ставок для {mexc_symbol}")
+                return rates
+                
+    except asyncio.TimeoutError:
+        print(f"[MEXC_HISTORY] Timeout при запросе истории для {mexc_symbol}")
+    except Exception as e:
+        print(f"[MEXC_HISTORY] Неожиданная ошибка для {mexc_symbol}: {type(e).__name__}: {e}")
+        import traceback
+        print(f"[MEXC_HISTORY] Traceback: {traceback.format_exc()}")
+    
+    return []
     
     async def _fetch_bybit_funding_history(self, symbol: str) -> List[Decimal]:
         """Получает историю funding rates с Bybit (требует API ключи)"""
