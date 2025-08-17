@@ -229,14 +229,14 @@ class FundingTrendAnalyzer:
                 print(f"[MEXC_HISTORY] Успешно получено {len(rates)} ставок для {mexc_symbol}")
                 return rates
                 
-    except asyncio.TimeoutError:
+      except asyncio.TimeoutError:
         print(f"[MEXC_HISTORY] Timeout при запросе истории для {mexc_symbol}")
-    except Exception as e:
+      except Exception as e:
         print(f"[MEXC_HISTORY] Неожиданная ошибка для {mexc_symbol}: {type(e).__name__}: {e}")
         import traceback
         print(f"[MEXC_HISTORY] Traceback: {traceback.format_exc()}")
     
-    return []
+      return []
     
     async def _fetch_bybit_funding_history(self, symbol: str) -> List[Decimal]:
         """Получает историю funding rates с Bybit"""
