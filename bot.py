@@ -1,4 +1,3 @@
-# =========================================================================
 # ===================== RateHunter 2.0 - v1.1.0 С АНАЛИЗАТОРОМ ===========
 # =========================================================================
 # Добавлен умный анализатор трендов funding rate
@@ -36,7 +35,7 @@ MSK_TIMEZONE = timezone(timedelta(hours=3))
 
 # === СПИСОК РАЗРЕШЕННЫХ ПОЛЬЗОВАТЕЛЕЙ ===
 ALLOWED_USERS = [
-    518449824,642874424  # Замените на свой Telegram ID
+    518449824, 642874424  # Замените на свой Telegram ID
     # Можете добавить ID других пользователей
 ]
 
@@ -641,7 +640,7 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += f"• {item['symbol'].replace('USDT', '')}: {rate_pct:.3f}% (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
     
     report += f"\n⏰ Время обновления: {datetime.now(MSK_TIMEZONE).strftime('%H:%M:%S MSK')}"
-    report += f"\n🕑 Кэш действителен: {CACHE_LIFETIME_SECONDS} сек"
+    report += f"\n🕐 Кэш действителен: {CACHE_LIFETIME_SECONDS} сек"
     
     report += "\n\n🔑 **Статус ключей:**\n"
     mexc_key = context.bot_data.get('mexc_api_key')
@@ -839,7 +838,7 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rate_str = f"{item['rate'] * 100:+.2f}%"
         time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
         
-        message_text += f"{arrow} **{symbol_only}** {rate_str} | 🕑 {time_str} {countdown_str} | {item['exchange']}\n"
+        message_text += f"{arrow} **{symbol_only}** {rate_str} | 🕐 {time_str} {countdown_str} | {item['exchange']}\n"
 
         buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
 
@@ -1072,40 +1071,6 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     print(f"[DEBUG] Отображаем {len(symbol_data)} записей для {symbol_only}")
     
     for item in symbol_data:
-        funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
-        time_left = funding_dt_utc - now_utc
-        countdown_str = ""
-        if time_left.total_seconds() > 0:
-            h, m = divmod(int(time_left.total_seconds()) // 60, 60)
-            countdown_str = f" ({h}ч {m}м)" if h > 0 else f" ({m}м)" if m > 0 else " (<1м)"
-        
-        direction, rate_str = ("🟢 ЛОНГ", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 ШОРТ", f"{item['rate'] * 100:+.2f}%")
-        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
-        vol = item.get('volume_24h_usdt', Decimal('0'))
-        vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
-        
-        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` **[{item['exchange']}]({item['trade_url']})**\n"
-        message_text += f"  *Объем 24ч:* `{vol_str} USDT`\n"
-        if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: 
-            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
-        message_text += "\n"
-
-    # Добавляем кнопку ИИ-анализа для этой конкретной монеты
-    keyboard = [
-        [InlineKeyboardButton("🧠 ИИ-Анализ этой монеты", callback_data=f"ai_detail_{symbol_to_show}")],
-        [InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]
-    ]
-    await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
-    if not all_data:
-        await query.edit_message_text("🔄 Обновляю данные...")
-        all_data = await fetch_all_data(context, force_update=True)
-        
-    symbol_data = sorted([item for item in all_data if item['symbol'] == symbol_to_show], key=lambda x: abs(x['rate']), reverse=True)
-    symbol_only = symbol_to_show.replace("USDT", "")
-    message_text = f"💎 **Детали по {symbol_only}**\n\n"
-    now_utc = datetime.now(timezone.utc)
-    
-    for item in symbol_data:
         # Применяем умный анализ и к детальному просмотру
         analyzed_item = await analyze_funding_opportunity(item)
         rec = analyzed_item['smart_recommendation']
@@ -1154,7 +1119,7 @@ async def send_filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     message_text = "🔧 **Настройки фильтров для ручного поиска**"
     keyboard = [
-        [InlineKeyboardButton("🏦 Биржи", callback_data="filters_exchanges")],
+        [InlineKeyboardButton("🦄 Биржи", callback_data="filters_exchanges")],
         [InlineKeyboardButton(f"📈 Ставка: > {settings['funding_threshold']*100:.2f}%", callback_data="filters_funding")],
         [InlineKeyboardButton(f"💧 Объем: > {format_volume(settings['volume_threshold_usdt'])}", callback_data="filters_volume")],
         [InlineKeyboardButton("🚨 Настроить Уведомления", callback_data="alert_show_menu")],
@@ -1197,7 +1162,7 @@ async def show_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     active_exchanges = user_settings[query.message.chat_id]['settings']['exchanges']
     buttons = [InlineKeyboardButton(f"{'✅' if ex in active_exchanges else '⬜️'} {ex}", callback_data=f"exch_{ex}") for ex in ALL_AVAILABLE_EXCHANGES]
     keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)] + [[InlineKeyboardButton("⬅️ Назад", callback_data="exch_back")]]
-    await query.edit_message_text("🏦 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text("🦄 **Выберите биржи**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def exchanges_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1308,7 +1273,7 @@ async def show_my_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     message_text = f"""ℹ️ **Ваши текущие настройки:**
 
-🏦 **Биржи:** {exchanges_list}
+🦄 **Биржи:** {exchanges_list}
 📈 **Минимальная ставка:** > {settings['funding_threshold']*100:.2f}%
 💧 **Минимальный объем:** > {vol_str} USDT
 📕 **Уведомления:** {'Включены' if settings['alerts_on'] else 'Выключены'}
@@ -1352,7 +1317,7 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton(f"📈 Порог ставки: > {settings['alert_rate_threshold']*100:.2f}%", callback_data="alert_set_rate")],
         [InlineKeyboardButton(f"⏰ Окно до выплаты: < {settings['alert_time_window_minutes']} мин", callback_data="alert_set_time")],
-        [InlineKeyboardButton(f"🏦 Биржи: {exchanges_status}", callback_data="alert_exchanges_menu")],
+        [InlineKeyboardButton(f"🦄 Биржи: {exchanges_status}", callback_data="alert_exchanges_menu")],
         [InlineKeyboardButton(f"{status_emoji} Уведомления: {status_text}", callback_data="alert_toggle_on")],
         [InlineKeyboardButton("⬅️ Назад к фильтрам", callback_data="alert_back_filters")]
     ]
@@ -1380,7 +1345,7 @@ async def show_alert_exchanges_menu(update: Update, context: ContextTypes.DEFAUL
     alert_exchanges = settings.get('alert_exchanges', [])
     main_exchanges = settings.get('exchanges', [])
     
-    message_text = "🏦 **Биржи для уведомлений**\n\n"
+    message_text = "🦄 **Биржи для уведомлений**\n\n"
     message_text += "*Выберите биржи, по которым получать уведомления.*\n"
     message_text += "*Если ничего не выбрано - используются основные настройки.*\n\n"
     message_text += f"🔧 **Основные биржи:** {', '.join(main_exchanges)}\n\n"
@@ -1437,7 +1402,7 @@ async def alert_exchanges_callback_handler(update: Update, context: ContextTypes
     await show_alert_exchanges_menu(update, context)
 
 async def toggle_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Простая функция для переключения уведомлений"""
+    """Переключает состояние уведомлений"""
     query = update.callback_query
     
     if not check_access(update.effective_user.id):
@@ -1455,10 +1420,12 @@ async def toggle_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_state = not current_state
     user_settings[chat_id]['settings']['alerts_on'] = new_state
     
-    print(f"[DEBUG] Уведомления переключены: {current_state} -> {new_state}")
+    print(f"[DEBUG] Уведомления переключены для chat_id {chat_id}: {current_state} -> {new_state}")
     
     # Показываем обновленное меню
     await show_alerts_menu(update, context)
+
+async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатия в меню уведомлений."""
     query = update.callback_query
     
@@ -1466,17 +1433,17 @@ async def toggle_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    action = query.data.split('_', 1)[1]
+    action = query.data.split('_', 1)[1]  # alert_ACTION
     
-    await query.answer()
+    print(f"[DEBUG] Alert callback action: {action}")
+    
     if action == "toggle_on":
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
-        ensure_user_settings(chat_id, user_id)
-        user_settings[chat_id]['settings']['alerts_on'] ^= True
-        await show_alerts_menu(update, context)
+        await toggle_alerts(update, context)
     elif action == "back_filters":
+        await query.answer()
         await send_filters_menu(update, context)
+    else:
+        await query.answer()
 
 # ===== ИСПРАВЛЕННЫЙ ФОНОВЫЙ СКАНЕР =====
 async def background_scanner(app: Application):
@@ -1694,6 +1661,9 @@ if __name__ == "__main__":
         CallbackQueryHandler(back_to_top_callback, pattern="^back_to_top$"),
         CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
         CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
+        # ИСПРАВЛЕННЫЕ обработчики уведомлений
+        CallbackQueryHandler(alert_callback_handler, pattern="^alert_toggle_on$"),
+        CallbackQueryHandler(alert_callback_handler, pattern="^alert_back_filters$"),
         # НОВЫЕ обработчики ИИ-анализа
         CallbackQueryHandler(show_ai_analysis, pattern="^ai_analysis$"),
         CallbackQueryHandler(show_ai_detail, pattern="^ai_detail_"),
@@ -1717,7 +1687,7 @@ if __name__ == "__main__":
 
     # 5. Запускаем бота
     print("🤖 RateHunter 2.0 с ИИ-анализатором запущен с ограничением доступа!")
-    print(f"🔑 Разрешенные пользователи: {ALLOWED_USERS}")
+    print(f"🔒 Разрешенные пользователи: {ALLOWED_USERS}")
     print("🚀 Фоновый сканер для уведомлений активен!")
     print("🧠 Умный анализ funding rates включен!")
-    app.run_polling()
+    app.run_polling()# ===============
