@@ -730,7 +730,7 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = user_settings[chat_id]['settings']
 
     msg = update.callback_query.message if update.callback_query else await update.message.reply_text("🔄 Ищу...")
-    await msg.edit_text("🔄 Анализирую лучшие возможности с помощью ИИ...")
+    await msg.edit_text("🔄 Ищу лучшие возможности...")
 
     all_data = await fetch_all_data(context)
     if not all_data:
@@ -773,47 +773,216 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filtered_data.sort(key=lambda x: abs(x['rate']), reverse=True)
     top_5 = filtered_data[:5]
 
-    # ===== ПРИМЕНЯЕМ УМНЫЙ АНАЛИЗ К КАЖДОЙ ВОЗМОЖНОСТИ =====
-    print(f"[SMART_ANALYSIS] Анализирую {len(top_5)} лучших возможностей...")
-    
-    analyzed_opportunities = []
-    for item in top_5:
-        analyzed_item = await analyze_funding_opportunity(item)
-        analyzed_opportunities.append(analyzed_item)
-        print(f"[SMART_ANALYSIS] {item['symbol']}: {analyzed_item['smart_recommendation']['message']}")
+    # ===== ЧИСТЫЙ ИНТЕРФЕЙС БЕЗ ИИ =====
+    # Сохраняем данные для ИИ-анализа, но не показываем их сразу
+    context.chat_data = context.chat_data or {}
+    context.chat_data['current_opportunities'] = top_5
 
-    # Формируем сообщение с умными рекомендациями
-    message_text = f"🧠 **ТОП-5 возможностей с ИИ-анализом**\n\n"
+    # Формируем чистое сообщение
+    message_text = f"🔥 **ТОП-5 фандинг возможностей**\n\n"
     buttons = []
     now_utc = datetime.now(timezone.utc)
     
-    for item in analyzed_opportunities:
+    for item in top_5:
         symbol_only = item['symbol'].replace("USDT", "")
         funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
         time_left = funding_dt_utc - now_utc
         countdown_str = ""
         if time_left.total_seconds() > 0:
             h, m = divmod(int(time_left.total_seconds()) // 60, 60)
-            countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)" if m > 0 else " (меньше минуты)"
+            countdown_str = f" ({h}ч {m}м)" if h > 0 else f" ({m}м)" if m > 0 else " (<1м)"
 
-        # Основная информация
+        # Основная информация - ЧИСТО И ПОНЯТНО
         arrow = "🟢" if item['rate'] < 0 else "🔴"
         rate_str = f"{item['rate'] * 100:+.2f}%"
         time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
         
-        # Умная рекомендация
-        rec = item['smart_recommendation']
-        confidence_str = f" ({rec['confidence']:.0%})" if rec['confidence'] > 0 else ""
-        
-        message_text += f"{rec['emoji']} **{symbol_only}** {rate_str} | 🕑 {time_str}{countdown_str}\n"
-        message_text += f"   _{rec['message']}{confidence_str}_ | {item['exchange']}\n\n"
+        message_text += f"{arrow} **{symbol_only}** {rate_str} | 🕑 {time_str} {countdown_str} | {item['exchange']}\n"
 
-        buttons.append(InlineKeyboardButton(f"{rec['emoji']} {symbol_only}", callback_data=f"drill_{item['symbol']}"))
+        buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
 
-    message_text += "💡 _Рекомендации основаны на анализе тренда ставки и стабильности_"
+    message_text += "\n💡 *Хотите ИИ-анализ? Нажмите кнопку ниже* ↓"
 
-    keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+    # Кнопки: детали монет + ИИ-анализ
+    detail_buttons = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+    ai_buttons = [
+        [InlineKeyboardButton("🧠 ИИ-Анализ", callback_data="ai_analysis")],
+        [InlineKeyboardButton("🔄 Обновить", callback_data="back_to_top")]
+    ]
+    
+    keyboard = detail_buttons + ai_buttons
     await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
+
+# ===== НОВАЯ ФУНКЦИЯ: ИИ-АНАЛИЗ =====
+async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает экран с ИИ-анализом возможностей"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    await query.edit_message_text("🧠 Анализирую с помощью ИИ...")
+
+    # Получаем сохраненные данные
+    opportunities = context.chat_data.get('current_opportunities', [])
+    
+    if not opportunities:
+        await query.edit_message_text(
+            "❓ Нет данных для анализа. Сначала получите список возможностей.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]])
+        )
+        return
+
+    # ===== ПРИМЕНЯЕМ ИИ-АНАЛИЗ =====
+    print(f"[AI_ANALYSIS] Анализирую {len(opportunities)} возможностей...")
+    
+    analyzed_opportunities = []
+    for item in opportunities:
+        analyzed_item = await analyze_funding_opportunity(item)
+        analyzed_opportunities.append(analyzed_item)
+        print(f"[AI_ANALYSIS] {item['symbol']}: {analyzed_item['smart_recommendation']['message']}")
+
+    # Формируем сообщение ИИ-анализа
+    message_text = "🧠 **ИИ-Анализ возможностей**\n\n"
+    message_text += "*Выберите монету для подробного анализа:*\n\n"
+    
+    buttons = []
+    for item in analyzed_opportunities:
+        symbol_only = item['symbol'].replace("USDT", "")
+        rec = item['smart_recommendation']
+        confidence = rec['confidence']
+        
+        # Определяем уровень уверенности простыми словами
+        if confidence >= 0.8:
+            confidence_text = "ИИ очень уверен"
+        elif confidence >= 0.6:
+            confidence_text = "ИИ довольно уверен"  
+        elif confidence >= 0.4:
+            confidence_text = "ИИ сомневается"
+        else:
+            confidence_text = "ИИ не уверен"
+            
+        message_text += f"{rec['emoji']} **{symbol_only}** - {rec['message']}\n"
+        message_text += f"   _{confidence_text} ({confidence:.0%})_\n\n"
+
+        buttons.append(InlineKeyboardButton(f"{rec['emoji']} {symbol_only}", callback_data=f"ai_detail_{item['symbol']}"))
+
+    message_text += "💡 *Нажмите на монету для подробного анализа*"
+
+    # Кнопки: выбор монет + назад
+    coin_buttons = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    back_button = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
+    
+    keyboard = coin_buttons + back_button
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+# ===== НОВАЯ ФУНКЦИЯ: ДЕТАЛЬНЫЙ ИИ-АНАЛИЗ МОНЕТЫ =====
+async def show_ai_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает детальный ИИ-анализ конкретной монеты"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    symbol_to_analyze = query.data.split('_')[2]  # ai_detail_SYMBOLUSDT
+    await query.answer()
+
+    # Получаем сохраненные данные
+    opportunities = context.chat_data.get('current_opportunities', [])
+    target_item = None
+    
+    for item in opportunities:
+        if item['symbol'] == symbol_to_analyze:
+            target_item = item
+            break
+    
+    if not target_item:
+        await query.edit_message_text(
+            "❓ Монета не найдена в текущем списке.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к ИИ", callback_data="ai_analysis")]])
+        )
+        return
+
+    # Применяем ИИ-анализ к конкретной монете
+    analyzed_item = await analyze_funding_opportunity(target_item)
+    symbol_only = symbol_to_analyze.replace("USDT", "")
+    rec = analyzed_item['smart_recommendation']
+    stability = analyzed_item['stability_analysis']
+    
+    # Формируем детальный анализ
+    message_text = f"🧠 **ИИ-Анализ: {symbol_only}**\n\n"
+    
+    # Основные данные
+    rate_pct = abs(target_item['rate']) * 100
+    message_text += f"📈 **Ставка:** {target_item['rate'] * 100:+.2f}%\n"
+    message_text += f"📊 **Тренд:** {stability['trend'].title()}\n"
+    message_text += f"⚡ **Стабильность:** {stability['stability'].title()}\n"
+    message_text += f"🎯 **Рекомендация:** {rec['message'].upper()}\n\n"
+    
+    # Объяснение что это значит
+    message_text += "❓ **Что это значит?**\n"
+    
+    explanation_map = {
+        'ideal_arbitrage': "Ставка стабильна и предсказуема. Низкий риск резких изменений. Хорошие условия для заработка на фандинге.",
+        'risky_arbitrage': "Ставка нестабильна и может резко измениться. Риск потерь выше обычного. Торговать осторожно.",
+        'contrarian_opportunity': "Ставка истощается - возможен разворот цены. Можно рассмотреть противоположную позицию после выплаты.",
+        'unclear_signal': "Смешанные сигналы от ИИ. Ситуация неоднозначная. Лучше дождаться более четкого сигнала.",
+        'rate_too_low': "Ставка слишком низкая для получения значимой прибыли. Не рекомендуется к торговле.",
+        'insufficient_data': "Недостаточно исторических данных для точного анализа. ИИ не может дать надежную рекомендацию."
+    }
+    
+    explanation = explanation_map.get(rec['recommendation_type'], "Требуется дополнительный анализ.")
+    message_text += f"_{explanation}_\n\n"
+    
+    # Практические советы
+    if rec['recommendation_type'] == 'ideal_arbitrage':
+        message_text += "✅ **Что делать:**\n"
+        message_text += "• Можно входить в позицию стандартным размером\n"
+        message_text += "• Держать до выплаты фандинга\n"
+        message_text += "• Риск минимален\n\n"
+    elif rec['recommendation_type'] == 'risky_arbitrage':
+        message_text += "⚠️ **Что делать:**\n"
+        message_text += "• Используйте уменьшенный размер позиции\n"
+        message_text += "• Установите тесный стоп-лосс\n"
+        message_text += "• Следите за рынком внимательно\n\n"
+    elif rec['recommendation_type'] == 'contrarian_opportunity':
+        message_text += "🔥 **Что делать:**\n"
+        message_text += "• Дождитесь выплаты фандинга\n"
+        message_text += "• Рассмотрите противоположную позицию\n"
+        message_text += "• Следите за разворотом тренда\n\n"
+    else:
+        message_text += "⏸️ **Что делать:**\n"
+        message_text += "• Лучше пропустить эту возможность\n"
+        message_text += "• Дождаться более четкого сигнала\n"
+        message_text += "• Искать другие варианты\n\n"
+    
+    # Уверенность ИИ
+    confidence = rec['confidence']
+    if confidence >= 0.8:
+        confidence_text = "очень уверен"
+        confidence_explanation = "(как прогноз погоды с вероятностью 90%)"
+    elif confidence >= 0.6:
+        confidence_text = "довольно уверен"
+        confidence_explanation = "(как мнение опытного трейдера)"
+    elif confidence >= 0.4:
+        confidence_text = "сомневается"
+        confidence_explanation = "(смешанные сигналы)"
+    else:
+        confidence_text = "не уверен"
+        confidence_explanation = "(мало данных для анализа)"
+        
+    message_text += f"🎯 **Уверенность ИИ:** {confidence:.0%}\n"
+    message_text += f"_ИИ {confidence_text} {confidence_explanation}_"
+
+    keyboard = [
+        [InlineKeyboardButton("⬅️ Назад к ИИ-анализу", callback_data="ai_analysis")],
+        [InlineKeyboardButton("🏠 К топу возможностей", callback_data="back_to_top")]
+    ]
+    
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 # ===== ИСПРАВЛЕННЫЕ CALLBACK ФУНКЦИИ =====
 async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -827,6 +996,40 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
 
     all_data = api_data_cache.get("data", [])
+    if not all_data:
+        await query.edit_message_text("🔄 Обновляю данные...")
+        all_data = await fetch_all_data(context, force_update=True)
+        
+    symbol_data = sorted([item for item in all_data if item['symbol'] == symbol_to_show], key=lambda x: abs(x['rate']), reverse=True)
+    symbol_only = symbol_to_show.replace("USDT", "")
+    message_text = f"💎 **Детали по {symbol_only}**\n\n"
+    now_utc = datetime.now(timezone.utc)
+    
+    for item in symbol_data:
+        funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
+        time_left = funding_dt_utc - now_utc
+        countdown_str = ""
+        if time_left.total_seconds() > 0:
+            h, m = divmod(int(time_left.total_seconds()) // 60, 60)
+            countdown_str = f" ({h}ч {m}м)" if h > 0 else f" ({m}м)" if m > 0 else " (<1м)"
+        
+        direction, rate_str = ("🟢 ЛОНГ", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 ШОРТ", f"{item['rate'] * 100:+.2f}%")
+        time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
+        vol = item.get('volume_24h_usdt', Decimal('0'))
+        vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
+        
+        message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]({item['trade_url']})\n"
+        message_text += f"  *Объем 24ч:* `{vol_str} USDT`\n"
+        if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: 
+            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
+        message_text += "\n"
+
+    # Добавляем кнопку ИИ-анализа для этой конкретной монеты
+    keyboard = [
+        [InlineKeyboardButton("🧠 ИИ-Анализ этой монеты", callback_data=f"ai_detail_{symbol_to_show}")],
+        [InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]
+    ]
+    await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)get("data", [])
     if not all_data:
         await query.edit_message_text("🔄 Обновляю данные...")
         all_data = await fetch_all_data(context, force_update=True)
@@ -1306,6 +1509,9 @@ if __name__ == "__main__":
         CallbackQueryHandler(exchanges_callback_handler, pattern="^exch_"),
         CallbackQueryHandler(show_alerts_menu, pattern="^alert_show_menu$"),
         CallbackQueryHandler(alert_callback_handler, pattern="^alert_"),
+        # НОВЫЕ обработчики ИИ-анализа
+        CallbackQueryHandler(show_ai_analysis, pattern="^ai_analysis$"),
+        CallbackQueryHandler(show_ai_detail, pattern="^ai_detail_"),
         # Универсальный обработчик для всех остальных сообщений (должен быть последним)
         MessageHandler(filters.TEXT, handle_unauthorized_message),
     ]
