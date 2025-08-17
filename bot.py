@@ -325,6 +325,7 @@ def get_default_settings():
         'alerts_on': False,                             
         'alert_rate_threshold': Decimal('0.015'),       
         'alert_time_window_minutes': 30,                
+        'alert_exchanges': [],                          # НОВОЕ: отдельные биржи для уведомлений (пустой = используем основные)
         'sent_notifications': set(),                    
     }
 
@@ -1333,11 +1334,23 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_emoji = "✅" if settings.get('alerts_on', False) else "🔴"
     status_text = "ВКЛЮЧЕНЫ" if settings.get('alerts_on', False) else "ВЫКЛЮЧЕНЫ"
-    message_text = "🚨 **Настройки уведомлений**\n\nБот пришлет сигнал, когда будут выполнены оба условия."
+    
+    # Определяем какие биржи используются для уведомлений
+    alert_exchanges = settings.get('alert_exchanges', [])
+    if alert_exchanges:
+        exchanges_text = ", ".join(alert_exchanges)
+        exchanges_status = f"Свои: {exchanges_text}"
+    else:
+        main_exchanges = ", ".join(settings.get('exchanges', ['Не выбраны']))
+        exchanges_status = f"Основные: {main_exchanges}"
+    
+    message_text = "🚨 **Настройки уведомлений**\n\n"
+    message_text += "*Бот пришлет сигнал, когда будут выполнены все условия.*\n\n"
     
     keyboard = [
         [InlineKeyboardButton(f"📈 Порог ставки: > {settings['alert_rate_threshold']*100:.2f}%", callback_data="alert_set_rate")],
         [InlineKeyboardButton(f"⏰ Окно до выплаты: < {settings['alert_time_window_minutes']} мин", callback_data="alert_set_time")],
+        [InlineKeyboardButton(f"🏦 Биржи: {exchanges_status}", callback_data="alert_exchanges_menu")],
         [InlineKeyboardButton(f"{status_emoji} Уведомления: {status_text}", callback_data="alert_toggle_on")],
         [InlineKeyboardButton("⬅️ Назад к фильтрам", callback_data="alert_back_filters")]
     ]
@@ -1348,7 +1361,78 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_alert_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает меню выбора бирж для уведомлений"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    alert_exchanges = settings.get('alert_exchanges', [])
+    main_exchanges = settings.get('exchanges', [])
+    
+    message_text = "🏦 **Биржи для уведомлений**\n\n"
+    message_text += "*Выберите биржи, по которым получать уведомления.*\n"
+    message_text += "*Если ничего не выбрано - используются основные настройки.*\n\n"
+    message_text += f"🔧 **Основные биржи:** {', '.join(main_exchanges)}\n\n"
+    
+    # Кнопки выбора бирж
+    buttons = []
+    for exchange in ALL_AVAILABLE_EXCHANGES:
+        if exchange in alert_exchanges:
+            emoji = "✅"
+        else:
+            emoji = "⬜️"
+        buttons.append(InlineKeyboardButton(f"{emoji} {exchange}", callback_data=f"alert_exch_{exchange}"))
+    
+    # Группируем кнопки по 2 в ряд
+    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    
+    # Дополнительные кнопки
+    keyboard.append([InlineKeyboardButton("🗑️ Очистить выбор", callback_data="alert_exch_clear")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к уведомлениям", callback_data="alert_show_menu")])
+    
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def alert_exchanges_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает выбор бирж для уведомлений"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    action = query.data.split('_', 2)[2]  # alert_exch_ACTION
+    
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    alert_exchanges = settings.get('alert_exchanges', [])
+    
+    if action == "clear":
+        # Очищаем выбор
+        settings['alert_exchanges'] = []
+        await query.answer("🗑️ Выбор очищен. Будут использоваться основные биржи.", show_alert=True)
+    elif action in ALL_AVAILABLE_EXCHANGES:
+        # Переключаем биржу
+        if action in alert_exchanges:
+            alert_exchanges.remove(action)
+        else:
+            alert_exchanges.append(action)
+        settings['alert_exchanges'] = alert_exchanges
+    
+    # Обновляем меню
+    await show_alert_exchanges_menu(update, context)
     """Обрабатывает нажатия в меню уведомлений."""
     query = update.callback_query
     
@@ -1397,9 +1481,20 @@ async def background_scanner(app: Application):
                 # Очистка старых ID уведомлений (старше 3 часов)
                 settings['sent_notifications'] = {nid for nid in settings['sent_notifications'] if int(nid.split('_')[-1]) > current_ts_ms - (3 * 60 * 60 * 1000)}
                 
+                # Определяем какие биржи использовать для уведомлений
+                alert_exchanges = settings.get('alert_exchanges', [])
+                if alert_exchanges:
+                    # Используем выбранные биржи для уведомлений
+                    target_exchanges = alert_exchanges
+                    print(f"[BG_SCANNER] Используем биржи для уведомлений: {target_exchanges}")
+                else:
+                    # Используем основные биржи
+                    target_exchanges = settings.get('exchanges', [])
+                    print(f"[BG_SCANNER] Используем основные биржи: {target_exchanges}")
+                
                 # Ищем подходящие пары для этого пользователя
                 for item in all_data:
-                    if item['exchange'] not in settings['exchanges']: 
+                    if item['exchange'] not in target_exchanges: 
                         continue
                     if abs(item['rate']) < settings['alert_rate_threshold']: 
                         continue
@@ -1577,6 +1672,9 @@ if __name__ == "__main__":
         # НОВЫЕ обработчики ИИ-анализа
         CallbackQueryHandler(show_ai_analysis, pattern="^ai_analysis$"),
         CallbackQueryHandler(show_ai_detail, pattern="^ai_detail_"),
+        # НОВЫЕ обработчики бирж для уведомлений
+        CallbackQueryHandler(show_alert_exchanges_menu, pattern="^alert_exchanges_menu$"),
+        CallbackQueryHandler(alert_exchanges_callback_handler, pattern="^alert_exch_"),
         # Универсальный обработчик для всех остальных сообщений (должен быть последним)
         MessageHandler(filters.TEXT, handle_unauthorized_message),
     ]
