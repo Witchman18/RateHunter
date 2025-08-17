@@ -738,19 +738,32 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     print(f"[DEBUG] Фильтры: биржи={settings['exchanges']}, ставка>={settings['funding_threshold']}, объем>={settings['volume_threshold_usdt']}")
+    print(f"[DEBUG] Всего данных для фильтрации: {len(all_data)}")
     
-    # Применяем фильтры
-    filtered_data = [
-        item for item in all_data 
-        if item['exchange'] in settings['exchanges'] 
-        and abs(item['rate']) >= settings['funding_threshold'] 
-        and item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']
-    ]
+    # Применяем фильтры ПОЭТАПНО с отладкой
+    print(f"[DEBUG] Этап 1: Фильтр по биржам...")
+    exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
+    print(f"[DEBUG] После фильтра по биржам: {len(exchange_filtered)} инструментов")
+    
+    print(f"[DEBUG] Этап 2: Фильтр по ставке...")
+    rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
+    print(f"[DEBUG] После фильтра по ставке: {len(rate_filtered)} инструментов")
+    
+    print(f"[DEBUG] Этап 3: Фильтр по объему...")
+    volume_filtered = [item for item in rate_filtered if item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']]
+    print(f"[DEBUG] После фильтра по объему: {len(volume_filtered)} инструментов")
+    
+    # Показываем топ-10 по ставке для отладки
+    top_rates_debug = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:10]
+    print(f"[DEBUG] Топ-10 ставок (без фильтров):")
+    for i, item in enumerate(top_rates_debug):
+        rate_pct = abs(item['rate']) * 100
+        vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
+        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%, объем: {vol_m:.1f}M USDT")
+    
+    filtered_data = volume_filtered
     
     if not filtered_data:
-        exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
-        rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
-        
         stats_msg = f"😞 Не найдено пар, соответствующих всем фильтрам.\n\n"
         stats_msg += f"📊 **Статистика:**\n"
         stats_msg += f"• Всего инструментов: {len(all_data)}\n"
@@ -769,21 +782,26 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(stats_msg, parse_mode='Markdown')
         return
 
+    print(f"[DEBUG] Сортирую {len(filtered_data)} инструментов...")
     # Сортируем по абсолютной ставке
     filtered_data.sort(key=lambda x: abs(x['rate']), reverse=True)
     top_5 = filtered_data[:5]
+    print(f"[DEBUG] Выбрано топ-5 инструментов для отображения")
 
     # ===== ЧИСТЫЙ ИНТЕРФЕЙС БЕЗ ИИ =====
     # Сохраняем данные для ИИ-анализа, но не показываем их сразу
     context.chat_data = context.chat_data or {}
     context.chat_data['current_opportunities'] = top_5
+    print(f"[DEBUG] Сохранил данные в context.chat_data")
 
+    print(f"[DEBUG] Формирую сообщение...")
     # Формируем чистое сообщение
     message_text = f"🔥 **ТОП-5 фандинг возможностей**\n\n"
     buttons = []
     now_utc = datetime.now(timezone.utc)
     
-    for item in top_5:
+    for i, item in enumerate(top_5):
+        print(f"[DEBUG] Обрабатываю инструмент {i+1}: {item['symbol']}")
         symbol_only = item['symbol'].replace("USDT", "")
         funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
         time_left = funding_dt_utc - now_utc
@@ -802,6 +820,7 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
 
     message_text += "\n💡 *Хотите ИИ-анализ? Нажмите кнопку ниже* ↓"
+    print(f"[DEBUG] Сообщение сформировано, создаю кнопки...")
 
     # Кнопки: детали монет + ИИ-анализ
     detail_buttons = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
@@ -811,7 +830,9 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     keyboard = detail_buttons + ai_buttons
+    print(f"[DEBUG] Отправляю ответ пользователю...")
     await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
+    print(f"[DEBUG] Ответ отправлен успешно!")
 
 # ===== НОВАЯ ФУНКЦИЯ: ИИ-АНАЛИЗ =====
 async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
