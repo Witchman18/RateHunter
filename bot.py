@@ -1029,7 +1029,7 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("🧠 ИИ-Анализ этой монеты", callback_data=f"ai_detail_{symbol_to_show}")],
         [InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]
     ]
-    await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)get("data", [])
+    await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
     if not all_data:
         await query.edit_message_text("🔄 Обновляю данные...")
         all_data = await fetch_all_data(context, force_update=True)
