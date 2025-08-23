@@ -154,19 +154,19 @@ class EnhancedFundingTrendAnalyzer:
         
         return {'score': score, 'level': level}
     
- def _generate_trading_signal(self, trend: Dict, stability: Dict, rate: Decimal, history: List[Decimal]) -> Dict:
-    """
-    КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Полностью переработана логика для соответствия правильной
-    стратегии фандинг-арбитража.
-    """
+    def _generate_trading_signal(self, trend: Dict, stability: Dict, rate: Decimal, history: List[Decimal]) -> Dict:
+      """
+      КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Полностью переработана логика для соответствия правильной
+      стратегии фандинг-арбитража.
+      """
     # --- ОБЩИЕ ПРОВЕРКИ ---
-    if abs(rate) < 0.003:
+     if abs(rate) < 0.003:
         return {'signal': 'rate_too_low', 'confidence': 0, 'recommendation': 'Ставка слишком низкая'}
     
-    confidence = min(1.0, (stability['score'] + trend['strength']) / 2 + min(0.2, len(history) * 0.03))
+     confidence = min(1.0, (stability['score'] + trend['strength']) / 2 + min(0.2, len(history) * 0.03))
 
     # === ПРАВИЛЬНАЯ ЛОГИКА ДЛЯ ЛОНГ ПОЗИЦИЙ (когда ставка ОТРИЦАТЕЛЬНАЯ) ===
-    if rate < 0:
+     if rate < 0:
         # СИГНАЛ НА ВХОД В ЛОНГ: Ставка отрицательная и становится еще более отрицательной (это хорошо)
         if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -1.0:
             if trend['momentum'] == 'accelerating': return {'signal': 'strong_long_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🚀 СИЛЬНЫЙ ЛОНГ: Ставка быстро падает (становится выгоднее).'}
@@ -181,7 +181,7 @@ class EnhancedFundingTrendAnalyzer:
             return {'signal': 'hold_long', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ЛОНГ: Ставка остается выгодной и стабильной.'}
 
     # === ПРАВИЛЬНАЯ ЛОГИКА ДЛЯ ШОРТ ПОЗИЦИЙ (когда ставка ПОЛОЖИТЕЛЬНАЯ) ===
-    if rate > 0:
+     if rate > 0:
         # СИГНАЛ НА ВХОД В ШОРТ: Ставка положительная и растет еще выше (это хорошо)
         if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0:
             if trend['momentum'] == 'accelerating': return {'signal': 'strong_short_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🎯 СИЛЬНЫЙ ШОРТ: Ставка быстро растет (становится выгоднее).'}
@@ -196,7 +196,7 @@ class EnhancedFundingTrendAnalyzer:
             return {'signal': 'hold_short', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ШОРТ: Ставка остается выгодной и стабильной.'}
     
     # Если ни одно из правил не сработало, значит тренд неясен
-    return {'signal': 'wait', 'confidence': confidence*0.5, 'recommendation': '⏱️ ОЖИДАНИЕ: Тренд неясен, нет четкого сигнала.'}
+     return {'signal': 'wait', 'confidence': confidence*0.5, 'recommendation': '⏱️ ОЖИДАНИЕ: Тренд неясен, нет четкого сигнала.'}
 
     # --- НЕДОСТАЮЩИЕ ФУНКЦИИ, КОТОРЫЕ МЫ ВОЗВРАЩАЕМ ---
     async def _get_funding_history_real(self, symbol: str, exchange: str, periods: int = 10) -> List[Decimal]:
