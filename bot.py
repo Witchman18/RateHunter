@@ -154,38 +154,46 @@ class EnhancedFundingTrendAnalyzer:
         
         return {'score': score, 'level': level}
     
-    def _generate_trading_signal(self, trend: Dict, stability: Dict, rate: Decimal, history: List[Decimal]) -> Dict:
-     """УЛУЧШЕННАЯ ВЕРСИЯ 2.0: Снижены пороги для сигналов "ДЕРЖАТЬ"."""
-     if abs(rate) < 0.003: # Порог для "rate_too_low" теперь 0.3%
+ def _generate_trading_signal(self, trend: Dict, stability: Dict, rate: Decimal, history: List[Decimal]) -> Dict:
+    
+    # --- ОБЩИЕ ПРОВЕРКИ ---
+    if abs(rate) < 0.003:
         return {'signal': 'rate_too_low', 'confidence': 0, 'recommendation': 'Ставка слишком низкая'}
     
-     confidence = min(1.0, (stability['score'] + trend['strength']) / 2 + min(0.2, len(history) * 0.03))
+    confidence = min(1.0, (stability['score'] + trend['strength']) / 2 + min(0.2, len(history) * 0.03))
+
+    # === ПРАВИЛЬНАЯ ЛОГИКА ДЛЯ ЛОНГ ПОЗИЦИЙ (когда ставка ОТРИЦАТЕЛЬНАЯ) ===
+    if rate < 0:
+        # СИГНАЛ НА ВХОД В ЛОНГ: Ставка отрицательная и становится еще более отрицательной (это хорошо)
+        if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -1.0:
+            if trend['momentum'] == 'accelerating': return {'signal': 'strong_long_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🚀 СИЛЬНЫЙ ЛОНГ: Ставка быстро падает (становится выгоднее).'}
+            return {'signal': 'long_entry', 'confidence': confidence, 'recommendation': '📈 Вход в ЛОНГ: Ставка стабильно падает (становится выгоднее).'}
+
+        # СИГНАЛ НА ВЫХОД ИЗ ЛОНГА: Ставка все еще отрицательная, но начала расти к нулю (это плохо)
+        if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0:
+             return {'signal': 'long_exit', 'confidence': confidence, 'recommendation': '📉 Выход из ЛОНГА: Ставка растет к нулю, становится невыгодно.'}
+
+        # СИГНАЛ ДЕРЖАТЬ ЛОНГ: Ставка отрицательная и стабильная
+        if trend['direction'] in ['declining', 'stable'] and rate < -0.003 and trend['strength'] >= 0.4:
+            return {'signal': 'hold_long', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ЛОНГ: Ставка остается выгодной и стабильной.'}
+
+    # === ПРАВИЛЬНАЯ ЛОГИКА ДЛЯ ШОРТ ПОЗИЦИЙ (когда ставка ПОЛОЖИТЕЛЬНАЯ) ===
+    if rate > 0:
+        # СИГНАЛ НА ВХОД В ШОРТ: Ставка положительная и растет еще выше (это хорошо)
+        if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0:
+            if trend['momentum'] == 'accelerating': return {'signal': 'strong_short_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🎯 СИЛЬНЫЙ ШОРТ: Ставка быстро растет (становится выгоднее).'}
+            return {'signal': 'short_entry', 'confidence': confidence, 'recommendation': '📉 Вход в ШОРТ: Ставка стабильно растет (становится выгоднее).'}
+        
+        # СИГНАЛ НА ВЫХОД ИЗ ШОРТА: Ставка все еще положительная, но начала падать к нулю (это плохо)
+        if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -1.0:
+            return {'signal': 'short_exit', 'confidence': confidence, 'recommendation': '📈 Выход из ШОРТА: Ставка падает к нулю, становится невыгодно.'}
+
+        # СИГНАЛ ДЕРЖАТЬ ШОРТ: Ставка положительная и стабильная
+        if trend['direction'] in ['growing', 'stable'] and rate > 0.003 and trend['strength'] >= 0.4:
+            return {'signal': 'hold_short', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ШОРТ: Ставка остается выгодной и стабильной.'}
     
-    # Правила входа/выхода остаются прежними
-     if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0 and rate > 0:
-        if trend['momentum'] == 'accelerating': return {'signal': 'strong_long_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🟢 СИЛЬНЫЙ СИГНАЛ: Открыть ЛОНГ! Ставка быстро растет.'}
-        return {'signal': 'long_entry', 'confidence': confidence, 'recommendation': '🟢 Открыть ЛОНГ: Ставка стабильно растет.'}
-    
-     if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -1.0 and rate > 0:
-        return {'signal': 'long_exit', 'confidence': confidence, 'recommendation': '🔴 ЗАКРЫТЬ ЛОНГ: Ставка начала падать.'}
-        
-     if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -2.0 and rate < 0:
-        if trend['momentum'] == 'accelerating': return {'signal': 'strong_short_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🔴 СИЛЬНЫЙ СИГНАЛ: Открыть ШОРТ! Ставка быстро падает.'}
-        return {'signal': 'short_entry', 'confidence': confidence, 'recommendation': '🔴 Открыть ШОРТ: Ставка стабильно падает.'}
-        
-     if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0 and rate < 0:
-        return {'signal': 'short_exit', 'confidence': confidence, 'recommendation': '🟢 ЗАКРЫТЬ ШОРТ: Ставка начала расти.'}
-        
-    # === НОВЫЕ ПОРОГИ ЗДЕСЬ ===
-    # Теперь бот будет рекомендовать "ДЕРЖАТЬ" уже при ставке 0.3% (вместо 1.0%)
-     if trend['direction'] in ['growing', 'stable'] and rate > 0.003 and trend['strength'] >= 0.4:
-        return {'signal': 'hold_long', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ЛОНГ: Ставка остается высокой.'}
-        
-     if trend['direction'] in ['declining', 'stable'] and rate < -0.003 and trend['strength'] >= 0.4:
-        return {'signal': 'hold_short', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ШОРТ: Ставка остается отрицательной.'}
-    # ==========================
-        
-     return {'signal': 'wait', 'confidence': confidence*0.5, 'recommendation': '⏱️ ОЖИДАНИЕ: Тренд неясен.'}
+    # Если ни одно из правил не сработало, значит тренд неясен
+    return {'signal': 'wait', 'confidence': confidence*0.5, 'recommendation': '⏱️ ОЖИДАНИЕ: Тренд неясен, нет четкого сигнала.'}
 
     # --- НЕДОСТАЮЩИЕ ФУНКЦИИ, КОТОРЫЕ МЫ ВОЗВРАЩАЕМ ---
     async def _get_funding_history_real(self, symbol: str, exchange: str, periods: int = 10) -> List[Decimal]:
@@ -660,41 +668,37 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== НОВАЯ ФУНКЦИЯ: УМНЫЙ АНАЛИЗ ВОЗМОЖНОСТЕЙ =====
 async def analyze_funding_opportunity(item: Dict) -> Dict:
     """
-    ОБНОВЛЕННАЯ ВЕРСИЯ: Использует улучшенный анализатор для генерации торговых сигналов
+    ФИНАЛЬНАЯ ВЕРСИЯ: Улучшенные, интуитивно понятные эмодзи и описания сигналов.
     """
-    
-    # Запускаем улучшенный анализ
     analysis = await enhanced_funding_analyzer.analyze_trading_opportunity(
         symbol=item['symbol'],
         exchange=item['exchange'], 
         current_rate=item['rate']
     )
     
-    # Добавляем анализ к данным элемента
     item['enhanced_analysis'] = analysis
-    
-    # Формируем улучшенную рекомендацию
     signal = analysis['signal']
     confidence = analysis['confidence']
     
-    # Эмодзи и сообщения для разных типов сигналов
+    # === НОВАЯ, УЛУЧШЕННАЯ КАРТА СИГНАЛОВ ===
     signal_map = {
-        'strong_long_entry': {'emoji': '🚀', 'message': 'СИЛЬНЫЙ ЛОНГ', 'details': 'Ставка быстро растет - открыть ЛОНГ!'},
-        'long_entry': {'emoji': '📈', 'message': 'Вход в ЛОНГ', 'details': 'Ставка стабильно растет - рассмотреть ЛОНГ'},
-        'long_exit': {'emoji': '📉', 'message': 'Выход из ЛОНГ', 'details': 'Ставка начала падать - закрыть ЛОНГ'},
-        'strong_short_entry': {'emoji': '🎯', 'message': 'СИЛЬНЫЙ ШОРТ', 'details': 'Ставка быстро падает - открыть ШОРТ!'},
-        'short_entry': {'emoji': '📉', 'message': 'Вход в ШОРТ', 'details': 'Ставка стабильно падает - рассмотреть ШОРТ'},
-        'short_exit': {'emoji': '📈', 'message': 'Выход из ШОРТ', 'details': 'Ставка начала расти - закрыть ШОРТ'},
-        'hold_long': {'emoji': '⏸️', 'message': 'Держать ЛОНГ', 'details': 'Ставка остается высокой - продолжать ЛОНГ'},
-        'hold_short': {'emoji': '⏸️', 'message': 'Держать ШОРТ', 'details': 'Ставка остается отрицательной - продолжать ШОРТ'},
-        'wait': {'emoji': '⏱️', 'message': 'Ожидание', 'details': 'Тренд неясен - ждать лучшего момента'},
-        'rate_too_low': {'emoji': '🔽', 'message': 'Ставка низкая', 'details': 'Слишком низкая для торговли'},
-        'insufficient_data': {'emoji': '❓', 'message': 'Мало данных', 'details': 'Недостаточно истории для анализа'}
+        'strong_long_entry':  {'emoji': '🚀', 'message': 'Сильный ЛОНГ',   'details': 'Ставка быстро падает, открывайте ЛОНГ.'},
+        'long_entry':         {'emoji': '🟢', 'message': 'Вход в ЛОНГ',     'details': 'Ставка стабильно падает, рассмотрите ЛОНГ.'},
+        'hold_long':          {'emoji': '💰', 'message': 'Держать ЛОНГ',    'details': 'Продолжайте получать выплаты.'},
+        'long_exit':          {'emoji': '⚠️', 'message': 'Выход из ЛОНГА',   'details': 'Тренд разворачивается, закройте ЛОНГ.'},
+        
+        'strong_short_entry': {'emoji': '🔥', 'message': 'Сильный ШОРТ',  'details': 'Ставка быстро растет, открывайте ШОРТ.'},
+        'short_entry':        {'emoji': '🔴', 'message': 'Вход в ШОРТ',    'details': 'Ставка стабильно растет, рассмотрите ШОРТ.'},
+        'hold_short':         {'emoji': '💰', 'message': 'Держать ШОРТ',   'details': 'Продолжайте получать выплаты.'},
+        'short_exit':         {'emoji': '⚠️', 'message': 'Выход из ШОРТА',  'details': 'Тренд разворачивается, закройте ШОРТ.'},
+        
+        'wait':               {'emoji': '⏱️', 'message': 'Ожидание',       'details': 'Тренд неясен, ждем лучшего момента.'},
+        'rate_too_low':       {'emoji': '📉', 'message': 'Ставка низкая',    'details': 'Слишком низкая для торговли.'},
+        'insufficient_data':  {'emoji': '❓', 'message': 'Мало данных',      'details': 'Недостаточно истории для анализа.'}
     }
     
     signal_info = signal_map.get(signal, {'emoji': '❓', 'message': 'Анализ...', 'details': 'Обработка данных'})
     
-    # Обновляем структуру для совместимости со старым кодом
     item['smart_recommendation'] = {
         'emoji': signal_info['emoji'],
         'message': signal_info['message'],
@@ -703,7 +707,6 @@ async def analyze_funding_opportunity(item: Dict) -> Dict:
         'recommendation_type': signal
     }
     
-    # Добавляем расширенную информацию
     item['enhanced_recommendation'] = {
         'signal_type': signal,
         'trend_direction': analysis.get('trend_direction', 'unknown'),
