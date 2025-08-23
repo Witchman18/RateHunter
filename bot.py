@@ -114,59 +114,53 @@ class EnhancedFundingTrendAnalyzer:
         }
     
     def _analyze_detailed_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
-        """
-        Детальный анализ тренда с фокусом на недавние изменения
-        """
-        all_rates = history + [current_rate]
-        
-        if len(all_rates) < 3:
-            return {
-                'direction': 'unknown',
-                'strength': 0.0,
-                'recent_change_pct': 0.0,
-                'momentum': 'flat',
-                'trend_changes': []
-            }
-        
-        # Анализируем изменения между периодами
-        changes = []
-        for i in range(1, len(all_rates)):
-            change_pct = float((all_rates[i] - all_rates[i-1]) / abs(all_rates[i-1]) * 100) if all_rates[i-1] != 0 else 0
-            changes.append(change_pct)
-        
-        # Фокус на последние 3-4 изменения
-        recent_changes = changes[-4:] if len(changes) >= 4 else changes[-3:] if len(changes) >= 3 else changes
-        
-        # Определяем направление тренда по последним изменениям
-        positive_changes = sum(1 for c in recent_changes if c > 0.1)
-        negative_changes = sum(1 for c in recent_changes if c < -0.1)
-        
-        recent_change_pct = sum(recent_changes) if recent_changes else 0
-        
-        if positive_changes > negative_changes and recent_change_pct > 0.5:
-            direction = 'growing'
-            strength = min(1.0, positive_changes / len(recent_changes))
-        elif negative_changes > positive_changes and recent_change_pct < -0.5:
-            direction = 'declining'
-            strength = min(1.0, negative_changes / len(recent_changes))
+    """
+    УЛУЧШЕННАЯ ВЕРСИЯ 2.0: Готовит текст "Было X, стало Y" для интерфейса.
+    """
+    all_rates = history + [current_rate]
+    
+    if len(all_rates) < 3:
+        return {'direction': 'unknown', 'strength': 0.0, 'recent_change_pct': 0.0, 'momentum': 'flat', 'trend_changes': [], 'change_text': 'Недостаточно данных'}
+    
+    # --- Блок для внутреннего анализа (остается без изменений) ---
+    changes = []
+    NEAR_ZERO_THRESHOLD = Decimal('0.0001')
+    for i in range(1, len(all_rates)):
+        prev_rate, curr_rate = all_rates[i-1], all_rates[i]
+        if abs(prev_rate) < NEAR_ZERO_THRESHOLD:
+            change_pct = 500.0 if curr_rate > prev_rate else -500.0 if abs(curr_rate) > NEAR_ZERO_THRESHOLD * 2 else 0.0
         else:
-            direction = 'stable'
-            strength = 0.5
-        
-        if len(recent_changes) >= 3:
-            early_avg = sum(recent_changes[:len(recent_changes)//2]) / (len(recent_changes)//2)
-            late_avg = sum(recent_changes[len(recent_changes)//2:]) / (len(recent_changes) - len(recent_changes)//2)
-            
-            if abs(late_avg) > abs(early_avg) * 1.2: momentum = 'accelerating'
-            elif abs(late_avg) < abs(early_avg) * 0.8: momentum = 'decelerating'
-            else: momentum = 'steady'
-        else:
-            momentum = 'steady'
-        
-        return {
-            'direction': direction, 'strength': strength, 'recent_change_pct': recent_change_pct,
-            'momentum': momentum, 'trend_changes': changes
-        }
+            change_pct = float((curr_rate - prev_rate) / abs(prev_rate) * 100)
+        changes.append(change_pct)
+    
+    recent_changes = changes[-4:] if len(changes) >= 4 else changes[-3:] if len(changes) >= 3 else changes
+    positive_changes = sum(1 for c in recent_changes if c > 0.1)
+    negative_changes = sum(1 for c in recent_changes if c < -0.1)
+    recent_change_pct = sum(recent_changes) if recent_changes else 0
+    
+    if positive_changes > negative_changes and recent_change_pct > 0.5: direction, strength = 'growing', min(1.0, positive_changes / len(recent_changes))
+    elif negative_changes > positive_changes and recent_change_pct < -0.5: direction, strength = 'declining', min(1.0, negative_changes / len(recent_changes))
+    else: direction, strength = 'stable', 0.5
+    
+    if len(recent_changes) >= 3:
+        early_avg = sum(recent_changes[:len(recent_changes)//2]) / (len(recent_changes)//2) if len(recent_changes)//2 > 0 else 0
+        late_avg = sum(recent_changes[len(recent_changes)//2:]) / (len(recent_changes) - len(recent_changes)//2) if (len(recent_changes) - len(recent_changes)//2) > 0 else 0
+        if abs(late_avg) > abs(early_avg) * 1.2: momentum = 'accelerating'
+        elif abs(late_avg) < abs(early_avg) * 0.8: momentum = 'decelerating'
+        else: momentum = 'steady'
+    else: momentum = 'steady'
+    # --- Конец внутреннего блока ---
+
+    # === НОВЫЙ БЛОК: Формирование текста для пользователя ===
+    before_val_pct = all_rates[-2] * 100
+    after_val_pct = all_rates[-1] * 100
+    change_text = f"Было: {before_val_pct:+.3f}%, стало: {after_val_pct:+.3f}%"
+    # =======================================================
+    
+    return {
+        'direction': direction, 'strength': strength, 'recent_change_pct': recent_change_pct,
+        'momentum': momentum, 'trend_changes': changes, 'change_text': change_text
+    }
     
     def _analyze_trend_stability(self, history: List[Decimal], current_rate: Decimal) -> Dict:
         all_rates = history + [current_rate]
@@ -879,7 +873,7 @@ async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== НОВАЯ ФУНКЦИЯ: ДЕТАЛЬНЫЙ ИИ-АНАЛИЗ МОНЕТЫ =====
 async def show_ai_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    ОБНОВЛЕННАЯ ВЕРСИЯ: Показывает детальный анализ с торговыми сигналами
+    ОБНОВЛЕННАЯ ВЕРСИЯ 2.0: Показывает детальный анализ с текстом "Было X, стало Y"
     """
     query = update.callback_query
     if not check_access(update.effective_user.id):
@@ -908,11 +902,17 @@ async def show_ai_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text += f"{smart_rec['emoji']} **{smart_rec['message'].upper()}**\n"
     message_text += f"_{analysis.get('recommendation', smart_rec['details'])}_\n\n"
     
+    # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+    change_text = analysis.get('change_text', 'Не удалось рассчитать')
+    # -----------------------
+
     message_text += f"📊 **Анализ тренда:**\n"
     message_text += f"• Направление: {enhanced.get('trend_direction', 'n/a').title()}\n"
     message_text += f"• Сила: {enhanced.get('trend_strength', 0):.0%}\n"
     message_text += f"• Моментум: {enhanced.get('momentum', 'n/a').title()}\n"
-    message_text += f"• Изменение: {enhanced.get('recent_change', 0):+.2f}%\n\n"
+    # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+    message_text += f"• Изменение: {change_text}\n\n"
+    # -----------------------
     
     signal_type = enhanced.get('signal_type', 'wait')
     if 'entry' in signal_type:
