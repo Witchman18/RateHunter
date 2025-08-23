@@ -51,11 +51,12 @@ def check_access(user_id: int) -> bool:
 
 # ===== УЛУЧШЕННЫЙ МОДУЛЬ: АНАЛИЗАТОР ТРЕНДОВ FUNDING RATE =====
 
+# <<< НАЧАЛО ПОЛНОСТЬЮ ИСПРАВЛЕННОГО БЛОКА АНАЛИЗАТОРА >>>
+
 class EnhancedFundingTrendAnalyzer:
     """
     Улучшенный анализатор трендов funding rates с точными торговыми сигналами
-    Анализирует динамику изменения ставок за последние периоды для генерации
-    сигналов входа/выхода из позиций
+    и всеми необходимыми функциями для получения данных.
     """
     
     def __init__(self):
@@ -64,111 +65,72 @@ class EnhancedFundingTrendAnalyzer:
         
     async def analyze_trading_opportunity(self, symbol: str, exchange: str, current_rate: Decimal) -> Dict:
         """
-        Анализирует торговые возможности на основе трендов funding rate
-        Возвращает конкретные торговые сигналы
+        Анализирует торговые возможности на основе трендов funding rate.
         """
-        
-        # Получаем историю ставок за последние 8-10 периодов (больше данных = точнее анализ)
         history = await self._get_funding_history_real(symbol, exchange, periods=10)
         
         if not history or len(history) < 3:
-            return {
-                'signal': 'insufficient_data',
-                'confidence': 0.0,
-                'recommendation': 'Недостаточно данных для анализа',
-                'trend_direction': 'unknown',
-                'trend_strength': 0.0,
-                'data_source': 'insufficient'
-            }
+            return {'signal': 'insufficient_data', 'confidence': 0.0, 'recommendation': 'Недостаточно данных для анализа', 'trend_direction': 'unknown', 'trend_strength': 0.0, 'data_source': 'insufficient'}
         
-        # Анализируем тренд с учетом последних 3-5 периодов
         trend_analysis = self._analyze_detailed_trend(history, current_rate)
-        
-        # Анализируем стабильность тренда
         stability_analysis = self._analyze_trend_stability(history, current_rate)
-        
-        # Генерируем торговый сигнал
-        trading_signal = self._generate_trading_signal(
-            trend_analysis, 
-            stability_analysis, 
-            current_rate,
-            history
-        )
+        trading_signal = self._generate_trading_signal(trend_analysis, stability_analysis, current_rate, history)
         
         return {
-            'signal': trading_signal['signal'],
-            'confidence': trading_signal['confidence'],
-            'recommendation': trading_signal['recommendation'],
-            'trend_direction': trend_analysis['direction'],
-            'trend_strength': trend_analysis['strength'],
-            'recent_change': trend_analysis['recent_change_pct'],
-            'momentum': trend_analysis['momentum'],
-            'stability_score': stability_analysis['score'],
-            'data_points': len(history),
-            'data_source': 'real_api',
-            'analysis_details': {
-                'history': history[-5:],  # Последние 5 точек для отладки
-                'current_rate': float(current_rate),
-                'trend_changes': trend_analysis['trend_changes']
-            }
+            'signal': trading_signal['signal'], 'confidence': trading_signal['confidence'],
+            'recommendation': trading_signal['recommendation'], 'trend_direction': trend_analysis['direction'],
+            'trend_strength': trend_analysis['strength'], 'recent_change': trend_analysis['recent_change_pct'],
+            'momentum': trend_analysis['momentum'], 'stability_score': stability_analysis['score'],
+            'data_points': len(history), 'data_source': 'real_api',
+            'analysis_details': {'history': history[-5:], 'current_rate': float(current_rate), 'trend_changes': trend_analysis['trend_changes']},
+            'change_text': trend_analysis.get('change_text', 'н/д')
         }
     
-def _analyze_detailed_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
-    """
-    УЛУЧШЕННАЯ ВЕРСИЯ 2.0: Готовит текст "Было X, стало Y" для интерфейса.
-    """
-    all_rates = history + [current_rate]
-    
-    if len(all_rates) < 3:
-        return {'direction': 'unknown', 'strength': 0.0, 'recent_change_pct': 0.0, 'momentum': 'flat', 'trend_changes': [], 'change_text': 'Недостаточно данных'}
-    
-    # --- Блок для внутреннего анализа (остается без изменений) ---
-    changes = []
-    NEAR_ZERO_THRESHOLD = Decimal('0.0001')
-    for i in range(1, len(all_rates)):
-        prev_rate, curr_rate = all_rates[i-1], all_rates[i]
-        if abs(prev_rate) < NEAR_ZERO_THRESHOLD:
-            change_pct = 500.0 if curr_rate > prev_rate else -500.0 if abs(curr_rate) > NEAR_ZERO_THRESHOLD * 2 else 0.0
-        else:
-            change_pct = float((curr_rate - prev_rate) / abs(prev_rate) * 100)
-        changes.append(change_pct)
-    
-    recent_changes = changes[-4:] if len(changes) >= 4 else changes[-3:] if len(changes) >= 3 else changes
-    positive_changes = sum(1 for c in recent_changes if c > 0.1)
-    negative_changes = sum(1 for c in recent_changes if c < -0.1)
-    recent_change_pct = sum(recent_changes) if recent_changes else 0
-    
-    if positive_changes > negative_changes and recent_change_pct > 0.5:
-        direction, strength = 'growing', min(1.0, positive_changes / len(recent_changes))
-    elif negative_changes > positive_changes and recent_change_pct < -0.5:
-        direction, strength = 'declining', min(1.0, negative_changes / len(recent_changes))
-    else:
-        direction, strength = 'stable', 0.5
-    
-    if len(recent_changes) >= 3:
-        early_avg = sum(recent_changes[:len(recent_changes)//2]) / (len(recent_changes)//2) if len(recent_changes)//2 > 0 else 0
-        late_avg = sum(recent_changes[len(recent_changes)//2:]) / (len(recent_changes) - len(recent_changes)//2) if (len(recent_changes) - len(recent_changes)//2) > 0 else 0
-        if abs(late_avg) > abs(early_avg) * 1.2:
-            momentum = 'accelerating'
-        elif abs(late_avg) < abs(early_avg) * 0.8:
-            momentum = 'decelerating'
-        else:
-            momentum = 'steady'
-    else:
-        momentum = 'steady'
-    # --- Конец внутреннего блока ---
+    def _analyze_detailed_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
+        """
+        УЛУЧШЕННАЯ ВЕРСЯ 2.0: Готовит текст "Было X, стало Y" для интерфейса.
+        """
+        all_rates = history + [current_rate]
+        
+        if len(all_rates) < 3:
+            return {'direction': 'unknown', 'strength': 0.0, 'recent_change_pct': 0.0, 'momentum': 'flat', 'trend_changes': [], 'change_text': 'Недостаточно данных'}
+        
+        changes = []
+        NEAR_ZERO_THRESHOLD = Decimal('0.0001')
+        for i in range(1, len(all_rates)):
+            prev_rate, curr_rate = all_rates[i-1], all_rates[i]
+            if abs(prev_rate) < NEAR_ZERO_THRESHOLD:
+                change_pct = 500.0 if curr_rate > prev_rate else -500.0 if abs(curr_rate) > NEAR_ZERO_THRESHOLD * 2 else 0.0
+            else:
+                change_pct = float((curr_rate - prev_rate) / abs(prev_rate) * 100)
+            changes.append(change_pct)
+        
+        recent_changes = changes[-4:] if len(changes) >= 4 else changes[-3:] if len(changes) >= 3 else changes
+        positive_changes = sum(1 for c in recent_changes if c > 0.1)
+        negative_changes = sum(1 for c in recent_changes if c < -0.1)
+        recent_change_pct = sum(recent_changes) if recent_changes else 0
+        
+        if positive_changes > negative_changes and recent_change_pct > 0.5: direction, strength = 'growing', min(1.0, positive_changes / len(recent_changes))
+        elif negative_changes > positive_changes and recent_change_pct < -0.5: direction, strength = 'declining', min(1.0, negative_changes / len(recent_changes))
+        else: direction, strength = 'stable', 0.5
+        
+        if len(recent_changes) >= 3:
+            early_avg = sum(recent_changes[:len(recent_changes)//2]) / (len(recent_changes)//2) if len(recent_changes)//2 > 0 else 0
+            late_avg = sum(recent_changes[len(recent_changes)//2:]) / (len(recent_changes) - len(recent_changes)//2) if (len(recent_changes) - len(recent_changes)//2) > 0 else 0
+            if abs(late_avg) > abs(early_avg) * 1.2: momentum = 'accelerating'
+            elif abs(late_avg) < abs(early_avg) * 0.8: momentum = 'decelerating'
+            else: momentum = 'steady'
+        else: momentum = 'steady'
 
-    # === НОВЫЙ БЛОК: Формирование текста для пользователя ===
-    before_val_pct = all_rates[-2] * 100
-    after_val_pct = all_rates[-1] * 100
-    change_text = f"Было: {before_val_pct:+.3f}%, стало: {after_val_pct:+.3f}%"
-    # =======================================================
-    
-    return {
-        'direction': direction, 'strength': strength, 'recent_change_pct': recent_change_pct,
-        'momentum': momentum, 'trend_changes': changes, 'change_text': change_text
-    }
-    
+        before_val_pct = all_rates[-2] * 100
+        after_val_pct = all_rates[-1] * 100
+        change_text = f"Было: {before_val_pct:+.3f}%, стало: {after_val_pct:+.3f}%"
+        
+        return {
+            'direction': direction, 'strength': strength, 'recent_change_pct': recent_change_pct,
+            'momentum': momentum, 'trend_changes': changes, 'change_text': change_text
+        }
+
     def _analyze_trend_stability(self, history: List[Decimal], current_rate: Decimal) -> Dict:
         all_rates = history + [current_rate]
         if len(all_rates) < 3: return {'score': 0.0, 'level': 'unknown'}
@@ -219,6 +181,7 @@ def _analyze_detailed_trend(self, history: List[Decimal], current_rate: Decimal)
             
         return {'signal': 'wait', 'confidence': confidence*0.5, 'recommendation': '⏱️ ОЖИДАНИЕ: Тренд неясен.'}
 
+    # --- НЕДОСТАЮЩИЕ ФУНКЦИИ, КОТОРЫЕ МЫ ВОЗВРАЩАЕМ ---
     async def _get_funding_history_real(self, symbol: str, exchange: str, periods: int = 10) -> List[Decimal]:
         cache_key = f"{exchange}_{symbol}"
         now = time.time()
@@ -267,6 +230,8 @@ def _analyze_detailed_trend(self, history: List[Decimal], current_rate: Decimal)
                     rates.reverse()
                     return rates
         except Exception: return []
+
+# <<< КОНЕЦ ПОЛНОСТЬЮ ИСПРАВЛЕННОГО БЛОКА АНАЛИЗАТОРА >>>
 
 # Создаем глобальный экземпляр улучшенного анализатора
 enhanced_funding_analyzer = EnhancedFundingTrendAnalyzer()
