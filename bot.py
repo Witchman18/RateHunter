@@ -155,31 +155,39 @@ class EnhancedFundingTrendAnalyzer:
         return {'score': score, 'level': level}
     
     def _generate_trading_signal(self, trend: Dict, stability: Dict, rate: Decimal, history: List[Decimal]) -> Dict:
-        if abs(rate) < 0.005: return {'signal': 'rate_too_low', 'confidence': 0, 'recommendation': 'Ставка слишком низкая'}
+    """
+    УЛУЧШЕННАЯ ВЕРСИЯ 2.0: Снижены пороги для сигналов "ДЕРЖАТЬ".
+    """
+     if abs(rate) < 0.003: # Порог для "rate_too_low" теперь 0.3%
+        return {'signal': 'rate_too_low', 'confidence': 0, 'recommendation': 'Ставка слишком низкая'}
+    
+     confidence = min(1.0, (stability['score'] + trend['strength']) / 2 + min(0.2, len(history) * 0.03))
+    
+    # Правила входа/выхода остаются прежними
+     if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0 and rate > 0:
+        if trend['momentum'] == 'accelerating': return {'signal': 'strong_long_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🟢 СИЛЬНЫЙ СИГНАЛ: Открыть ЛОНГ! Ставка быстро растет.'}
+        return {'signal': 'long_entry', 'confidence': confidence, 'recommendation': '🟢 Открыть ЛОНГ: Ставка стабильно растет.'}
+    
+     if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -1.0 and rate > 0:
+        return {'signal': 'long_exit', 'confidence': confidence, 'recommendation': '🔴 ЗАКРЫТЬ ЛОНГ: Ставка начала падать.'}
         
-        confidence = min(1.0, (stability['score'] + trend['strength']) / 2 + min(0.2, len(history) * 0.03))
+     if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -2.0 and rate < 0:
+        if trend['momentum'] == 'accelerating': return {'signal': 'strong_short_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🔴 СИЛЬНЫЙ СИГНАЛ: Открыть ШОРТ! Ставка быстро падает.'}
+        return {'signal': 'short_entry', 'confidence': confidence, 'recommendation': '🔴 Открыть ШОРТ: Ставка стабильно падает.'}
         
-        if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0 and rate > 0:
-            if trend['momentum'] == 'accelerating': return {'signal': 'strong_long_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🟢 СИЛЬНЫЙ СИГНАЛ: Открыть ЛОНГ! Ставка быстро растет.'}
-            return {'signal': 'long_entry', 'confidence': confidence, 'recommendation': '🟢 Открыть ЛОНГ: Ставка стабильно растет.'}
+     if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0 and rate < 0:
+        return {'signal': 'short_exit', 'confidence': confidence, 'recommendation': '🟢 ЗАКРЫТЬ ШОРТ: Ставка начала расти.'}
         
-        if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -1.0 and rate > 0:
-            return {'signal': 'long_exit', 'confidence': confidence, 'recommendation': '🔴 ЗАКРЫТЬ ЛОНГ: Ставка начала падать.'}
-            
-        if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -2.0 and rate < 0:
-            if trend['momentum'] == 'accelerating': return {'signal': 'strong_short_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🔴 СИЛЬНЫЙ СИГНАЛ: Открыть ШОРТ! Ставка быстро падает.'}
-            return {'signal': 'short_entry', 'confidence': confidence, 'recommendation': '🔴 Открыть ШОРТ: Ставка стабильно падает.'}
-            
-        if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0 and rate < 0:
-            return {'signal': 'short_exit', 'confidence': confidence, 'recommendation': '🟢 ЗАКРЫТЬ ШОРТ: Ставка начала расти.'}
-            
-        if trend['direction'] in ['growing', 'stable'] and rate > 0.01 and trend['strength'] >= 0.4:
-            return {'signal': 'hold_long', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ЛОНГ: Ставка остается высокой.'}
-            
-        if trend['direction'] in ['declining', 'stable'] and rate < -0.01 and trend['strength'] >= 0.4:
-            return {'signal': 'hold_short', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ШОРТ: Ставка остается отрицательной.'}
-            
-        return {'signal': 'wait', 'confidence': confidence*0.5, 'recommendation': '⏱️ ОЖИДАНИЕ: Тренд неясен.'}
+    # === НОВЫЕ ПОРОГИ ЗДЕСЬ ===
+    # Теперь бот будет рекомендовать "ДЕРЖАТЬ" уже при ставке 0.3% (вместо 1.0%)
+     if trend['direction'] in ['growing', 'stable'] and rate > 0.003 and trend['strength'] >= 0.4:
+        return {'signal': 'hold_long', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ЛОНГ: Ставка остается высокой.'}
+        
+     if trend['direction'] in ['declining', 'stable'] and rate < -0.003 and trend['strength'] >= 0.4:
+        return {'signal': 'hold_short', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ШОРТ: Ставка остается отрицательной.'}
+    # ==========================
+        
+     return {'signal': 'wait', 'confidence': confidence*0.5, 'recommendation': '⏱️ ОЖИДАНИЕ: Тренд неясен.'}
 
     # --- НЕДОСТАЮЩИЕ ФУНКЦИИ, КОТОРЫЕ МЫ ВОЗВРАЩАЕМ ---
     async def _get_funding_history_real(self, symbol: str, exchange: str, periods: int = 10) -> List[Decimal]:
