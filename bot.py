@@ -49,369 +49,226 @@ def check_access(user_id: int) -> bool:
         return False
     return user_id in ALLOWED_USERS
 
-# ===== НОВЫЙ МОДУЛЬ: АНАЛИЗАТОР ТРЕНДОВ FUNDING RATE =====
-# ===== НОВЫЙ МОДУЛЬ: АНАЛИЗАТОР ТРЕНДОВ FUNDING RATE С РЕАЛЬНЫМИ ДАННЫМИ =====
-# ===== НОВЫЙ МОДУЛЬ: АНАЛИЗАТОР ТРЕНДОВ FUNDING RATE С РЕАЛЬНЫМИ ДАННЫМИ =====
-class FundingTrendAnalyzer:
-    """Анализирует тренды и стабильность funding rates с РЕАЛЬНЫМИ данными"""
+# ===== УЛУЧШЕННЫЙ МОДУЛЬ: АНАЛИЗАТОР ТРЕНДОВ FUNDING RATE =====
+
+class EnhancedFundingTrendAnalyzer:
+    """
+    Улучшенный анализатор трендов funding rates с точными торговыми сигналами
+    Анализирует динамику изменения ставок за последние периоды для генерации
+    сигналов входа/выхода из позиций
+    """
     
     def __init__(self):
-        self.historical_cache = {}  # Кэш исторических данных
-        self.cache_lifetime_minutes = 30  # Кэш действует 30 минут
+        self.historical_cache = {}
+        self.cache_lifetime_minutes = 30
         
-    async def analyze_funding_stability(self, symbol: str, exchange: str, current_rate: Decimal) -> Dict:
+    async def analyze_trading_opportunity(self, symbol: str, exchange: str, current_rate: Decimal) -> Dict:
         """
-        Анализирует стабильность и тренд funding rate используя РЕАЛЬНУЮ историю
+        Анализирует торговые возможности на основе трендов funding rate
+        Возвращает конкретные торговые сигналы
         """
         
-        # Получаем РЕАЛЬНУЮ историю ставок за последние периоды
-        history = await self._get_funding_history_real(symbol, exchange, periods=5)
+        # Получаем историю ставок за последние 8-10 периодов (больше данных = точнее анализ)
+        history = await self._get_funding_history_real(symbol, exchange, periods=10)
         
-        if not history or len(history) < 2:
+        if not history or len(history) < 3:
             return {
-                'trend': 'unknown',
-                'stability': 'unknown', 
+                'signal': 'insufficient_data',
                 'confidence': 0.0,
-                'recommendation': 'insufficient_data',
+                'recommendation': 'Недостаточно данных для анализа',
+                'trend_direction': 'unknown',
+                'trend_strength': 0.0,
                 'data_source': 'insufficient'
             }
         
-        # Анализируем тренд
-        trend_analysis = self._analyze_trend(history, current_rate)
+        # Анализируем тренд с учетом последних 3-5 периодов
+        trend_analysis = self._analyze_detailed_trend(history, current_rate)
         
-        # Анализируем стабильность
-        stability_analysis = self._analyze_stability(history, current_rate)
+        # Анализируем стабильность тренда
+        stability_analysis = self._analyze_trend_stability(history, current_rate)
         
-        # Формируем рекомендацию
-        recommendation = self._make_recommendation(trend_analysis, stability_analysis, current_rate)
-        
-        # Вычисляем итоговую уверенность (теперь должна быть выше!)
-        confidence = min(trend_analysis['confidence'], stability_analysis['confidence'])
-        
-        # Бонус к уверенности за количество данных
-        data_bonus = min(0.2, len(history) * 0.05)  # +5% за каждую точку данных, макс +20%
-        confidence = min(1.0, confidence + data_bonus)
+        # Генерируем торговый сигнал
+        trading_signal = self._generate_trading_signal(
+            trend_analysis, 
+            stability_analysis, 
+            current_rate,
+            history
+        )
         
         return {
-            'trend': trend_analysis['direction'],
+            'signal': trading_signal['signal'],
+            'confidence': trading_signal['confidence'],
+            'recommendation': trading_signal['recommendation'],
+            'trend_direction': trend_analysis['direction'],
             'trend_strength': trend_analysis['strength'],
-            'stability': stability_analysis['level'],
+            'recent_change': trend_analysis['recent_change_pct'],
+            'momentum': trend_analysis['momentum'],
             'stability_score': stability_analysis['score'],
-            'confidence': confidence,
-            'recommendation': recommendation,
-            'history': history,
+            'data_points': len(history),
             'data_source': 'real_api',
             'analysis_details': {
-                'rate_change': trend_analysis['rate_change'],
-                'volatility': stability_analysis['volatility'],
-                'data_points': len(history)
+                'history': history[-5:],  # Последние 5 точек для отладки
+                'current_rate': float(current_rate),
+                'trend_changes': trend_analysis['trend_changes']
             }
         }
     
-    async def _get_funding_history_real(self, symbol: str, exchange: str, periods: int = 5) -> List[Decimal]:
+    def _analyze_detailed_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
         """
-        Получает РЕАЛЬНУЮ историю funding rates с API бирж
+        Детальный анализ тренда с фокусом на недавние изменения
         """
-        
-        cache_key = f"{exchange}_{symbol}"
-        now = time.time()
-        
-        # Проверяем кэш
-        if cache_key in self.historical_cache:
-            cached_data, cached_time = self.historical_cache[cache_key]
-            if now - cached_time < self.cache_lifetime_minutes * 60:
-                print(f"[FUNDING_HISTORY] Используем кэш для {cache_key}")
-                return cached_data
-        
-        print(f"[FUNDING_HISTORY] Запрашиваем историю для {symbol} на {exchange}")
-        
-        # Получаем реальные данные в зависимости от биржи
-        if exchange.upper() == 'MEXC':
-            history = await self._fetch_mexc_funding_history(symbol)
-        elif exchange.upper() == 'BYBIT':
-            history = await self._fetch_bybit_funding_history(symbol)
-        else:
-            print(f"[FUNDING_HISTORY] Неподдерживаемая биржа: {exchange}")
-            return []
-        
-        # Сохраняем в кэш
-        if history:
-            self.historical_cache[cache_key] = (history, now)
-            print(f"[FUNDING_HISTORY] Получено {len(history)} точек истории для {symbol} ({exchange})")
-        
-        return history
-    
-    async def _fetch_mexc_funding_history(self, symbol: str) -> List[Decimal]:
-        """Получает историю funding rates с MEXC с исправленным парсингом нового формата"""
-        
-        # Конвертируем символ в формат MEXC (BTCUSDT -> BTC_USDT)
-        mexc_symbol = symbol.replace('USDT', '_USDT')
-        
-        url = "https://contract.mexc.com/api/v1/contract/funding_rate/history"
-        params = {
-            'symbol': mexc_symbol,
-            'page_size': 10  # Последние 10 записей
-        }
-        
-        print(f"[MEXC_HISTORY] Запрос для {mexc_symbol}: {url}")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=10) as response:
-                    print(f"[MEXC_HISTORY] HTTP статус: {response.status}")
-                    
-                    if response.status != 200:
-                        error_text = await response.text()
-                        print(f"[MEXC_HISTORY] HTTP ошибка {response.status}: {error_text[:100]}")
-                        return []
-                    
-                    response_text = await response.text()
-                    print(f"[MEXC_HISTORY] Ответ (первые 200 символов): {response_text[:200]}")
-                    
-                    try:
-                        data = json.loads(response_text)
-                    except json.JSONDecodeError as e:
-                        print(f"[MEXC_HISTORY] Ошибка парсинга JSON: {e}")
-                        print(f"[MEXC_HISTORY] Полный ответ: {response_text}")
-                        return []
-                    
-                    # Проверяем структуру ответа
-                    if not isinstance(data, dict):
-                        print(f"[MEXC_HISTORY] Ответ не является словарем: {type(data)}")
-                        return []
-                    
-                    if not data.get('success'):
-                        print(f"[MEXC_HISTORY] API вернул ошибку: {data}")
-                        return []
-                    
-                    # ИСПРАВЛЕНИЕ: Новый формат MEXC - данные в data.resultList
-                    api_data = data.get('data', {})
-                    if not isinstance(api_data, dict):
-                        print(f"[MEXC_HISTORY] data не является словарем: {type(api_data)}")
-                        return []
-                    
-                    # Пробуем новый формат (data.resultList)
-                    funding_data = api_data.get('resultList')
-                    if not funding_data:
-                        # Fallback на старый формат (data напрямую как список)
-                        if isinstance(api_data, list):
-                            funding_data = api_data
-                        else:
-                            print(f"[MEXC_HISTORY] Нет данных в resultList для символа {mexc_symbol}")
-                            print(f"[MEXC_HISTORY] Структура data: {list(api_data.keys()) if isinstance(api_data, dict) else type(api_data)}")
-                            return []
-                    
-                    if not isinstance(funding_data, list):
-                        print(f"[MEXC_HISTORY] resultList не является списком: {type(funding_data)}")
-                        return []
-                    
-                    # Извлекаем ставки из ответа
-                    rates = []
-                    print(f"[MEXC_HISTORY] Обрабатываем {len(funding_data)} записей из resultList")
-                    
-                    for i, item in enumerate(funding_data):
-                        if not isinstance(item, dict):
-                            print(f"[MEXC_HISTORY] Запись {i} не является словарем: {type(item)}")
-                            continue
-                        
-                        try:
-                            rate = Decimal(str(item.get('fundingRate', 0)))
-                            settle_time = item.get('settleTime', 'unknown')
-                            rates.append(rate)
-                            if i < 3:  # Показываем первые 3 для отладки
-                                print(f"[MEXC_HISTORY] Запись {i}: rate={rate}, settleTime={settle_time}")
-                        except (TypeError, ValueError) as e:
-                            print(f"[MEXC_HISTORY] Ошибка парсинга ставки в записи {i}: {e}")
-                            continue
-                    
-                    # Возвращаем в хронологическом порядке (самые старые сначала)
-                    rates.reverse()
-                    print(f"[MEXC_HISTORY] Успешно получено {len(rates)} ставок для {mexc_symbol}")
-                    return rates
-                    
-        except asyncio.TimeoutError:
-            print(f"[MEXC_HISTORY] Timeout при запросе истории для {mexc_symbol}")
-        except Exception as e:
-            print(f"[MEXC_HISTORY] Неожиданная ошибка для {mexc_symbol}: {type(e).__name__}: {e}")
-            import traceback
-            print(f"[MEXC_HISTORY] Traceback: {traceback.format_exc()}")
-        
-        return []
-    
-    async def _fetch_bybit_funding_history(self, symbol: str) -> List[Decimal]:
-        """Получает историю funding rates с Bybit"""
-        
-        url = "https://api.bybit.com/v5/market/funding/history"
-        params = {
-            'category': 'linear',
-            'symbol': symbol,
-            'limit': 10
-        }
-        
-        print(f"[BYBIT_HISTORY] Запрос для {symbol}: {url}")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=10) as response:
-                    print(f"[BYBIT_HISTORY] HTTP статус: {response.status}")
-                    
-                    if response.status != 200:
-                        error_text = await response.text()
-                        print(f"[BYBIT_HISTORY] HTTP ошибка {response.status}: {error_text[:100]}")
-                        return []
-                    
-                    response_text = await response.text()
-                    print(f"[BYBIT_HISTORY] Ответ (первые 200 символов): {response_text[:200]}")
-                    
-                    try:
-                        data = json.loads(response_text)
-                    except json.JSONDecodeError as e:
-                        print(f"[BYBIT_HISTORY] Ошибка парсинга JSON: {e}")
-                        return []
-                    
-                    if data.get('retCode') != 0:
-                        print(f"[BYBIT_HISTORY] API ошибка: {data.get('retMsg', 'Unknown')}")
-                        return []
-                    
-                    result_list = data.get('result', {}).get('list', [])
-                    if not result_list:
-                        print(f"[BYBIT_HISTORY] Нет данных для символа {symbol}")
-                        return []
-                    
-                    # Извлекаем ставки
-                    rates = []
-                    print(f"[BYBIT_HISTORY] Обрабатываем {len(result_list)} записей")
-                    
-                    for i, item in enumerate(result_list):
-                        try:
-                            rate = Decimal(str(item.get('fundingRate', 0)))
-                            rates.append(rate)
-                            if i < 3:  # Показываем первые 3
-                                print(f"[BYBIT_HISTORY] Запись {i}: rate={rate}")
-                        except (TypeError, ValueError) as e:
-                            print(f"[BYBIT_HISTORY] Ошибка парсинга ставки в записи {i}: {e}")
-                            continue
-                    
-                    # Bybit возвращает в обратном порядке, поэтому разворачиваем
-                    rates.reverse()
-                    print(f"[BYBIT_HISTORY] Успешно получено {len(rates)} ставок для {symbol}")
-                    return rates
-                    
-        except asyncio.TimeoutError:
-            print(f"[BYBIT_HISTORY] Timeout для {symbol}")
-        except Exception as e:
-            print(f"[BYBIT_HISTORY] Ошибка для {symbol}: {type(e).__name__}: {e}")
-        
-        return []
-    
-    def _analyze_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
-        """Анализирует направление тренда ставки"""
-        
-        if len(history) < 2:
-            return {'direction': 'unknown', 'strength': 0.0, 'confidence': 0.0, 'rate_change': 0.0}
-        
-        # Вычисляем изменения между периодами
-        changes = []
         all_rates = history + [current_rate]
         
+        if len(all_rates) < 3:
+            return {
+                'direction': 'unknown',
+                'strength': 0.0,
+                'recent_change_pct': 0.0,
+                'momentum': 'flat',
+                'trend_changes': []
+            }
+        
+        # Анализируем изменения между периодами
+        changes = []
         for i in range(1, len(all_rates)):
-            change = float(all_rates[i] - all_rates[i-1])
-            changes.append(change)
+            change_pct = float((all_rates[i] - all_rates[i-1]) / abs(all_rates[i-1]) * 100) if all_rates[i-1] != 0 else 0
+            changes.append(change_pct)
         
-        if not changes:
-            return {'direction': 'unknown', 'strength': 0.0, 'confidence': 0.0, 'rate_change': 0.0}
+        # Фокус на последние 3-4 изменения
+        recent_changes = changes[-4:] if len(changes) >= 4 else changes[-3:] if len(changes) >= 3 else changes
         
-        # Определяем общее направление
-        total_change = sum(changes)
-        avg_change = total_change / len(changes)
+        # Определяем направление тренда по последним изменениям
+        positive_changes = sum(1 for c in recent_changes if c > 0.1)
+        negative_changes = sum(1 for c in recent_changes if c < -0.1)
         
-        # Определяем силу тренда (консистентность направления)
-        positive_changes = sum(1 for c in changes if c > 0)
-        negative_changes = sum(1 for c in changes if c < 0)
+        recent_change_pct = sum(recent_changes) if recent_changes else 0
         
-        if positive_changes > negative_changes:
+        if positive_changes > negative_changes and recent_change_pct > 0.5:
             direction = 'growing'
-            strength = positive_changes / len(changes)
-        elif negative_changes > positive_changes:
-            direction = 'declining' 
-            strength = negative_changes / len(changes)
+            strength = min(1.0, positive_changes / len(recent_changes))
+        elif negative_changes > positive_changes and recent_change_pct < -0.5:
+            direction = 'declining'
+            strength = min(1.0, negative_changes / len(recent_changes))
         else:
             direction = 'stable'
             strength = 0.5
         
-        # Уверенность зависит от количества данных и консистентности
-        data_factor = min(1.0, len(changes) / 4.0)  # Полная уверенность при 4+ точках
-        confidence = data_factor * strength
+        if len(recent_changes) >= 3:
+            early_avg = sum(recent_changes[:len(recent_changes)//2]) / (len(recent_changes)//2)
+            late_avg = sum(recent_changes[len(recent_changes)//2:]) / (len(recent_changes) - len(recent_changes)//2)
+            
+            if abs(late_avg) > abs(early_avg) * 1.2: momentum = 'accelerating'
+            elif abs(late_avg) < abs(early_avg) * 0.8: momentum = 'decelerating'
+            else: momentum = 'steady'
+        else:
+            momentum = 'steady'
         
         return {
-            'direction': direction,
-            'strength': strength,
-            'confidence': confidence,
-            'rate_change': avg_change,
-            'total_change': total_change
+            'direction': direction, 'strength': strength, 'recent_change_pct': recent_change_pct,
+            'momentum': momentum, 'trend_changes': changes
         }
     
-    def _analyze_stability(self, history: List[Decimal], current_rate: Decimal) -> Dict:
-        """Анализирует стабильность (волатильность) ставки"""
-        
+    def _analyze_trend_stability(self, history: List[Decimal], current_rate: Decimal) -> Dict:
         all_rates = history + [current_rate]
+        if len(all_rates) < 3: return {'score': 0.0, 'level': 'unknown'}
         
-        if len(all_rates) < 2:
-            return {'level': 'unknown', 'score': 0.0, 'confidence': 0.0, 'volatility': 0.0}
+        changes, pos_count, neg_count = [], 0, 0
+        for i in range(1, len(all_rates)):
+            if all_rates[i-1] != 0:
+                change_pct = abs(float((all_rates[i] - all_rates[i-1]) / all_rates[i-1] * 100))
+                changes.append(change_pct)
+            if all_rates[i] > all_rates[i-1]: pos_count += 1
+            elif all_rates[i] < all_rates[i-1]: neg_count += 1
         
-        # Вычисляем волатильность как стандартное отклонение
-        rates_float = [float(rate) for rate in all_rates]
-        mean_rate = sum(rates_float) / len(rates_float)
+        if not changes: return {'score': 0.0, 'level': 'unknown'}
         
-        variance = sum((rate - mean_rate) ** 2 for rate in rates_float) / len(rates_float)
-        volatility = variance ** 0.5
+        avg_change = sum(changes[-4:]) / len(changes[-4:]) if len(changes) >= 4 else sum(changes) / len(changes)
+        consistency = max(pos_count, neg_count) / (len(all_rates) - 1)
         
-        # Классифицируем уровень стабильности
-        if volatility < 0.001:  # Изменения меньше 0.1%
-            level = 'stable'
-            score = 0.9
-        elif volatility < 0.003:  # Изменения меньше 0.3%
-            level = 'moderate'
-            score = 0.7
-        else:
-            level = 'volatile'
-            score = 0.3
+        if consistency >= 0.7 and avg_change >= 0.1: score, level = min(1.0, consistency * 1.2), 'high'
+        elif consistency >= 0.5: score, level = consistency, 'medium'
+        else: score, level = consistency * 0.8, 'low'
         
-        # Больше данных = больше уверенности в оценке стабильности
-        confidence = min(1.0, len(all_rates) / 4.0)
-        
-        return {
-            'level': level,
-            'score': score,
-            'confidence': confidence,
-            'volatility': volatility
-        }
+        return {'score': score, 'level': level}
     
-    def _make_recommendation(self, trend_analysis: Dict, stability_analysis: Dict, current_rate: Decimal) -> str:
-        """Формирует рекомендацию на основе анализа тренда и стабильности"""
+    def _generate_trading_signal(self, trend: Dict, stability: Dict, rate: Decimal, history: List[Decimal]) -> Dict:
+        if abs(rate) < 0.005: return {'signal': 'rate_too_low', 'confidence': 0, 'recommendation': 'Ставка слишком низкая'}
         
-        abs_rate = abs(float(current_rate))
-        trend = trend_analysis['direction']
-        stability = stability_analysis['level']
+        confidence = min(1.0, (stability['score'] + trend['strength']) / 2 + min(0.2, len(history) * 0.03))
         
-        # Низкие ставки - не интересны
-        if abs_rate < 0.005:  # Меньше 0.5%
-            return 'rate_too_low'
+        if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0 and rate > 0:
+            if trend['momentum'] == 'accelerating': return {'signal': 'strong_long_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🟢 СИЛЬНЫЙ СИГНАЛ: Открыть ЛОНГ! Ставка быстро растет.'}
+            return {'signal': 'long_entry', 'confidence': confidence, 'recommendation': '🟢 Открыть ЛОНГ: Ставка стабильно растет.'}
         
-        # Сценарии из документа
-        if trend == 'growing' or trend == 'stable':
-            if stability in ['stable', 'moderate']:
-                return 'ideal_arbitrage'  # ✅ Идеальный лонг/шорт
-            else:
-                return 'risky_arbitrage'  # ⚠️ Рискованный из-за волатильности
+        if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -1.0 and rate > 0:
+            return {'signal': 'long_exit', 'confidence': confidence, 'recommendation': '🔴 ЗАКРЫТЬ ЛОНГ: Ставка начала падать.'}
+            
+        if trend['direction'] == 'declining' and trend['strength'] >= 0.6 and trend['recent_change_pct'] < -2.0 and rate < 0:
+            if trend['momentum'] == 'accelerating': return {'signal': 'strong_short_entry', 'confidence': min(1.0, confidence*1.2), 'recommendation': '🔴 СИЛЬНЫЙ СИГНАЛ: Открыть ШОРТ! Ставка быстро падает.'}
+            return {'signal': 'short_entry', 'confidence': confidence, 'recommendation': '🔴 Открыть ШОРТ: Ставка стабильно падает.'}
+            
+        if trend['direction'] == 'growing' and trend['strength'] >= 0.6 and trend['recent_change_pct'] > 1.0 and rate < 0:
+            return {'signal': 'short_exit', 'confidence': confidence, 'recommendation': '🟢 ЗАКРЫТЬ ШОРТ: Ставка начала расти.'}
+            
+        if trend['direction'] in ['growing', 'stable'] and rate > 0.01 and trend['strength'] >= 0.4:
+            return {'signal': 'hold_long', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ЛОНГ: Ставка остается высокой.'}
+            
+        if trend['direction'] in ['declining', 'stable'] and rate < -0.01 and trend['strength'] >= 0.4:
+            return {'signal': 'hold_short', 'confidence': confidence*0.8, 'recommendation': '⏸️ ДЕРЖАТЬ ШОРТ: Ставка остается отрицательной.'}
+            
+        return {'signal': 'wait', 'confidence': confidence*0.5, 'recommendation': '⏱️ ОЖИДАНИЕ: Тренд неясен.'}
+
+    async def _get_funding_history_real(self, symbol: str, exchange: str, periods: int = 10) -> List[Decimal]:
+        cache_key = f"{exchange}_{symbol}"
+        now = time.time()
+        if cache_key in self.historical_cache:
+            cached_data, cached_time = self.historical_cache[cache_key]
+            if now - cached_time < self.cache_lifetime_minutes * 60:
+                return cached_data
         
-        elif trend == 'declining':
-            return 'contrarian_opportunity'  # 🔥 Возможность на развороте
+        if exchange.upper() == 'MEXC': history = await self._fetch_mexc_funding_history(symbol)
+        elif exchange.upper() == 'BYBIT': history = await self._fetch_bybit_funding_history(symbol)
+        else: history = []
         
-        else:
-            return 'unclear_signal'  # ⚪️ Неоднозначная ситуация
-# Глобальный анализатор
-funding_analyzer = FundingTrendAnalyzer()
+        if history: self.historical_cache[cache_key] = (history, now)
+        return history
+
+    async def _fetch_mexc_funding_history(self, symbol: str) -> List[Decimal]:
+        mexc_symbol = symbol.replace('USDT', '_USDT')
+        url = "https://contract.mexc.com/api/v1/contract/funding_rate/history"
+        params = {'symbol': mexc_symbol, 'page_size': 15}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as response:
+                    if response.status != 200: return []
+                    data = await response.json()
+                    if not data.get('success'): return []
+                    api_data = data.get('data', {})
+                    funding_data = api_data.get('resultList', [])
+                    if not funding_data: return []
+                    rates = [Decimal(str(item.get('fundingRate', 0))) for item in funding_data]
+                    rates.reverse()
+                    return rates
+        except Exception: return []
+
+    async def _fetch_bybit_funding_history(self, symbol: str) -> List[Decimal]:
+        url = "https://api.bybit.com/v5/market/funding/history"
+        params = {'category': 'linear', 'symbol': symbol, 'limit': 15}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as response:
+                    if response.status != 200: return []
+                    data = await response.json()
+                    if data.get('retCode') != 0: return []
+                    result_list = data.get('result', {}).get('list', [])
+                    if not result_list: return []
+                    rates = [Decimal(str(item.get('fundingRate', 0))) for item in result_list]
+                    rates.reverse()
+                    return rates
+        except Exception: return []
+
+# Создаем глобальный экземпляр улучшенного анализатора
+enhanced_funding_analyzer = EnhancedFundingTrendAnalyzer()
 
 # ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТКАЗА В ДОСТУПЕ =====
 async def access_denied_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -831,114 +688,82 @@ async def api_diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== НОВАЯ ФУНКЦИЯ: УМНЫЙ АНАЛИЗ ВОЗМОЖНОСТЕЙ =====
 async def analyze_funding_opportunity(item: Dict) -> Dict:
     """
-    Интегрирует умный анализ в данные инструмента
-    Добавляет рекомендации на основе анализа тренда
+    ОБНОВЛЕННАЯ ВЕРСИЯ: Использует улучшенный анализатор для генерации торговых сигналов
     """
     
-    # Запускаем анализ стабильности
-    stability_analysis = await funding_analyzer.analyze_funding_stability(
+    # Запускаем улучшенный анализ
+    analysis = await enhanced_funding_analyzer.analyze_trading_opportunity(
         symbol=item['symbol'],
         exchange=item['exchange'], 
         current_rate=item['rate']
     )
     
     # Добавляем анализ к данным элемента
-    item['stability_analysis'] = stability_analysis
+    item['enhanced_analysis'] = analysis
     
-    # Формируем умное сообщение
-    recommendation = stability_analysis['recommendation']
-    confidence = stability_analysis['confidence']
+    # Формируем улучшенную рекомендацию
+    signal = analysis['signal']
+    confidence = analysis['confidence']
     
-    # Эмодзи и сообщения для разных типов рекомендаций
-    recommendation_map = {
-        'ideal_arbitrage': {
-            'emoji': '✅',
-            'message': 'Идеальные условия',
-            'details': 'Ставка стабильна, низкий риск'
-        },
-        'risky_arbitrage': {
-            'emoji': '⚠️', 
-            'message': 'Рискованно',
-            'details': 'Высокая волатильность ставки'
-        },
-        'contrarian_opportunity': {
-            'emoji': '🔥',
-            'message': 'Возможность на развороте', 
-            'details': 'Ставка истощается'
-        },
-        'unclear_signal': {
-            'emoji': '⚪️',
-            'message': 'Неоднозначно',
-            'details': 'Смешанные сигналы'
-        },
-        'rate_too_low': {
-            'emoji': '📉',
-            'message': 'Ставка низкая',
-            'details': 'Не достигает порога'
-        },
-        'insufficient_data': {
-            'emoji': '❓',
-            'message': 'Мало данных',
-            'details': 'Нужна история ставок'
-        }
+    # Эмодзи и сообщения для разных типов сигналов
+    signal_map = {
+        'strong_long_entry': {'emoji': '🚀', 'message': 'СИЛЬНЫЙ ЛОНГ', 'details': 'Ставка быстро растет - открыть ЛОНГ!'},
+        'long_entry': {'emoji': '📈', 'message': 'Вход в ЛОНГ', 'details': 'Ставка стабильно растет - рассмотреть ЛОНГ'},
+        'long_exit': {'emoji': '📉', 'message': 'Выход из ЛОНГ', 'details': 'Ставка начала падать - закрыть ЛОНГ'},
+        'strong_short_entry': {'emoji': '🎯', 'message': 'СИЛЬНЫЙ ШОРТ', 'details': 'Ставка быстро падает - открыть ШОРТ!'},
+        'short_entry': {'emoji': '📉', 'message': 'Вход в ШОРТ', 'details': 'Ставка стабильно падает - рассмотреть ШОРТ'},
+        'short_exit': {'emoji': '📈', 'message': 'Выход из ШОРТ', 'details': 'Ставка начала расти - закрыть ШОРТ'},
+        'hold_long': {'emoji': '⏸️', 'message': 'Держать ЛОНГ', 'details': 'Ставка остается высокой - продолжать ЛОНГ'},
+        'hold_short': {'emoji': '⏸️', 'message': 'Держать ШОРТ', 'details': 'Ставка остается отрицательной - продолжать ШОРТ'},
+        'wait': {'emoji': '⏱️', 'message': 'Ожидание', 'details': 'Тренд неясен - ждать лучшего момента'},
+        'rate_too_low': {'emoji': '🔽', 'message': 'Ставка низкая', 'details': 'Слишком низкая для торговли'},
+        'insufficient_data': {'emoji': '❓', 'message': 'Мало данных', 'details': 'Недостаточно истории для анализа'}
     }
     
-    rec_info = recommendation_map.get(recommendation, {
-        'emoji': '❓',
-        'message': 'Анализ...',
-        'details': 'Обработка данных'
-    })
+    signal_info = signal_map.get(signal, {'emoji': '❓', 'message': 'Анализ...', 'details': 'Обработка данных'})
     
+    # Обновляем структуру для совместимости со старым кодом
     item['smart_recommendation'] = {
-        'emoji': rec_info['emoji'],
-        'message': rec_info['message'],
-        'details': rec_info['details'],
+        'emoji': signal_info['emoji'],
+        'message': signal_info['message'],
+        'details': signal_info['details'],
         'confidence': confidence,
-        'recommendation_type': recommendation
+        'recommendation_type': signal
+    }
+    
+    # Добавляем расширенную информацию
+    item['enhanced_recommendation'] = {
+        'signal_type': signal,
+        'trend_direction': analysis.get('trend_direction', 'unknown'),
+        'trend_strength': analysis.get('trend_strength', 0.0),
+        'recent_change': analysis.get('recent_change', 0.0),
+        'momentum': analysis.get('momentum', 'steady'),
+        'full_recommendation': analysis.get('recommendation', ''),
+        'data_points': analysis.get('data_points', 0)
     }
     
     return item
-
 @require_access()
 async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    ОБНОВЛЕННАЯ ВЕРСИЯ: Показывает топ возможностей с торговыми сигналами
+    """
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     ensure_user_settings(chat_id, user_id)
     settings = user_settings[chat_id]['settings']
 
     msg = update.callback_query.message if update.callback_query else await update.message.reply_text("🔄 Ищу...")
-    await msg.edit_text("🔄 Ищу лучшие возможности...")
+    await msg.edit_text("🔄 Ищу лучшие возможности с ИИ-анализом...")
 
     all_data = await fetch_all_data(context)
     if not all_data:
         await msg.edit_text("😞 Не удалось получить данные с бирж. Попробуйте 🔧 Диагностика API для проверки.")
         return
 
-    print(f"[DEBUG] Фильтры: биржи={settings['exchanges']}, ставка>={settings['funding_threshold']}, объем>={settings['volume_threshold_usdt']}")
-    print(f"[DEBUG] Всего данных для фильтрации: {len(all_data)}")
-    
-    # Применяем фильтры ПОЭТАПНО с отладкой
-    print(f"[DEBUG] Этап 1: Фильтр по биржам...")
     exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
-    print(f"[DEBUG] После фильтра по биржам: {len(exchange_filtered)} инструментов")
-    
-    print(f"[DEBUG] Этап 2: Фильтр по ставке...")
     rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
-    print(f"[DEBUG] После фильтра по ставке: {len(rate_filtered)} инструментов")
-    
-    print(f"[DEBUG] Этап 3: Фильтр по объему...")
-    volume_filtered = [item for item in rate_filtered if item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']]
-    print(f"[DEBUG] После фильтра по объему: {len(volume_filtered)} инструментов")
-    
-    # Показываем топ-10 по ставке для отладки
-    top_rates_debug = sorted(all_data, key=lambda x: abs(x['rate']), reverse=True)[:10]
-    print(f"[DEBUG] Топ-10 ставок (без фильтров):")
-    for i, item in enumerate(top_rates_debug):
-        rate_pct = abs(item['rate']) * 100
-        vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
-        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%, объем: {vol_m:.1f}M USDT")
-    
-    filtered_data = volume_filtered
+    filtered_data = [item for item in rate_filtered if item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']]
     
     if not filtered_data:
         stats_msg = f"😞 Не найдено пар, соответствующих всем фильтрам.\n\n"
@@ -946,23 +771,10 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats_msg += f"• Всего инструментов: {len(all_data)}\n"
         stats_msg += f"• На выбранных биржах: {len(exchange_filtered)}\n"
         stats_msg += f"• Со ставкой ≥ {settings['funding_threshold']*100:.1f}%: {len(rate_filtered)}\n"
-        stats_msg += f"• С объемом ≥ {settings['volume_threshold_usdt']/1_000:.0f}K: {len(filtered_data)}\n\n"
-        
-        if rate_filtered:
-            stats_msg += f"🔥 **Топ-3 со ставкой ≥ {settings['funding_threshold']*100:.1f}%:**\n"
-            for item in sorted(rate_filtered, key=lambda x: abs(x['rate']), reverse=True)[:3]:
-                rate_pct = abs(item['rate']) * 100
-                vol_m = item.get('volume_24h_usdt', Decimal('0')) / 1_000_000
-                direction = "🟢 LONG" if item['rate'] < 0 else "🔴 SHORT"
-                stats_msg += f"{direction} {item['symbol'].replace('USDT', '')} `{rate_pct:.2f}%` (объем: {vol_m:.1f}M) [{item['exchange']}]\n"
-        
+        stats_msg += f"• С объемом ≥ {settings['volume_threshold_usdt']/1_000:.0f}K: {len(filtered_data)}\n"
         await msg.edit_text(stats_msg, parse_mode='Markdown')
         return
 
-    print(f"[DEBUG] Сортирую {len(filtered_data)} инструментов...")
-    
-    # ===== УБИРАЕМ ДУБЛИКАТЫ ПО СИМВОЛАМ =====
-    # Группируем по символам и выбираем лучшую ставку для каждого
     symbol_groups = {}
     for item in filtered_data:
         symbol = item['symbol']
@@ -970,245 +782,161 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             symbol_groups[symbol] = []
         symbol_groups[symbol].append(item)
     
-    # Для каждого символа выбираем инструмент с максимальной абсолютной ставкой
-    unique_opportunities = []
-    for symbol, items in symbol_groups.items():
-        best_item = max(items, key=lambda x: abs(x['rate']))
-        unique_opportunities.append(best_item)
-    
-    # Сортируем уникальные возможности по абсолютной ставке
+    unique_opportunities = [max(items, key=lambda x: abs(x['rate'])) for items in symbol_groups.values()]
     unique_opportunities.sort(key=lambda x: abs(x['rate']), reverse=True)
     top_5 = unique_opportunities[:5]
     
-    print(f"[DEBUG] После удаления дубликатов: {len(unique_opportunities)} уникальных символов")
-    print(f"[DEBUG] Топ-5 уникальных возможностей:")
-    for i, item in enumerate(top_5):
-        rate_pct = abs(item['rate']) * 100
-        print(f"  {i+1}. {item['symbol']} ({item['exchange']}): {rate_pct:.3f}%")
+    analyzed_opportunities = []
+    for item in top_5:
+        analyzed_item = await analyze_funding_opportunity(item)
+        analyzed_opportunities.append(analyzed_item)
     
-    print(f"[DEBUG] Выбрано топ-5 уникальных инструментов для отображения")
+    context.user_data['current_opportunities'] = analyzed_opportunities
+    context.user_data['all_symbol_data'] = symbol_groups
 
-    # ===== ЧИСТЫЙ ИНТЕРФЕЙС БЕЗ ИИ =====
-    # Сохраняем данные для ИИ-анализа и детального просмотра
-    context.user_data['current_opportunities'] = top_5
-    context.user_data['all_symbol_data'] = symbol_groups  # Сохраняем все данные по символам
-    print(f"[DEBUG] Сохранил данные в context.user_data")
-
-    print(f"[DEBUG] Формирую сообщение...")
-    # Формируем чистое сообщение
-    message_text = f"🔥 **ТОП-5 фандинг возможностей**\n\n"
+    message_text = f"🔥 **ТОП-5 фандинг возможностей с ИИ-сигналами**\n\n"
     buttons = []
     now_utc = datetime.now(timezone.utc)
     
-    for i, item in enumerate(top_5):
-        print(f"[DEBUG] Обрабатываю инструмент {i+1}: {item['symbol']}")
+    for item in analyzed_opportunities:
         symbol_only = item['symbol'].replace("USDT", "")
+        smart_rec = item.get('smart_recommendation', {})
         funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
         time_left = funding_dt_utc - now_utc
         countdown_str = ""
         if time_left.total_seconds() > 0:
             h, m = divmod(int(time_left.total_seconds()) // 60, 60)
-            countdown_str = f" ({h}ч {m}м)" if h > 0 else f" ({m}м)" if m > 0 else " (<1м)"
+            countdown_str = f" ({h}ч {m}м)" if h > 0 else f" ({m}м)"
 
-        # Основная информация - ЧИСТО И ПОНЯТНО
-        arrow = "🟢" if item['rate'] < 0 else "🔴"
+        direction_emoji = "🟢" if item['rate'] < 0 else "🔴"
         rate_str = f"{item['rate'] * 100:+.2f}%"
         time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
+        ai_emoji = smart_rec.get('emoji', '❓')
+        ai_message = smart_rec.get('message', 'Анализ...')
+        confidence = smart_rec.get('confidence', 0.0)
+        confidence_str = f" ({confidence:.0%})" if confidence > 0 else ""
         
-        message_text += f"{arrow} **{symbol_only}** {rate_str} | 🕐 {time_str} {countdown_str} | {item['exchange']}\n"
+        message_text += f"{direction_emoji} **{symbol_only}** {rate_str} | 🕒 {time_str}{countdown_str} | {item['exchange']}\n"
+        message_text += f"  {ai_emoji} *ИИ:* _{ai_message}{confidence_str}_\n\n"
+        buttons.append(InlineKeyboardButton(f"{ai_emoji} {symbol_only}", callback_data=f"drill_{item['symbol']}"))
 
-        buttons.append(InlineKeyboardButton(symbol_only, callback_data=f"drill_{item['symbol']}"))
-
-    message_text += "\n💡 *Хотите ИИ-анализ? Нажмите кнопку ниже* ↓"
-    print(f"[DEBUG] Сообщение сформировано, создаю кнопки...")
-
-    # Кнопки: детали монет + ИИ-анализ
+    message_text += "\n💡 *Нажмите на монету для детального просмотра*"
     detail_buttons = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
-    ai_buttons = [
-        [InlineKeyboardButton("🧠 ИИ-Анализ", callback_data="ai_analysis")],
+    action_buttons = [
+        [InlineKeyboardButton("🧠 Подробный ИИ-анализ", callback_data="ai_analysis")],
         [InlineKeyboardButton("🔄 Обновить", callback_data="back_to_top")]
     ]
-    
-    keyboard = detail_buttons + ai_buttons
-    print(f"[DEBUG] Отправляю ответ пользователю...")
+    keyboard = detail_buttons + action_buttons
     await msg.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
-    print(f"[DEBUG] Ответ отправлен успешно!")
 
 # ===== НОВАЯ ФУНКЦИЯ: ИИ-АНАЛИЗ =====
 async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает экран с ИИ-анализом возможностей"""
+    """
+    ОБНОВЛЕННАЯ ВЕРСИЯ: Показывает экран с подробным ИИ-анализом торговых сигналов
+    """
     query = update.callback_query
-    
     if not check_access(update.effective_user.id):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
     await query.answer()
-    await query.edit_message_text("🧠 Анализирую с помощью ИИ...")
+    await query.edit_message_text("🧠 Формирую подробный торговый анализ...")
 
-    # Получаем сохраненные данные
     opportunities = context.user_data.get('current_opportunities', [])
-    
     if not opportunities:
-        await query.edit_message_text(
-            "❓ Нет данных для анализа. Сначала получите список возможностей.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]])
-        )
+        await query.edit_message_text("❌ Нет данных для анализа.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_top")]]))
         return
 
-    # ===== ПРИМЕНЯЕМ ИИ-АНАЛИЗ =====
-    print(f"[AI_ANALYSIS] Анализирую {len(opportunities)} возможностей...")
-    
-    analyzed_opportunities = []
+    message_text = "🧠 **Подробный торговый анализ ИИ**\n\n"
+    groups = {'strong': [], 'entry': [], 'exit': [], 'hold': [], 'wait': []}
     for item in opportunities:
-        analyzed_item = await analyze_funding_opportunity(item)
-        analyzed_opportunities.append(analyzed_item)
-        print(f"[AI_ANALYSIS] {item['symbol']}: {analyzed_item['smart_recommendation']['message']}")
-
-    # Формируем сообщение ИИ-анализа
-    message_text = "🧠 **ИИ-Анализ возможностей**\n\n"
-    message_text += "*Выберите монету для подробного анализа:*\n\n"
+        rec_type = item.get('smart_recommendation', {}).get('recommendation_type', 'wait')
+        if 'strong' in rec_type: groups['strong'].append(item)
+        elif 'entry' in rec_type: groups['entry'].append(item)
+        elif 'exit' in rec_type: groups['exit'].append(item)
+        elif 'hold' in rec_type: groups['hold'].append(item)
+        else: groups['wait'].append(item)
     
-    buttons = []
-    for item in analyzed_opportunities:
-        symbol_only = item['symbol'].replace("USDT", "")
-        rec = item['smart_recommendation']
-        confidence = rec['confidence']
-        
-        # Определяем уровень уверенности простыми словами
-        if confidence >= 0.8:
-            confidence_text = "ИИ очень уверен"
-        elif confidence >= 0.6:
-            confidence_text = "ИИ довольно уверен"  
-        elif confidence >= 0.4:
-            confidence_text = "ИИ сомневается"
-        else:
-            confidence_text = "ИИ не уверен"
-            
-        message_text += f"{rec['emoji']} **{symbol_only}** - {rec['message']}\n"
-        message_text += f"   _{confidence_text} ({confidence:.0%})_\n\n"
+    def format_group(title, items):
+        text = f"{title}\n"
+        for item in items:
+            rec = item['smart_recommendation']
+            text += f"{rec['emoji']} **{item['symbol'].replace('USDT','')}** `{item['rate']*100:+.2f}%` - {rec['message']} ({rec['confidence']:.0%})\n"
+        return text + "\n"
 
-        buttons.append(InlineKeyboardButton(f"{rec['emoji']} {symbol_only}", callback_data=f"ai_detail_{item['symbol']}"))
-
-    message_text += "💡 *Нажмите на монету для подробного анализа*"
-
-    # Кнопки: выбор монет + назад
-    coin_buttons = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    back_button = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
+    if groups['strong']: message_text += format_group("🚀 **ПРИОРИТЕТНЫЕ СИГНАЛЫ:**", groups['strong'])
+    if groups['entry']: message_text += format_group("📊 **СИГНАЛЫ ВХОДА:**", groups['entry'])
+    if groups['exit']: message_text += format_group("⚠️ **СИГНАЛЫ ВЫХОДА:**", groups['exit'])
     
-    keyboard = coin_buttons + back_button
-    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    message_text += "💡 *Нажмите на монету для детального плана*"
+    
+    coin_buttons = [InlineKeyboardButton(f"{item['smart_recommendation']['emoji']} {item['symbol'].replace('USDT','')}", callback_data=f"ai_detail_{item['symbol']}") for item in opportunities]
+    button_rows = [coin_buttons[i:i + 2] for i in range(0, len(coin_buttons), 2)]
+    button_rows.append([InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")])
+    
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(button_rows), parse_mode='Markdown')
 
 # ===== НОВАЯ ФУНКЦИЯ: ДЕТАЛЬНЫЙ ИИ-АНАЛИЗ МОНЕТЫ =====
 async def show_ai_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает детальный ИИ-анализ конкретной монеты"""
+    """
+    ОБНОВЛЕННАЯ ВЕРСИЯ: Показывает детальный анализ с торговыми сигналами
+    """
     query = update.callback_query
-    
     if not check_access(update.effective_user.id):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
         
-    symbol_to_analyze = query.data.split('_')[2]  # ai_detail_SYMBOLUSDT
+    symbol_to_analyze = query.data.split('_')[2]
     await query.answer()
 
-    # Получаем сохраненные данные
     opportunities = context.user_data.get('current_opportunities', [])
-    target_item = None
-    
-    for item in opportunities:
-        if item['symbol'] == symbol_to_analyze:
-            target_item = item
-            break
+    target_item = next((item for item in opportunities if item['symbol'] == symbol_to_analyze), None)
     
     if not target_item:
-        await query.edit_message_text(
-            "❓ Монета не найдена в текущем списке.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к ИИ", callback_data="ai_analysis")]])
-        )
+        await query.edit_message_text("❌ Монета не найдена.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="ai_analysis")]]))
         return
 
-    # Применяем ИИ-анализ к конкретной монете
     analyzed_item = await analyze_funding_opportunity(target_item)
     symbol_only = symbol_to_analyze.replace("USDT", "")
-    rec = analyzed_item['smart_recommendation']
-    stability = analyzed_item['stability_analysis']
+    smart_rec = analyzed_item['smart_recommendation']
+    enhanced = analyzed_item['enhanced_recommendation']
+    analysis = analyzed_item['enhanced_analysis']
     
-    # Формируем детальный анализ
-    message_text = f"🧠 **ИИ-Анализ: {symbol_only}**\n\n"
+    message_text = f"🧠 **Торговый анализ: {symbol_only}**\n\n"
+    direction_emoji = "🟢" if target_item['rate'] < 0 else "🔴"
+    message_text += f"{direction_emoji} **Ставка:** {target_item['rate'] * 100:+.3f}%\n"
+    message_text += f"{smart_rec['emoji']} **{smart_rec['message'].upper()}**\n"
+    message_text += f"_{analysis.get('recommendation', smart_rec['details'])}_\n\n"
     
-    # Основные данные
-    rate_pct = abs(target_item['rate']) * 100
-    message_text += f"📈 **Ставка:** {target_item['rate'] * 100:+.2f}%\n"
-    message_text += f"📊 **Тренд:** {stability['trend'].title()}\n"
-    message_text += f"⚡ **Стабильность:** {stability['stability'].title()}\n"
-    message_text += f"🎯 **Рекомендация:** {rec['message'].upper()}\n\n"
+    message_text += f"📊 **Анализ тренда:**\n"
+    message_text += f"• Направление: {enhanced.get('trend_direction', 'n/a').title()}\n"
+    message_text += f"• Сила: {enhanced.get('trend_strength', 0):.0%}\n"
+    message_text += f"• Моментум: {enhanced.get('momentum', 'n/a').title()}\n"
+    message_text += f"• Изменение: {enhanced.get('recent_change', 0):+.2f}%\n\n"
     
-    # Объяснение что это значит
-    message_text += "❓ **Что это значит?**\n"
-    
-    explanation_map = {
-        'ideal_arbitrage': "Ставка стабильна и предсказуема. Низкий риск резких изменений. Хорошие условия для заработка на фандинге.",
-        'risky_arbitrage': "Ставка нестабильна и может резко измениться. Риск потерь выше обычного. Торговать осторожно.",
-        'contrarian_opportunity': "Ставка истощается - возможен разворот цены. Можно рассмотреть противоположную позицию после выплаты.",
-        'unclear_signal': "Смешанные сигналы от ИИ. Ситуация неоднозначная. Лучше дождаться более четкого сигнала.",
-        'rate_too_low': "Ставка слишком низкая для получения значимой прибыли. Не рекомендуется к торговле.",
-        'insufficient_data': "Недостаточно исторических данных для точного анализа. ИИ не может дать надежную рекомендацию."
-    }
-    
-    explanation = explanation_map.get(rec['recommendation_type'], "Требуется дополнительный анализ.")
-    message_text += f"_{explanation}_\n\n"
-    
-    # Практические советы
-    if rec['recommendation_type'] == 'ideal_arbitrage':
-        message_text += "✅ **Что делать:**\n"
-        message_text += "• Можно входить в позицию стандартным размером\n"
-        message_text += "• Держать до выплаты фандинга\n"
-        message_text += "• Риск минимален\n\n"
-    elif rec['recommendation_type'] == 'risky_arbitrage':
-        message_text += "⚠️ **Что делать:**\n"
-        message_text += "• Используйте уменьшенный размер позиции\n"
-        message_text += "• Установите тесный стоп-лосс\n"
-        message_text += "• Следите за рынком внимательно\n\n"
-    elif rec['recommendation_type'] == 'contrarian_opportunity':
-        message_text += "🔥 **Что делать:**\n"
-        message_text += "• Дождитесь выплаты фандинга\n"
-        message_text += "• Рассмотрите противоположную позицию\n"
-        message_text += "• Следите за разворотом тренда\n\n"
+    signal_type = enhanced.get('signal_type', 'wait')
+    if 'entry' in signal_type:
+        plan = "🟢 **План (ЛОНГ):**" if 'long' in signal_type else "🔴 **План (ШОРТ):**"
+        message_text += f"{plan}\n• Вход: Открыть позицию\n• Обоснование: Тренд ставки в вашу пользу\n• Выход: При смене тренда\n\n"
+    elif 'exit' in signal_type:
+        message_text += "⚠️ **Сигнал закрытия:**\n• Действие: Закрыть текущую позицию\n• Причина: Тренд разворачивается\n\n"
     else:
-        message_text += "⏸️ **Что делать:**\n"
-        message_text += "• Лучше пропустить эту возможность\n"
-        message_text += "• Дождаться более четкого сигнала\n"
-        message_text += "• Искать другие варианты\n\n"
-    
-    # Уверенность ИИ
-    confidence = rec['confidence']
-    if confidence >= 0.8:
-        confidence_text = "очень уверен"
-        confidence_explanation = "(как прогноз погоды с вероятностью 90%)"
-    elif confidence >= 0.6:
-        confidence_text = "довольно уверен"
-        confidence_explanation = "(как мнение опытного трейдера)"
-    elif confidence >= 0.4:
-        confidence_text = "сомневается"
-        confidence_explanation = "(смешанные сигналы)"
-    else:
-        confidence_text = "не уверен"
-        confidence_explanation = "(мало данных для анализа)"
-        
-    message_text += f"🎯 **Уверенность ИИ:** {confidence:.0%}\n"
-    message_text += f"_ИИ {confidence_text} {confidence_explanation}_"
+        message_text += "⏱️ **Рекомендация:**\n• Ожидать более четкого сигнала\n\n"
 
-    keyboard = [
-        [InlineKeyboardButton("⬅️ Назад к ИИ-анализу", callback_data="ai_analysis")],
-        [InlineKeyboardButton("🏠 К топу возможностей", callback_data="back_to_top")]
-    ]
+    confidence = smart_rec['confidence']
+    data_points = enhanced.get('data_points', 0)
+    confidence_text = "очень уверен" if confidence > 0.8 else "уверен" if confidence > 0.6 else "сомневается"
+    message_text += f"🎯 **Уверенность ИИ:** {confidence:.0%} ({confidence_text}, {data_points} точек)\n"
     
+    keyboard = [[InlineKeyboardButton("⬅️ Назад к ИИ-анализу", callback_data="ai_analysis")], [InlineKeyboardButton("🏠 К топу", callback_data="back_to_top")]]
     await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 # ===== ИСПРАВЛЕННЫЕ CALLBACK ФУНКЦИИ =====
 async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    ОБНОВЛЕННАЯ ВЕРСИЯ: Показывает детали монеты с торговыми сигналами
+    """
     query = update.callback_query
-    
     if not check_access(update.effective_user.id):
         await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
@@ -1216,62 +944,46 @@ async def drill_down_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     symbol_to_show = query.data.split('_')[1]
     await query.answer()
 
-    # Сначала пытаемся получить данные из сохраненных (более точные)
     all_symbol_data = context.user_data.get('all_symbol_data', {})
-    
     if symbol_to_show in all_symbol_data:
         symbol_data = all_symbol_data[symbol_to_show]
-        print(f"[DEBUG] Используем сохраненные данные для {symbol_to_show}: {len(symbol_data)} записей")
     else:
-        # Fallback - получаем из кэша
-        print(f"[DEBUG] Данные не найдены в user_data, используем кэш API")
         all_data = api_data_cache.get("data", [])
         if not all_data:
             await query.edit_message_text("🔄 Обновляю данные...")
             all_data = await fetch_all_data(context, force_update=True)
         symbol_data = [item for item in all_data if item['symbol'] == symbol_to_show]
-        
-    # Сортируем по абсолютной ставке
+    
     symbol_data = sorted(symbol_data, key=lambda x: abs(x['rate']), reverse=True)
     symbol_only = symbol_to_show.replace("USDT", "")
-    
     if not symbol_data:
-        await query.edit_message_text(
-            f"❓ Данные по {symbol_only} не найдены.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]])
-        )
+        await query.edit_message_text(f"❌ Данные по {symbol_only} не найдены.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_top")]]))
         return
     
-    message_text = f"💎 **Детали по {symbol_only}**\n\n"
+    message_text = f"💎 **Детали по {symbol_only} с сигналами**\n\n"
     now_utc = datetime.now(timezone.utc)
     
-    print(f"[DEBUG] Отображаем {len(symbol_data)} записей для {symbol_only}")
-    
     for item in symbol_data:
-        # Применяем умный анализ и к детальному просмотру
         analyzed_item = await analyze_funding_opportunity(item)
-        rec = analyzed_item['smart_recommendation']
+        smart_rec = analyzed_item['smart_recommendation']
         
         funding_dt_utc = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc)
         time_left = funding_dt_utc - now_utc
         countdown_str = ""
         if time_left.total_seconds() > 0:
             h, m = divmod(int(time_left.total_seconds()) // 60, 60)
-            countdown_str = f" (осталось {h}ч {m}м)" if h > 0 else f" (осталось {m}м)" if m > 0 else " (меньше минуты)"
+            countdown_str = f" (осталось {h}ч {m}м)"
         
-        direction, rate_str = ("🟢 ЛОНГ", f"{item['rate'] * 100:+.2f}%") if item['rate'] < 0 else ("🔴 ШОРТ", f"{item['rate'] * 100:+.2f}%")
+        direction = "🟢 ЛОНГ" if item['rate'] < 0 else "🔴 ШОРТ"
+        rate_str = f"{item['rate'] * 100:+.2f}%"
         time_str = funding_dt_utc.astimezone(MSK_TIMEZONE).strftime('%H:%M МСК')
         vol = item.get('volume_24h_usdt', Decimal('0'))
-        vol_str = f"{vol/10**9:.1f}B" if vol >= 10**9 else f"{vol/10**6:.1f}M" if vol >= 10**6 else f"{vol/10**3:.0f}K"
-        
-        confidence_str = f" ({rec['confidence']:.0%})" if rec['confidence'] > 0 else ""
+        vol_str = format_volume(vol)
+        confidence_str = f" ({smart_rec['confidence']:.0%})" if smart_rec['confidence'] > 0 else ""
         
         message_text += f"{direction} `{rate_str}` в `{time_str}{countdown_str}` [{item['exchange']}]({item['trade_url']})\n"
         message_text += f"  *Объем 24ч:* `{vol_str} USDT`\n"
-        message_text += f"  {rec['emoji']} *ИИ:* _{rec['message']}{confidence_str}_\n"
-        if (max_pos := item.get('max_order_value_usdt', Decimal('0'))) > 0: 
-            message_text += f"  *Макс. ордер:* `{max_pos:,.0f}`\n"
-        message_text += "\n"
+        message_text += f"  {smart_rec['emoji']} *Сигнал:* _{smart_rec['message']}{confidence_str}_\n\n"
 
     keyboard = [[InlineKeyboardButton("⬅️ Назад к топу", callback_data="back_to_top")]]
     await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown', disable_web_page_preview=True)
@@ -1760,6 +1472,67 @@ async def get_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =================================================================
 # ========================== ЗАПУСК БОТА ==========================
 # =================================================================
+@require_access()
+async def get_funding_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Команда для получения истории funding rate конкретной монеты
+    """
+    args = context.args
+    if not args:
+        await update.message.reply_text("Использование: `/history СИМВОЛ [БИРЖА]`\nПример: `/history API3USDT MEXC`", parse_mode='Markdown')
+        return
+    
+    symbol = args[0].upper()
+    if not symbol.endswith('USDT'): symbol += 'USDT'
+    exchange = args[1].upper() if len(args) > 1 else None
+    exchanges_to_check = [exchange] if exchange else ['MEXC', 'BYBIT']
+    
+    message = await update.message.reply_text(f"🔍 Получаю историю для {symbol}...")
+    
+    report_text = f"📊 **История Funding Rate: {symbol.replace('USDT', '')}**\n\n"
+    for ex in exchanges_to_check:
+        history = await enhanced_funding_analyzer._get_funding_history_real(symbol, ex)
+        if history:
+            report_text += f"**{ex}** ({len(history)} периодов):\n"
+            for rate in history[-10:]:
+                report_text += f"`{float(rate) * 100:+.3f}%` "
+            report_text += "\n\n"
+    
+    await message.edit_text(report_text, parse_mode='Markdown')
+
+@require_access()
+async def quick_signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Быстрый анализ торгового сигнала для конкретной монеты
+    """
+    args = context.args
+    if not args:
+        await update.message.reply_text("Использование: `/signal СИМВОЛ [БИРЖА]`\nПример: `/signal API3`", parse_mode='Markdown')
+        return
+    
+    symbol = args[0].upper()
+    if not symbol.endswith('USDT'): symbol += 'USDT'
+    exchange = args[1].upper() if len(args) > 1 else None
+    
+    message = await update.message.reply_text(f"🧠 Анализирую сигнал для {symbol}...")
+    
+    all_data = await fetch_all_data(context, force_update=True)
+    target_items = [item for item in all_data if item['symbol'] == symbol]
+    if exchange: target_items = [item for item in target_items if item['exchange'].upper() == exchange]
+    
+    if not target_items:
+        await message.edit_text(f"❌ Не найдены данные для {symbol}.")
+        return
+        
+    best_item = max(target_items, key=lambda x: abs(x['rate']))
+    analyzed_item = await analyze_funding_opportunity(best_item)
+    smart_rec = analyzed_item['smart_recommendation']
+    
+    report = f"🎯 **Сигнал: {symbol.replace('USDT', '')}** ({best_item['exchange']})\n\n"
+    report += f"**Ставка:** `{best_item['rate'] * 100:+.3f}%`\n"
+    report += f"{smart_rec['emoji']} **{smart_rec['message'].upper()}**\n"
+    report += f"_{smart_rec['details']} ({smart_rec['confidence']:.0%})_\n"
+    await message.edit_text(report, parse_mode='Markdown')
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
@@ -1855,6 +1628,8 @@ if __name__ == "__main__":
     app.add_handlers(conv_handlers)
     app.add_handlers(regular_handlers)
     app.add_handler(CommandHandler("getdata", get_data_command))
+    app.add_handler(CommandHandler("history", get_funding_history_command))
+    app.add_handler(CommandHandler("signal", quick_signal_command))
 
     # 4. Запуск фонового сканера
     async def post_init(app):
