@@ -160,10 +160,10 @@ class EnhancedFundingTrendAnalyzer:
       стратегии фандинг-арбитража.
       """
     # --- ОБЩИЕ ПРОВЕРКИ ---
-     if abs(rate) < 0.003:
+       if abs(rate) < 0.003:
         return {'signal': 'rate_too_low', 'confidence': 0, 'recommendation': 'Ставка слишком низкая'}
     
-     confidence = min(1.0, (stability['score'] + trend['strength']) / 2 + min(0.2, len(history) * 0.03))
+        confidence = min(1.0, (stability['score'] + trend['strength']) / 2 + min(0.2, len(history) * 0.03))
 
     # === ПРАВИЛЬНАЯ ЛОГИКА ДЛЯ ЛОНГ ПОЗИЦИЙ (когда ставка ОТРИЦАТЕЛЬНАЯ) ===
      if rate < 0:
