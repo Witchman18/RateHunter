@@ -113,7 +113,7 @@ class EnhancedFundingTrendAnalyzer:
             }
         }
     
-    def _analyze_detailed_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
+def _analyze_detailed_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
     """
     УЛУЧШЕННАЯ ВЕРСИЯ 2.0: Готовит текст "Было X, стало Y" для интерфейса.
     """
@@ -138,17 +138,24 @@ class EnhancedFundingTrendAnalyzer:
     negative_changes = sum(1 for c in recent_changes if c < -0.1)
     recent_change_pct = sum(recent_changes) if recent_changes else 0
     
-    if positive_changes > negative_changes and recent_change_pct > 0.5: direction, strength = 'growing', min(1.0, positive_changes / len(recent_changes))
-    elif negative_changes > positive_changes and recent_change_pct < -0.5: direction, strength = 'declining', min(1.0, negative_changes / len(recent_changes))
-    else: direction, strength = 'stable', 0.5
+    if positive_changes > negative_changes and recent_change_pct > 0.5:
+        direction, strength = 'growing', min(1.0, positive_changes / len(recent_changes))
+    elif negative_changes > positive_changes and recent_change_pct < -0.5:
+        direction, strength = 'declining', min(1.0, negative_changes / len(recent_changes))
+    else:
+        direction, strength = 'stable', 0.5
     
     if len(recent_changes) >= 3:
         early_avg = sum(recent_changes[:len(recent_changes)//2]) / (len(recent_changes)//2) if len(recent_changes)//2 > 0 else 0
         late_avg = sum(recent_changes[len(recent_changes)//2:]) / (len(recent_changes) - len(recent_changes)//2) if (len(recent_changes) - len(recent_changes)//2) > 0 else 0
-        if abs(late_avg) > abs(early_avg) * 1.2: momentum = 'accelerating'
-        elif abs(late_avg) < abs(early_avg) * 0.8: momentum = 'decelerating'
-        else: momentum = 'steady'
-    else: momentum = 'steady'
+        if abs(late_avg) > abs(early_avg) * 1.2:
+            momentum = 'accelerating'
+        elif abs(late_avg) < abs(early_avg) * 0.8:
+            momentum = 'decelerating'
+        else:
+            momentum = 'steady'
+    else:
+        momentum = 'steady'
     # --- Конец внутреннего блока ---
 
     # === НОВЫЙ БЛОК: Формирование текста для пользователя ===
