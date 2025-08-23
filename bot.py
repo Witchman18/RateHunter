@@ -88,7 +88,7 @@ class EnhancedFundingTrendAnalyzer:
     
     def _analyze_detailed_trend(self, history: List[Decimal], current_rate: Decimal) -> Dict:
         """
-        УЛУЧШЕННАЯ ВЕРСЯ 2.0: Готовит текст "Было X, стало Y" для интерфейса.
+        УЛУЧШЕННАЯ ВЕРСИЯ 2.0: Готовит текст "Было X, стало Y" для интерфейса.
         """
         all_rates = history + [current_rate]
         
@@ -154,11 +154,11 @@ class EnhancedFundingTrendAnalyzer:
         
         return {'score': score, 'level': level}
     
-        def _generate_trading_signal(self, trend: Dict, stability: Dict, rate: Decimal, history: List[Decimal]) -> Dict:
-          """
-          КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Полностью переработана логика для соответствия правильной
-          стратегии фандинг-арбитража.
-          """
+    def _generate_trading_signal(self, trend: Dict, stability: Dict, rate: Decimal, history: List[Decimal]) -> Dict:
+        """
+        КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Полностью переработана логика для соответствия правильной
+        стратегии фандинг-арбитража.
+        """
         # --- ОБЩИЕ ПРОВЕРКИ ---
         if abs(rate) < 0.003:
             return {'signal': 'rate_too_low', 'confidence': 0, 'recommendation': 'Ставка слишком низкая'}
@@ -197,6 +197,7 @@ class EnhancedFundingTrendAnalyzer:
         
         # Если ни одно из правил не сработало, значит тренд неясен
         return {'signal': 'wait', 'confidence': confidence*0.5, 'recommendation': '⏱️ ОЖИДАНИЕ: Тренд неясен, нет четкого сигнала.'}
+    
     # --- НЕДОСТАЮЩИЕ ФУНКЦИИ, КОТОРЫЕ МЫ ВОЗВРАЩАЕМ ---
     async def _get_funding_history_real(self, symbol: str, exchange: str, periods: int = 10) -> List[Decimal]:
         cache_key = f"{exchange}_{symbol}"
@@ -246,8 +247,6 @@ class EnhancedFundingTrendAnalyzer:
                     rates.reverse()
                     return rates
         except Exception: return []
-
-# <<< КОНЕЦ ПОЛНОСТЬЮ ИСПРАВЛЕННОГО БЛОКА АНАЛИЗАТОРА >>>
 
 # Создаем глобальный экземпляр улучшенного анализатора
 enhanced_funding_analyzer = EnhancedFundingTrendAnalyzer()
