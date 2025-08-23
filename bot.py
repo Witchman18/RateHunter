@@ -155,7 +155,7 @@ class EnhancedFundingTrendAnalyzer:
         return {'score': score, 'level': level}
     
  def _generate_trading_signal(self, trend: Dict, stability: Dict, rate: Decimal, history: List[Decimal]) -> Dict:
-    
+    """УЛУЧШЕННАЯ ВЕРСИЯ 2.0: Снижены пороги для сигналов "ДЕРЖАТЬ". """
     # --- ОБЩИЕ ПРОВЕРКИ ---
     if abs(rate) < 0.003:
         return {'signal': 'rate_too_low', 'confidence': 0, 'recommendation': 'Ставка слишком низкая'}
