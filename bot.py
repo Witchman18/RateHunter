@@ -1074,16 +1074,31 @@ async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, sett
     settings = user_settings[chat_id]['settings']
     
     prompts = {
-        'funding': (f"Текущий порог ставки: `> {settings['funding_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `0.75`)."),
-        'volume': (f"Текущий порог объема: `{format_volume(settings['volume_threshold_usdt'])}`.\n\nОтправьте новое значение (например, `500k` или `2M`)."),
-        'alert_rate': (f"Текущий порог для уведомлений: `> {settings['alert_rate_threshold']*100:.2f}%`.\n\nОтправьте новое значение в процентах (например, `1.5`)."),
-        'alert_time': (f"Текущее временное окно: `< {settings['alert_time_window_minutes']} минут`.\n\nОтправьте новое значение в минутах (например, `45`).")
+        'funding': f"Текущий порог ставки: `> {settings['funding_threshold']*100:.2f}%`.\n\nОтправьте новое значение (например, `0.75`).",
+        'volume': f"Текущий порог объема: `{format_volume(settings['volume_threshold_usdt'])}`.\n\nОтправьте новое значение (например, `500k` или `2M`).",
+        'alert_rate': f"Текущий порог для уведомлений: `> {settings['alert_rate_threshold']*100:.2f}%`.\n\nОтправьте новое значение (например, `1.5`).",
+        'alert_time': f"Текущее временное окно: `< {settings['alert_time_window_minutes']} минут`.\n\nОтправьте новое значение в минутах (например, `45`).",
+        'ai_confidence': f"Текущий порог уверенности ИИ: `> {settings['ai_confidence_threshold']*100:.0f}%`.\n\nОтправьте новое значение (например, `75`)."
     }
-    await query.message.delete()
-    sent_message = await context.bot.send_message(chat_id=chat_id, text=prompts[setting_type] + "\n\nДля отмены введите /cancel.", parse_mode='Markdown')
-    context.user_data.update({'prompt_message_id': sent_message.message_id, 'menu_to_return': menu_to_return})
     
-    state_map = {'funding': SET_FUNDING_THRESHOLD, 'volume': SET_VOLUME_THRESHOLD, 'alert_rate': SET_ALERT_RATE, 'alert_time': SET_ALERT_TIME}
+    # Удаляем предыдущее меню, чтобы не было путаницы
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    sent_message = await context.bot.send_message(chat_id=chat_id, text=prompts[setting_type] + "\n\nДля отмены введите /cancel.", parse_mode='Markdown')
+    context.user_data.update({'prompt_message_id': sent_message.message_id, 'menu_to_return': menu_to_return, 'setting_type': setting_type})
+    
+    # === ГЛАВНОЕ ИСПРАВЛЕНИЕ ЗДЕСЬ ===
+    # Для каждой настройки возвращаем свое уникальное состояние
+    state_map = {
+        'funding': SET_FUNDING_THRESHOLD,
+        'volume': SET_VOLUME_THRESHOLD,
+        'alert_rate': SET_ALERT_RATE,
+        'alert_time': SET_ALERT_TIME,
+        'ai_confidence': SET_ALERT_RATE # Для ai_confidence можно переиспользовать существующий стейт, т.к. он тоже ждет число
+    }
     return state_map.get(setting_type)
 
 async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str = None):
@@ -1626,45 +1641,30 @@ if __name__ == "__main__":
     fallbacks = [CommandHandler("cancel", cancel_conversation)]
 
     conv_handlers = [
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding', send_filters_menu), pattern="^filters_funding$")],
-            states={
-                SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'funding'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume', send_filters_menu), pattern="^filters_volume$")],
-            states={
-                SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'volume'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")],
-            states={
-                SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_rate'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-        ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")],
-            states={
-                SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: save_value(u, c, 'alert_time'))]
-            },
-            fallbacks=fallbacks,
-            allow_reentry=True
-        ),
-        ConversationHandler(
-        entry_points=[CallbackQueryHandler(ask_for_ai_confidence, pattern="^ai_set_confidence$")],
-        states={
-            SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_value)]
-        },
-        fallbacks=fallbacks,
-        allow_reentry=True
+    ConversationHandler(
+        entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'funding', send_filters_menu), pattern="^filters_funding$")],
+        states={SET_FUNDING_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_value)]},
+        fallbacks=fallbacks, allow_reentry=True
+    ),
+    ConversationHandler(
+        entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'volume', send_filters_menu), pattern="^filters_volume$")],
+        states={SET_VOLUME_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_value)]},
+        fallbacks=fallbacks, allow_reentry=True
+    ),
+    ConversationHandler(
+        entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_rate', show_alerts_menu), pattern="^alert_set_rate$")],
+        states={SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_value)]},
+        fallbacks=fallbacks, allow_reentry=True
+    ),
+    ConversationHandler(
+        entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'alert_time', show_alerts_menu), pattern="^alert_set_time$")],
+        states={SET_ALERT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_value)]},
+        fallbacks=fallbacks, allow_reentry=True
+    ),
+    ConversationHandler(
+        entry_points=[CallbackQueryHandler(lambda u, c: ask_for_value(u, c, 'ai_confidence', show_ai_signals_menu), pattern="^ai_set_confidence$")],
+        states={SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_value)]}, # Используем тот же стейт, но в отдельном хендлере
+        fallbacks=fallbacks, allow_reentry=True
     ),
     ]
     
