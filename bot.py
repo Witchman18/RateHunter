@@ -339,8 +339,15 @@ def get_default_settings():
         'alerts_on': False,                             
         'alert_rate_threshold': Decimal('0.015'),       
         'alert_time_window_minutes': 30,                
-        'alert_exchanges': [],                          # НОВОЕ: отдельные биржи для уведомлений (пустой = используем основные)
-        'sent_notifications': set(),                    
+        'alert_exchanges': [],
+        'sent_notifications': set(),
+        
+        # === НОВЫЕ ПАРАМЕТРЫ ДЛЯ ИИ-СИГНАЛОВ ===
+        'ai_signals_on': False,                         # включить/выключить ИИ-сигналы
+        'ai_confidence_threshold': Decimal('0.6'),      # минимальная уверенность ИИ (60%)
+        'ai_entry_signals': True,                       # сигналы входа в позицию
+        'ai_exit_signals': True,                        # сигналы выхода из позиции
+        'ai_sent_notifications': set(),                 # отдельный антиспам для ИИ-сигналов
     }
 
 # ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ НАСТРОЕК =====
@@ -1080,37 +1087,42 @@ async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, sett
     state_map = {'funding': SET_FUNDING_THRESHOLD, 'volume': SET_VOLUME_THRESHOLD, 'alert_rate': SET_ALERT_RATE, 'alert_time': SET_ALERT_TIME}
     return state_map.get(setting_type)
 
-async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str):
-    if not check_access(update.effective_user.id):
-        await update.message.reply_text("⛔ Доступ запрещён")
-        return
-        
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
+async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str = None):
+    if not check_access(update.effective_user.id): await update.message.reply_text("⛔ Доступ запрещён"); return
+    
+    chat_id, user_id = update.effective_chat.id, update.effective_user.id
     ensure_user_settings(chat_id, user_id)
     settings = user_settings[chat_id]['settings']
     
+    # Определяем тип настройки, если он не передан напрямую
+    if not setting_type:
+        setting_type = context.user_data.get('setting_type')
+    
     try:
         value_str = update.message.text.strip().replace(",", ".").upper()
-        if setting_type == 'funding' or setting_type == 'alert_rate':
+        if setting_type in ['funding', 'alert_rate']:
             value = Decimal(value_str)
-            if not (0 < value < 100): raise ValueError("Value out of range 0-100")
-            key = 'funding_threshold' if setting_type == 'funding' else 'alert_rate_threshold'
-            settings[key] = value / 100
+            if not (0 < value < 100): raise ValueError("Value out of range")
+            settings['funding_threshold' if setting_type == 'funding' else 'alert_rate_threshold'] = value / 100
         elif setting_type == 'volume':
-            num_part = value_str.replace('K', '').replace('M', '')
-            multiplier = 1000 if 'K' in value_str else 1_000_000 if 'M' in value_str else 1
+            num_part = value_str.replace('K', '').replace('M', '').replace('B', '')
+            multiplier = 10**3 if 'K' in value_str else 10**6 if 'M' in value_str else 10**9 if 'B' in value_str else 1
             settings['volume_threshold_usdt'] = Decimal(num_part) * multiplier
         elif setting_type == 'alert_time':
             value = int(value_str)
             if value <= 0: raise ValueError("Value must be positive")
             settings['alert_time_window_minutes'] = value
-    except (ValueError, TypeError, decimal.InvalidOperation):
-        await update.message.reply_text("❌ Ошибка. Введите корректное значение. Попробуйте снова.", parse_mode='Markdown')
-        return
+        # НОВЫЙ БЛОК ДЛЯ УВЕРЕННОСТИ ИИ
+        elif setting_type == 'ai_confidence':
+            value = Decimal(value_str)
+            if not (0 <= value <= 100): raise ValueError("Value must be between 0 and 100")
+            settings['ai_confidence_threshold'] = value / 100
 
-    if 'prompt_message_id' in context.user_data:
-        await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
+    except (ValueError, TypeError, decimal.InvalidOperation):
+        await update.message.reply_text("❌ Ошибка. Введите корректное значение.", parse_mode='Markdown')
+        return
+        
+    if 'prompt_message_id' in context.user_data: await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
     await context.bot.delete_message(chat_id, update.message.message_id)
     await context.user_data.pop('menu_to_return')(update, context)
     return ConversationHandler.END
@@ -1186,11 +1198,12 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"[DEBUG] Alerts menu: alerts_on = {settings.get('alerts_on', False)}")
     
     keyboard = [
-        [InlineKeyboardButton(f"📈 Порог ставки: > {settings['alert_rate_threshold']*100:.2f}%", callback_data="alert_set_rate")],
-        [InlineKeyboardButton(f"⏰ Окно до выплаты: < {settings['alert_time_window_minutes']} мин", callback_data="alert_set_time")],
-        [InlineKeyboardButton(f"🦄 Биржи: {exchanges_status}", callback_data="alert_exchanges_menu")],
-        [InlineKeyboardButton(f"{status_emoji} Уведомления: {status_text}", callback_data="alert_toggle_on")],
-        [InlineKeyboardButton("⬅️ Назад к фильтрам", callback_data="alert_back_filters")]
+    [InlineKeyboardButton(f"📈 Порог ставки: > {settings['alert_rate_threshold']*100:.2f}%", callback_data="alert_set_rate")],
+    [InlineKeyboardButton(f"⏰ Окно до выплаты: < {settings['alert_time_window_minutes']} мин", callback_data="alert_set_time")],
+    [InlineKeyboardButton(f"🦄 Биржи: {exchanges_status}", callback_data="alert_exchanges_menu")],
+    [InlineKeyboardButton("🧠 ИИ-Сигналы", callback_data="ai_signals_menu")],  # <-- НОВАЯ КНОПКА
+    [InlineKeyboardButton(f"{status_emoji} Уведомления: {status_text}", callback_data="alert_toggle_on")],
+    [InlineKeyboardButton("⬅️ Назад к фильтрам", callback_data="alert_back_filters")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1198,7 +1211,73 @@ async def show_alerts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+async def show_ai_signals_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает меню настройки ИИ-сигналов"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    chat_id, user_id = update.effective_chat.id, update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    ai_status_text = "✅ ВКЛЮЧЕНЫ" if settings.get('ai_signals_on', False) else "🔴 ВЫКЛЮЧЕНЫ"
+    entry_status = "✅" if settings.get('ai_entry_signals', True) else "⬜️"
+    exit_status = "✅" if settings.get('ai_exit_signals', True) else "⬜️"
+    
+    message_text = "🧠 **Настройки ИИ-сигналов**\n\n"
+    message_text += "*Бот пришлет сигнал только когда ИИ уверен в торговой возможности.*\n\n"
+    
+    keyboard = [
+        [InlineKeyboardButton(f"🎯 Уверенность ИИ: > {settings['ai_confidence_threshold']*100:.0f}%", callback_data="ai_set_confidence")],
+        [InlineKeyboardButton(f"{entry_status} Сигналы входа", callback_data="ai_toggle_entry")],
+        [InlineKeyboardButton(f"{exit_status} Сигналы выхода", callback_data="ai_toggle_exit")],
+        [InlineKeyboardButton(f"🧠 ИИ-Сигналы: {ai_status_text}", callback_data="ai_toggle_on")],
+        [InlineKeyboardButton("⬅️ Назад к уведомлениям", callback_data="alert_show_menu")]
+    ]
+    
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
+async def ai_signals_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает кнопки меню ИИ-сигналов"""
+    query = update.callback_query
+    
+    if not check_access(update.effective_user.id):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+        
+    await query.answer()
+    action = query.data.split('_', 2)[1]
+    
+    chat_id, user_id = update.effective_chat.id, update.effective_user.id
+    ensure_user_settings(chat_id, user_id)
+    settings = user_settings[chat_id]['settings']
+    
+    if action == "toggle":
+        sub_action = query.data.split('_', 2)[2]
+        if sub_action == "on": settings['ai_signals_on'] = not settings.get('ai_signals_on', False)
+        elif sub_action == "entry": settings['ai_entry_signals'] = not settings.get('ai_entry_signals', True)
+        elif sub_action == "exit": settings['ai_exit_signals'] = not settings.get('ai_exit_signals', True)
+    
+    await show_ai_signals_menu(update, context)
+
+async def ask_for_ai_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запрашивает новое значение уверенности ИИ."""
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    settings = user_settings[chat_id]['settings']
+    
+    text = (f"Текущий порог уверенности ИИ: `> {settings['ai_confidence_threshold']*100:.0f}%`.\n\n"
+            f"Отправьте новое значение в процентах (например, `75`).")
+    
+    sent_message = await context.bot.send_message(chat_id=chat_id, text=text + "\n\nДля отмены введите /cancel.", parse_mode='Markdown')
+    context.user_data.update({'prompt_message_id': sent_message.message_id, 'menu_to_return': show_ai_signals_menu, 'setting_type': 'ai_confidence'})
+    return SET_ALERT_RATE # Используем тот же стейт, что и для ставки
+    
 async def show_alert_exchanges_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает меню выбора бирж для уведомлений"""
     query = update.callback_query
@@ -1318,72 +1397,79 @@ async def alert_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 # ===== ИСПРАВЛЕННЫЙ ФОНОВЫЙ СКАНЕР =====
 async def background_scanner(app: Application):
-    """Фоновый процесс для мониторинга и отправки кастомных уведомлений."""
     print("🚀 Фоновый сканер уведомлений запущен.")
     while True:
-        await asyncio.sleep(60)  # Проверка раз в минуту
+        await asyncio.sleep(60)
         try:
             all_data = await fetch_all_data(app, force_update=True)
-            if not all_data: 
-                continue
-
-            now_utc = datetime.now(timezone.utc)
-            current_ts_ms = int(now_utc.timestamp() * 1000)
-
-            # ===== ГЛАВНОЕ ИСПРАВЛЕНИЕ =====
+            if not all_data: continue
+            now_utc, current_ts_ms = datetime.now(timezone.utc), int(datetime.now(timezone.utc).timestamp() * 1000)
+            
             for chat_id, user_data in list(user_settings.items()):
-                # Теперь правильно получаем user_id для проверки доступа
                 stored_user_id = user_data.get('user_id')
-                if not stored_user_id or not check_access(stored_user_id):
-                    print(f"[BG_SCANNER] Пропускаем chat_id {chat_id}: нет доступа (user_id: {stored_user_id})")
-                    continue
-                    
+                if not stored_user_id or not check_access(stored_user_id): continue
+                
                 settings = user_data['settings']
-                if not settings.get('alerts_on', False): 
-                    continue
+                target_exchanges = settings.get('alert_exchanges', []) or settings.get('exchanges', [])
 
-                # Очистка старых ID уведомлений (старше 3 часов)
-                settings['sent_notifications'] = {nid for nid in settings['sent_notifications'] if int(nid.split('_')[-1]) > current_ts_ms - (3 * 60 * 60 * 1000)}
-                
-                # Определяем какие биржи использовать для уведомлений
-                alert_exchanges = settings.get('alert_exchanges', [])
-                if alert_exchanges:
-                    # Используем выбранные биржи для уведомлений
-                    target_exchanges = alert_exchanges
-                    print(f"[BG_SCANNER] Используем биржи для уведомлений: {target_exchanges}")
-                else:
-                    # Используем основные биржи
-                    target_exchanges = settings.get('exchanges', [])
-                    print(f"[BG_SCANNER] Используем основные биржи: {target_exchanges}")
-                
-                # Ищем подходящие пары для этого пользователя
-                for item in all_data:
-                    if item['exchange'] not in target_exchanges: 
-                        continue
-                    if abs(item['rate']) < settings['alert_rate_threshold']: 
-                        continue
+                # --- Блок ОБЫЧНЫХ УВЕДОМЛЕНИЙ (без изменений) ---
+                if settings.get('alerts_on', False):
+                    settings['sent_notifications'] = {nid for nid in settings.get('sent_notifications', set()) if int(nid.split('_')[-1]) > current_ts_ms - (3 * 60 * 60 * 1000)}
+                    for item in all_data:
+                        if item['exchange'] not in target_exchanges: continue
+                        if abs(item['rate']) < settings['alert_rate_threshold']: continue
+                        time_left_seconds = (item['next_funding_time'] / 1000) - now_utc.timestamp()
+                        if not (0 < time_left_seconds <= settings['alert_time_window_minutes'] * 60): continue
+                        notification_id = f"{item['exchange']}_{item['symbol']}_{item['next_funding_time']}"
+                        if notification_id in settings['sent_notifications']: continue
+                        h, m = divmod(int(time_left_seconds // 60), 60)
+                        countdown_str = f"{h}ч {m}м" if h > 0 else f"{m}м"
+                        message = (f"⚠️ **Найден фандинг по вашему фильтру!**\n\n"
+                                   f"{'🟢' if item['rate'] < 0 else '🔴'} **{item['symbol'].replace('USDT', '')}** `{item['rate'] * 100:+.2f}%`\n"
+                                   f"⏰ Выплата через *{countdown_str}* на *{item['exchange']}*")
+                        try:
+                            await app.bot.send_message(chat_id, message, parse_mode='Markdown')
+                            settings['sent_notifications'].add(notification_id)
+                        except Exception as e: print(f"[BG_SCANNER] ❌ Ошибка отправки уведомления: {e}")
 
-                    time_left = datetime.fromtimestamp(item['next_funding_time'] / 1000, tz=timezone.utc) - now_utc
-                    if not (0 < time_left.total_seconds() <= settings['alert_time_window_minutes'] * 60): 
-                        continue
-
-                    # Анти-спам
-                    notification_id = f"{item['exchange']}_{item['symbol']}_{item['next_funding_time']}"
-                    if notification_id in settings['sent_notifications']: 
-                        continue
-                    
-                    # Все условия выполнены! Отправляем уведомление.
-                    h, m = divmod(int(time_left.total_seconds() // 60), 60)
-                    countdown_str = f"{h}ч {m}м" if h > 0 else f"{m}м"
-                    message = (f"⚠️ **Найден фандинг по вашему фильтру!**\n\n"
-                               f"{'🟢' if item['rate'] < 0 else '🔴'} **{item['symbol'].replace('USDT', '')}** `{item['rate'] * 100:+.2f}%`\n"
-                               f"⏰ Выплата через *{countdown_str}* на *{item['exchange']}*")
-                    try:
-                        await app.bot.send_message(chat_id, message, parse_mode='Markdown')
-                        settings['sent_notifications'].add(notification_id)
-                        print(f"[BG_SCANNER] ✅ Отправлено уведомление для chat_id {chat_id} (user_id {stored_user_id}): {notification_id}")
-                    except Exception as e:
-                        print(f"[BG_SCANNER] ❌ Не удалось отправить уведомление для chat_id {chat_id}: {e}")
+                # === НОВЫЙ БЛОК ИИ-СИГНАЛОВ ===
+                if settings.get('ai_signals_on', False):
+                    settings['ai_sent_notifications'] = {nid for nid in settings.get('ai_sent_notifications', set()) if int(nid.split('_')[-1]) > current_ts_ms - (3 * 60 * 60 * 1000)} # Очистка старых
+                    for item in all_data:
+                        if item['exchange'] not in target_exchanges: continue
+                        
+                        analyzed_item = await analyze_funding_opportunity(item)
+                        smart_rec = analyzed_item.get('smart_recommendation', {})
+                        signal_type = smart_rec.get('recommendation_type', '')
+                        
+                        entry_signals = ['strong_long_entry', 'long_entry', 'strong_short_entry', 'short_entry']
+                        exit_signals = ['long_exit', 'short_exit']
+                        
+                        if (signal_type in entry_signals and not settings.get('ai_entry_signals', True)) or \
+                           (signal_type in exit_signals and not settings.get('ai_exit_signals', True)) or \
+                           (signal_type not in entry_signals + exit_signals):
+                            continue
+                        
+                        confidence = smart_rec.get('confidence', 0.0)
+                        if confidence < settings.get('ai_confidence_threshold', Decimal('0.6')):
+                            continue
+                            
+                        ai_notification_id = f"AI_{item['exchange']}_{item['symbol']}_{signal_type}_{current_ts_ms}"
+                        if any(nid.startswith(f"AI_{item['exchange']}_{item['symbol']}") for nid in settings.get('ai_sent_notifications', set())):
+                            continue # Анти-спам: не отправлять повторно по той же монете, пока старый не истечет
+                            
+                        message = (f"🧠 **ИИ ТОРГОВЫЙ СИГНАЛ!**\n\n"
+                                   f"{smart_rec.get('emoji', '❓')} **{smart_rec.get('message', '')}** по **{item['symbol'].replace('USDT', '')}**\n"
+                                   f"Уверенность: **{confidence:.0%}**\n\n"
+                                   f"💡 _{smart_rec.get('details', '')}_\n\n"
+                                   f"📊 Биржа: *{item['exchange']}* | Ставка: `{item['rate'] * 100:+.2f}%`")
+                        
+                        try:
+                            await app.bot.send_message(chat_id, message, parse_mode='Markdown')
+                            settings['ai_sent_notifications'].add(ai_notification_id)
+                            print(f"[AI_SIGNALS] ✅ Отправлен ИИ-сигнал для chat_id {chat_id}: {signal_type} {item['symbol']}")
+                        except Exception as e:
+                            print(f"[AI_SIGNALS] ❌ Ошибка отправки ИИ-сигнала для chat_id {chat_id}: {e}")
         except Exception as e:
             print(f"[BG_SCANNER] ❌ Критическая ошибка в цикле сканера: {e}\n{traceback.format_exc()}")
 
@@ -1579,6 +1665,14 @@ if __name__ == "__main__":
             fallbacks=fallbacks,
             allow_reentry=True
         ),
+        ConversationHandler(
+        entry_points=[CallbackQueryHandler(ask_for_ai_confidence, pattern="^ai_set_confidence$")],
+        states={
+            SET_ALERT_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_value)]
+        },
+        fallbacks=fallbacks,
+        allow_reentry=True
+    ),
     ]
     
     regular_handlers = [
@@ -1599,6 +1693,9 @@ if __name__ == "__main__":
         # НОВЫЕ обработчики ИИ-анализа
         CallbackQueryHandler(show_ai_analysis, pattern="^ai_analysis$"),
         CallbackQueryHandler(show_ai_detail, pattern="^ai_detail_"),
+        # НОВЫЕ обработчики ИИ-сигналов
+        CallbackQueryHandler(show_ai_signals_menu, pattern="^ai_signals_menu$"),
+        CallbackQueryHandler(ai_signals_callback_handler, pattern="^ai_toggle_"),
         # НОВЫЕ обработчики бирж для уведомлений
         CallbackQueryHandler(show_alert_exchanges_menu, pattern="^alert_exchanges_menu$"),
         CallbackQueryHandler(alert_exchanges_callback_handler, pattern="^alert_exch_"),
