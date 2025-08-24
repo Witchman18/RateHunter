@@ -12,7 +12,6 @@ import time
 import hmac
 import hashlib
 import traceback
-import pandas as pd
 import io
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -1485,32 +1484,6 @@ async def handle_unauthorized_message(update: Update, context: ContextTypes.DEFA
         "🤖 Используйте кнопки меню или команду /start для начала работы."
     )
 
-async def get_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS:
-        await update.message.reply_text("Эта команда доступна только администратору.")
-        return
-
-    message = await update.message.reply_text("Начинаю сбор данных по MYX_USDT за вчера. Это может занять до минуты...")
-    
-    # Определяем символ и временной диапазон
-    symbol_to_fetch = "MYX_USDT"
-    today = datetime.utcnow().date()
-    end_of_yesterday = datetime.combine(today, datetime.min.time())
-    start_of_yesterday = end_of_yesterday - timedelta(days=1)
-    start_ts_ms = int(start_of_yesterday.timestamp() * 1000)
-    end_ts_ms = int(end_of_yesterday.timestamp() * 1000) - 1
-
-    # Запускаем сбор данных
-    funding_data = await fetch_funding_history_async(symbol_to_fetch, start_ts_ms, end_ts_ms)
-    kline_data = await fetch_klines_async(symbol_to_fetch, start_ts_ms, end_ts_ms)
-
-    if not funding_data and not kline_data:
-        await message.edit_text("Не удалось получить данные. Возможно, по этой монете вчера не было торгов или фандинга.")
-        return
-        
-    await message.edit_text("Данные собраны, формирую файлы...")
-
     # Отправляем файл с фандингом
     if funding_data:
         df_funding = pd.DataFrame(funding_data)
@@ -1706,7 +1679,6 @@ if __name__ == "__main__":
     # Добавляем все обработчики в приложение
     app.add_handlers(conv_handlers)
     app.add_handlers(regular_handlers)
-    app.add_handler(CommandHandler("getdata", get_data_command))
     app.add_handler(CommandHandler("history", get_funding_history_command))
     app.add_handler(CommandHandler("signal", quick_signal_command))
 
