@@ -1087,59 +1087,79 @@ async def ask_for_value(update: Update, context: ContextTypes.DEFAULT_TYPE, sett
     return state_map.get(setting_type)
 
 async def save_value(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_type: str = None):
-    if not check_access(update.effective_user.id): await update.message.reply_text("⛔ Доступ запрещён"); return
-    
-    chat_id, user_id = update.effective_chat.id, update.effective_user.id
+    if not check_access(update.effective_user.id):
+        await update.message.reply_text("⛔ Доступ запрещён")
+        return ConversationHandler.END # Завершаем разговор, если нет доступа
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     ensure_user_settings(chat_id, user_id)
     settings = user_settings[chat_id]['settings']
     
-    # Определяем тип настройки, если он не передан напрямую
-    if not setting_type:
-        setting_type = context.user_data.get('setting_type')
+    current_setting_type = setting_type or context.user_data.get('setting_type')
     
     try:
         value_str = update.message.text.strip().replace(",", ".").upper()
-        if setting_type in ['funding', 'alert_rate']:
+        if current_setting_type in ['funding', 'alert_rate']:
             value = Decimal(value_str)
             if not (0 < value < 100): raise ValueError("Value out of range")
-            settings['funding_threshold' if setting_type == 'funding' else 'alert_rate_threshold'] = value / 100
-        elif setting_type == 'volume':
+            key = 'funding_threshold' if current_setting_type == 'funding' else 'alert_rate_threshold'
+            settings[key] = value / 100
+        elif current_setting_type == 'volume':
             num_part = value_str.replace('K', '').replace('M', '').replace('B', '')
             multiplier = 10**3 if 'K' in value_str else 10**6 if 'M' in value_str else 10**9 if 'B' in value_str else 1
             settings['volume_threshold_usdt'] = Decimal(num_part) * multiplier
-        elif setting_type == 'alert_time':
+        elif current_setting_type == 'alert_time':
             value = int(value_str)
             if value <= 0: raise ValueError("Value must be positive")
             settings['alert_time_window_minutes'] = value
-        # НОВЫЙ БЛОК ДЛЯ УВЕРЕННОСТИ ИИ
-        elif setting_type == 'ai_confidence':
+        elif current_setting_type == 'ai_confidence':
             value = Decimal(value_str)
             if not (0 <= value <= 100): raise ValueError("Value must be between 0 and 100")
             settings['ai_confidence_threshold'] = value / 100
+        else:
+            raise ValueError("Unknown setting type")
 
     except (ValueError, TypeError, decimal.InvalidOperation):
-        await update.message.reply_text("❌ Ошибка. Введите корректное значение.", parse_mode='Markdown')
-        return
-        
-    if 'prompt_message_id' in context.user_data: await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
-    await context.bot.delete_message(chat_id, update.message.message_id)
+        await update.message.reply_text("❌ Ошибка. Введите корректное числовое значение. Разговор сброшен.", parse_mode='Markdown')
+        # === ГЛАВНОЕ ИСПРАВЛЕНИЕ ===
+        # Принудительно завершаем "разговор", чтобы бот не зависал
+        return ConversationHandler.END
+        # ==========================
+
+    if 'prompt_message_id' in context.user_data:
+        try: await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
+        except Exception: pass
+    
+    try: await context.bot.delete_message(chat_id, update.message.message_id)
+    except Exception: pass
+    
     await context.user_data.pop('menu_to_return')(update, context)
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_access(update.effective_user.id):
         await update.message.reply_text("⛔ Доступ запрещён")
-        return
-        
+        return ConversationHandler.END
+
     chat_id = update.effective_chat.id
+    
     if 'prompt_message_id' in context.user_data:
-        try: await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
-        except Exception: pass
-    try: await context.bot.delete_message(chat_id, update.message.id)
-    except Exception: pass
-    await context.bot.send_message(chat_id, "Действие отменено.")
-    if 'menu_to_return' in context.user_data:
-        await context.user_data.pop('menu_to_return')(update, context)
+        try:
+            await context.bot.delete_message(chat_id, context.user_data.pop('prompt_message_id'))
+        except Exception:
+            pass
+    try:
+        await context.bot.delete_message(chat_id, update.message.id)
+    except Exception:
+        pass
+        
+    await context.bot.send_message(chat_id, "Действие отменено. Разговор сброшен.")
+    
+    # Очищаем user_data от остатков "разговора"
+    context.user_data.pop('menu_to_return', None)
+    context.user_data.pop('setting_type', None)
+    
     return ConversationHandler.END
     
 @require_access()
