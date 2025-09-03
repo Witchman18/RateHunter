@@ -616,7 +616,7 @@ async def get_okx_data():
             
             print(f"[DEBUG] OKX: Найдено {len(usdt_swaps)} USDT-свопов.")
             
-            # 2. Получаем данные тикеров и ОИ одним запросом (они работают без instId)
+            # 2. Получаем данные тикеров и ОИ (они работают без instId)
             ticker_info = {}
             oi_info = {}
             
@@ -656,52 +656,54 @@ async def get_okx_data():
             except Exception as e:
                 print(f"[API_ERROR] OKX ОИ Exception: {e}")
 
-            # 3. Получаем фандинг для каждого инструмента по одному (делаем небольшими батчами)
+            # 3. Получаем фандинг по одному инструменту за раз
             funding_info = {}
-            batch_size = 20  # Уменьшаем размер батча
+            successful_requests = 0
+            failed_requests = 0
             
-            for i in range(0, len(usdt_swaps), batch_size):
-                batch = usdt_swaps[i:i + batch_size]
-                inst_ids_str = ",".join(batch)
-                
+            # Ограничиваем количество запросов для тестирования
+            max_instruments = 50  # Берем только первые 50 для теста
+            test_instruments = usdt_swaps[:max_instruments]
+            
+            print(f"[DEBUG] OKX: Тестируем на {len(test_instruments)} инструментах...")
+            
+            for i, inst_id in enumerate(test_instruments):
                 try:
-                    async with session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_ids_str}", timeout=15) as resp:
+                    async with session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_id}", timeout=10) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            if data.get('code') == '0':
-                                for item in data.get('data', []):
-                                    inst_id = item.get('instId')
-                                    funding_info[inst_id] = {
-                                        'rate': Decimal(str(item['fundingRate'])),
-                                        'next_funding_time': int(item['nextFundingTime'])
-                                    }
-                                print(f"[DEBUG] OKX Batch {i//batch_size + 1}: Получено {len(data.get('data', []))} ставок фандинга")
+                            if data.get('code') == '0' and data.get('data'):
+                                item = data['data'][0]
+                                funding_info[inst_id] = {
+                                    'rate': Decimal(str(item['fundingRate'])),
+                                    'next_funding_time': int(item['nextFundingTime'])
+                                }
+                                successful_requests += 1
                             else:
-                                print(f"[API_ERROR] OKX Фандинг Batch {i//batch_size + 1}: {data.get('msg')}")
+                                failed_requests += 1
+                                if i < 5:  # Логируем только первые ошибки
+                                    print(f"[API_ERROR] OKX Фандинг {inst_id}: {data.get('msg', 'No data')}")
                         else:
-                            print(f"[API_ERROR] OKX Фандинг Batch {i//batch_size + 1} HTTP: {resp.status}")
-                            # Если батч не работает, попробуем по одному
-                            for single_inst in batch:
-                                try:
-                                    async with session.get(f"{base_url}/api/v5/public/funding-rate?instId={single_inst}", timeout=10) as single_resp:
-                                        if single_resp.status == 200:
-                                            single_data = await single_resp.json()
-                                            if single_data.get('code') == '0' and single_data.get('data'):
-                                                item = single_data['data'][0]
-                                                funding_info[single_inst] = {
-                                                    'rate': Decimal(str(item['fundingRate'])),
-                                                    'next_funding_time': int(item['nextFundingTime'])
-                                                }
-                                except Exception:
-                                    continue
-                                    
+                            failed_requests += 1
+                            if i < 5:  # Логируем только первые ошибки HTTP
+                                print(f"[API_ERROR] OKX Фандинг {inst_id} HTTP: {resp.status}")
+                                
                 except Exception as e:
-                    print(f"[API_ERROR] OKX Фандинг Batch {i//batch_size + 1} Exception: {e}")
+                    failed_requests += 1
+                    if i < 5:  # Логируем только первые исключения
+                        print(f"[API_ERROR] OKX Фандинг {inst_id} Exception: {e}")
                 
-                # Небольшая задержка между батчами
-                await asyncio.sleep(0.1)
+                # Небольшая задержка между запросами, чтобы не попасть в rate limit
+                if i % 10 == 0 and i > 0:
+                    await asyncio.sleep(0.5)
+                else:
+                    await asyncio.sleep(0.1)
+                
+                # Прогресс каждые 10 запросов
+                if (i + 1) % 10 == 0:
+                    print(f"[DEBUG] OKX: Обработано {i + 1}/{len(test_instruments)}, успешно: {successful_requests}, ошибок: {failed_requests}")
 
-            print(f"[DEBUG] OKX: Получено {len(funding_info)} ставок фандинга")
+            print(f"[DEBUG] OKX: Итого получено {len(funding_info)} ставок фандинга из {len(test_instruments)} запросов")
 
             # 4. Формируем финальный результат
             for inst_id in funding_info.keys():
