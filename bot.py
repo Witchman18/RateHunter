@@ -597,7 +597,7 @@ async def get_okx_data():
         print("[DEBUG] OKX: Запрашиваем данные...")
         async with aiohttp.ClientSession() as session:
             
-            # 1. Получаем список всех perpetual-свопов, торгуемых к USDT
+            # 1. Получаем список всех perpetual-свопов
             instruments_url = f"{base_url}/api/v5/public/instruments?instType=SWAP"
             async with session.get(instruments_url, timeout=15) as response:
                 if response.status != 200:
@@ -605,7 +605,6 @@ async def get_okx_data():
                     return []
                 instruments_data = (await response.json()).get('data', [])
             
-            # Отбираем только те, что к USDT, и формируем список instId
             usdt_swaps = [inst['instId'] for inst in instruments_data if inst.get('settleCcy') == 'USDT']
             if not usdt_swaps:
                 print("[API_ERROR] OKX: Не найдено USDT-свопов.")
@@ -613,55 +612,62 @@ async def get_okx_data():
             
             print(f"[DEBUG] OKX: Найдено {len(usdt_swaps)} USDT-свопов.")
             
-            # 2. Делаем запросы для получения данных по этим инструментам
-            # OKX позволяет запрашивать много инструментов за раз, но есть лимит. Будем делать по 100.
-            chunk_size = 100
+            # 2. Используем эти instId для запроса всех остальных данных
+            # OKX позволяет запрашивать много инструментов за раз, но есть лимит.
+            # Мы будем запрашивать данные по всем инструментам сразу, т.к. их не так много
             
-            funding_tasks = []
-            ticker_tasks = []
-            oi_tasks = []
-
-            for i in range(0, len(usdt_swaps), chunk_size):
-                chunk = usdt_swaps[i:i + chunk_size]
-                inst_ids = ",".join(chunk)
-                
-                funding_tasks.append(session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_ids}", timeout=20))
-                ticker_tasks.append(session.get(f"{base_url}/api/v5/public/tickers?instType=SWAP&instId={inst_ids}", timeout=20))
-                oi_tasks.append(session.get(f"{base_url}/api/v5/public/open-interest?instType=SWAP&instId={inst_ids}", timeout=20))
-
-            # Собираем все ответы
-            funding_responses = await asyncio.gather(*funding_tasks)
-            ticker_responses = await asyncio.gather(*ticker_tasks)
-            oi_responses = await asyncio.gather(*oi_tasks)
-
+            inst_ids_str = ",".join(usdt_swaps)
+            
+            # Запрашиваем все данные параллельно
+            tasks = {
+                "funding": session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_ids_str[:1200]}", timeout=20), # URL может быть слишком длинным, обрезаем
+                "tickers": session.get(f"{base_url}/api/v5/public/tickers?instType=SWAP", timeout=20), # Запрашиваем ВСЕ тикеры, так проще и надежнее
+                "oi": session.get(f"{base_url}/api/v5/public/open-interest?instType=SWAP", timeout=20) # И ВСЕ ОИ
+            }
+            
+            responses = await asyncio.gather(*tasks.values(), return_exceptions=True)
+            
+            # Разбираем ответы
+            funding_resp, ticker_resp, oi_resp = responses
+            
             # 3. Обрабатываем и объединяем данные
-            all_data = {}
-            
-            # Фандинг
-            for resp in funding_responses:
-                if resp.status == 200:
-                    for item in (await resp.json()).get('data', []):
-                        all_data[item['instId']] = {'rate': Decimal(str(item['fundingRate'])), 'next_funding_time': int(item['nextFundingTime'])}
+            instrument_data = {}
 
-            # Тикеры (объем)
-            for resp in ticker_responses:
-                 if resp.status == 200:
-                    for item in (await resp.json()).get('data', []):
-                        if item['instId'] in all_data:
-                            all_data[item['instId']]['volume_24h_usdt'] = Decimal(str(item.get('volCcy24h', '0')))
+            # Сначала заполняем базовую информацию из списка инструментов
+            for inst in instruments_data:
+                if inst['instId'] in usdt_swaps:
+                    instrument_data[inst['instId']] = {}
+
+            # Добавляем данные по фандингу
+            if not isinstance(funding_resp, Exception) and funding_resp.status == 200:
+                funding_list = (await funding_resp.json()).get('data', [])
+                for item in funding_list:
+                    if item['instId'] in instrument_data:
+                        instrument_data[item['instId']]['rate'] = Decimal(str(item['fundingRate']))
+                        instrument_data[item['instId']]['next_funding_time'] = int(item['nextFundingTime'])
             
-            # Открытый интерес
-            for resp in oi_responses:
-                if resp.status == 200:
-                    for item in (await resp.json()).get('data', []):
-                        if item['instId'] in all_data:
-                            all_data[item['instId']]['open_interest_usdt'] = Decimal(str(item.get('oiCcy', '0')))
+            # Добавляем данные по тикерам (объем)
+            if not isinstance(ticker_resp, Exception) and ticker_resp.status == 200:
+                ticker_list = (await ticker_resp.json()).get('data', [])
+                for item in ticker_list:
+                    if item['instId'] in instrument_data:
+                        instrument_data[item['instId']]['volume_24h_usdt'] = Decimal(str(item.get('volCcy24h', '0')))
+
+            # Добавляем данные по открытому интересу
+            if not isinstance(oi_resp, Exception) and oi_resp.status == 200:
+                oi_list = (await oi_resp.json()).get('data', [])
+                for item in oi_list:
+                    if item['instId'] in instrument_data:
+                        instrument_data[item['instId']]['open_interest_usdt'] = Decimal(str(item.get('oiCcy', '0')))
 
             # 4. Формируем финальный результат
-            for instId, data in all_data.items():
+            valid_count = 0
+            for instId, data in instrument_data.items():
+                # Проверяем, что все КЛЮЧЕВЫЕ поля на месте
                 if all(k in data for k in ['rate', 'next_funding_time', 'volume_24h_usdt']):
+                    valid_count += 1
                     symbol = instId.replace("-SWAP", "").replace("-", "")
-                    trade_symbol = instId.replace("-SWAP", "") # Для URL
+                    trade_symbol = instId.replace("-SWAP", "")
                     results.append({
                         'exchange': 'OKX',
                         'symbol': symbol,
@@ -672,6 +678,7 @@ async def get_okx_data():
                         'trade_url': f'https://www.okx.com/trade-swap/{trade_symbol}'
                     })
 
+            print(f"[DEBUG] OKX: Найдено полных данных для {valid_count} инструментов.")
             print(f"[DEBUG] OKX: Успешно сформировано {len(results)} инструментов.")
 
     except asyncio.TimeoutError:
