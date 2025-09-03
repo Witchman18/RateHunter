@@ -735,13 +735,12 @@ async def get_okx_data():
 async def get_kucoin_data():
     """Получает данные по ставкам финансирования с KuCoin Futures."""
     results = []
-    # Эндпоинт API KuCoin для получения данных по всем контрактам
-    contracts_url = "https://api-futures.kucoin.com/api/v1/contracts/active"
-
+    base_url = "https://api-futures.kucoin.com"
+    
     try:
         print("[DEBUG] KuCoin: Запрашиваем данные по активным контрактам...")
         async with aiohttp.ClientSession() as session:
-            async with session.get(contracts_url, timeout=15) as response:
+            async with session.get(f"{base_url}/api/v1/contracts/active", timeout=15) as response:
                 if response.status != 200:
                     print(f"[API_ERROR] KuCoin: Статус {response.status}")
                     return []
@@ -752,25 +751,37 @@ async def get_kucoin_data():
                     return []
                 
                 contracts_data = response_json.get('data', [])
-                print(f"[DEBUG] KuCoin: Получено {len(contracts_data)} инструментов.")
+                print(f"[DEBUG] KuCoin: Получено {len(contracts_data)} контрактов.")
                 
                 for item in contracts_data:
                     # Нас интересуют только USDT-margin perpetual контракты
-                    if item.get('quoteCurrency') == 'USDT' and item.get('isInverse') is False:
+                    if (item.get('quoteCurrency') == 'USDT' and 
+                        item.get('isInverse') is False and 
+                        item.get('status') == 'Open'):
                         try:
-                            # Собираем все данные в стандартный формат
+                            # Преобразуем funding rate в правильный формат
+                            funding_rate = Decimal(str(item.get('fundingFeeRate', '0')))
+                            next_funding = int(item.get('nextFundingRateTime', 0))
+                            
+                            # У KuCoin объем может быть в turnoverOf24h (USDT) или volumeOf24h (базовая валюта)
+                            volume_usdt = Decimal(str(item.get('turnoverOf24h', '0')))
+                            if volume_usdt == 0:
+                                # Если turnoverOf24h = 0, пробуем volumeOf24h * markPrice
+                                volume_base = Decimal(str(item.get('volumeOf24h', '0')))
+                                mark_price = Decimal(str(item.get('markPrice', '0')))
+                                volume_usdt = volume_base * mark_price
+                            
                             results.append({
                                 'exchange': 'KuCoin', 
                                 'symbol': item.get('symbol'), 
-                                'rate': Decimal(str(item.get('fundingRate', '0'))), 
-                                'next_funding_time': int(item.get('nextFundingRateTime', 0)), 
-                                'volume_24h_usdt': Decimal(str(item.get('turnoverOf24h', '0'))),
-                                # У KuCoin нет простого способа получить ОИ в USDT, оставляем 0
-                                'open_interest_usdt': Decimal('0'),
-                                'trade_url': f'https://www.kucoin.com/futures/{item.get("symbol")}'
+                                'rate': funding_rate, 
+                                'next_funding_time': next_funding, 
+                                'volume_24h_usdt': volume_usdt,
+                                'open_interest_usdt': Decimal('0'),  # KuCoin не предоставляет ОИ в USDT напрямую
+                                'trade_url': f'https://www.kucoin.com/futures/trade/{item.get("symbol")}'
                             })
                         except (TypeError, ValueError, decimal.InvalidOperation, KeyError) as e:
-                            print(f"[DEBUG] KuCoin: Ошибка обработки инструмента {item.get('symbol')}: {e}")
+                            print(f"[DEBUG] KuCoin: Ошибка обработки контракта {item.get('symbol', 'unknown')}: {e}")
                             continue
                 
                 print(f"[DEBUG] KuCoin: Успешно сформировано {len(results)} инструментов.")
