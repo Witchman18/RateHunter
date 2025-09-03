@@ -312,7 +312,7 @@ def require_access():
 # Теперь храним и user_id для корректной проверки доступа
 user_settings = {}  # Ключ: chat_id, значение: {'user_id': int, 'settings': dict}
 api_data_cache = {"last_update": None, "data": []}
-CACHE_LIFETIME_SECONDS = 60
+CACHE_LIFETIME_SECONDS = 100
 ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io', 'HTX', 'Bitget']
 
 # Функция форматирования объема
@@ -685,7 +685,7 @@ async def get_okx_data():
 
             # Запускаем параллельно по 20 запросов за раз
             funding_info = {}
-            semaphore = asyncio.Semaphore(20)  # Ограничиваем до 20 параллельных запросов
+            semaphore = asyncio.Semaphore(25)  # Ограничиваем до 20 параллельных запросов
             
             async def bounded_request(inst_id):
                 async with semaphore:
@@ -971,8 +971,6 @@ async def get_htx_data():
                                 })
                                 successful_count += 1
                         
-                        # Задержка между запросами
-                        await asyncio.sleep(0.05)
                         
                 except Exception as e:
                     print(f"[DEBUG] HTX: Ошибка для {contract_code}: {e}")
