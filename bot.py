@@ -696,7 +696,7 @@ async def get_okx_data():
                 else:
                     await asyncio.sleep(0.1)
                 
-                # Прогресс каждые 10 запросов
+                #Прогресс каждые 10 запросов
                 if (i + 1) % 10 == 0:
                     print(f"[DEBUG] OKX: Обработано {i + 1}/{len(usdt_swaps)}, успешно: {successful_requests}, ошибок: {failed_requests}")
 
