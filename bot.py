@@ -589,7 +589,7 @@ async def get_binance_data():
     return results
 
 async def get_okx_data():
-    """Получает данные по ставкам финансирования и ОИ с OKX (оптимизированная версия)."""
+    """Получает данные по ставкам финансирования и ОИ с OKX."""
     results = []
     base_url = "https://www.okx.com"
     
@@ -616,70 +616,111 @@ async def get_okx_data():
             
             print(f"[DEBUG] OKX: Найдено {len(usdt_swaps)} USDT-свопов.")
             
-            instrument_info = {}
-
-            # 2. Асинхронно запрашиваем ТИКЕРЫ и ОИ (это быстро, т.к. всего 2 запроса)
-            tasks = {
-                'tickers': session.get(f"{base_url}/api/v5/public/tickers?instType=SWAP", timeout=20),
-                'oi': session.get(f"{base_url}/api/v5/public/open-interest?instType=SWAP", timeout=20)
-            }
-            responses = await asyncio.gather(*tasks.values(), return_exceptions=True)
-            ticker_resp, oi_resp = responses
-
-            # 2.1 Обрабатываем тикеры
-            if not isinstance(ticker_resp, Exception) and ticker_resp.status == 200:
-                data = await ticker_resp.json()
-                if data.get('code') == '0':
-                    for item in data.get('data', []):
-                        if item.get('instId') in usdt_swaps:
-                            instrument_info[item['instId']] = {'volume_24h_usdt': Decimal(str(item.get('volCcy24h', '0')))}
-
-            # 2.2 Обрабатываем ОИ
-            if not isinstance(oi_resp, Exception) and oi_resp.status == 200:
-                data = await oi_resp.json()
-                if data.get('code') == '0':
-                    for item in data.get('data', []):
-                        if item.get('instId') in instrument_info:
-                            instrument_info[item['instId']]['open_interest_usdt'] = Decimal(str(item.get('oiCcy', '0')))
+            # 2. Получаем данные тикеров и ОИ (они работают без instId)
+            ticker_info = {}
+            oi_info = {}
             
-            print(f"[DEBUG] OKX: Получено {len(instrument_info)} инструментов с данными по объему/ОИ.")
+            # 2.1: Получаем все тикеры
+            try:
+                async with session.get(f"{base_url}/api/v5/public/tickers?instType=SWAP", timeout=20) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get('code') == '0':
+                            for item in data.get('data', []):
+                                inst_id = item.get('instId')
+                                if inst_id in usdt_swaps:
+                                    ticker_info[inst_id] = Decimal(str(item.get('volCcy24h', '0')))
+                            print(f"[DEBUG] OKX: Получено {len(ticker_info)} тикеров")
+                        else:
+                            print(f"[API_ERROR] OKX Тикеры: {data.get('msg')}")
+                    else:
+                        print(f"[API_ERROR] OKX Тикеры HTTP: {resp.status}")
+            except Exception as e:
+                print(f"[API_ERROR] OKX Тикеры Exception: {e}")
 
-            # 3. АСИНХРОННО запрашиваем ФАНДИНГ для всех инструментов
-            funding_tasks = []
-            for inst_id in usdt_swaps:
-                task = session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_id}", timeout=10)
-                funding_tasks.append(task)
+            # 2.2: Получаем открытый интерес
+            try:
+                async with session.get(f"{base_url}/api/v5/public/open-interest?instType=SWAP", timeout=20) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get('code') == '0':
+                            for item in data.get('data', []):
+                                inst_id = item.get('instId')
+                                if inst_id in usdt_swaps:
+                                    oi_info[inst_id] = Decimal(str(item.get('oiCcy', '0')))
+                            print(f"[DEBUG] OKX: Получено {len(oi_info)} данных по ОИ")
+                        else:
+                            print(f"[API_ERROR] OKX ОИ: {data.get('msg')}")
+                    else:
+                        print(f"[API_ERROR] OKX ОИ HTTP: {resp.status}")
+            except Exception as e:
+                print(f"[API_ERROR] OKX ОИ Exception: {e}")
+
+            # 3. БЫСТРЫЙ МЕТОД: Берем только топовые инструменты по объему
+            # Сортируем по объему и берем только топ-100
+            top_instruments = sorted(
+                [(inst_id, ticker_info.get(inst_id, Decimal('0'))) for inst_id in usdt_swaps], 
+                key=lambda x: x[1], 
+                reverse=True
+            )[:100]  # Только топ-100 по объему
             
-            print(f"[DEBUG] OKX: Запускаем {len(funding_tasks)} запросов на получение фандинга...")
-            funding_responses = await asyncio.gather(*funding_tasks, return_exceptions=True)
+            selected_instruments = [inst_id for inst_id, _ in top_instruments]
+            print(f"[DEBUG] OKX: Выбрано {len(selected_instruments)} топовых инструментов по объему")
 
-            # 3.1 Обрабатываем результаты фандинга
-            successful_funding = 0
-            for i, resp in enumerate(funding_responses):
-                inst_id = usdt_swaps[i]
-                if not isinstance(resp, Exception) and resp.status == 200:
-                    data = await resp.json()
-                    if data.get('code') == '0' and data.get('data'):
-                        item = data['data'][0]
-                        if inst_id in instrument_info:
-                            instrument_info[inst_id]['rate'] = Decimal(str(item['fundingRate']))
-                            instrument_info[inst_id]['next_funding_time'] = int(item['nextFundingTime'])
-                            successful_funding += 1
+            # 4. ПАРАЛЛЕЛЬНЫЕ ЗАПРОСЫ для фандинга
+            async def get_funding_for_instrument(inst_id):
+                try:
+                    async with session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_id}", timeout=8) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get('code') == '0' and data.get('data'):
+                                item = data['data'][0]
+                                return inst_id, {
+                                    'rate': Decimal(str(item['fundingRate'])),
+                                    'next_funding_time': int(item['nextFundingTime'])
+                                }
+                except Exception:
+                    pass
+                return inst_id, None
+
+            # Запускаем параллельно по 20 запросов за раз
+            funding_info = {}
+            semaphore = asyncio.Semaphore(20)  # Ограничиваем до 20 параллельных запросов
             
-            print(f"[DEBUG] OKX: Успешно получено {successful_funding} ставок фандинга.")
+            async def bounded_request(inst_id):
+                async with semaphore:
+                    return await get_funding_for_instrument(inst_id)
+            
+            print(f"[DEBUG] OKX: Запускаем параллельные запросы для {len(selected_instruments)} инструментов...")
+            
+            # Выполняем все запросы параллельно
+            tasks = [bounded_request(inst_id) for inst_id in selected_instruments]
+            results_funding = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Собираем результаты
+            successful = 0
+            for result in results_funding:
+                if isinstance(result, tuple) and result[1] is not None:
+                    inst_id, funding_data = result
+                    funding_info[inst_id] = funding_data
+                    successful += 1
+            
+            print(f"[DEBUG] OKX: Получено {successful} ставок фандинга из {len(selected_instruments)} запросов")
 
-            # 4. Формируем финальный результат
-            for instId, data in instrument_info.items():
-                if all(k in data for k in ['rate', 'next_funding_time', 'volume_24h_usdt']):
-                    symbol = instId.replace("-SWAP", "").replace("-", "")
-                    trade_symbol = instId.replace("-SWAP", "")
-                    results.append({
-                        'exchange': 'OKX', 'symbol': symbol, 'rate': data['rate'],
-                        'next_funding_time': data['next_funding_time'],
-                        'volume_24h_usdt': data['volume_24h_usdt'],
-                        'open_interest_usdt': data.get('open_interest_usdt', Decimal('0')),
-                        'trade_url': f'https://www.okx.com/trade-swap/{trade_symbol}'
-                    })
+            # 5. Формируем финальный результат
+            for inst_id in funding_info.keys():
+                symbol = inst_id.replace("-SWAP", "").replace("-", "")
+                trade_symbol = inst_id.replace("-SWAP", "")
+                
+                results.append({
+                    'exchange': 'OKX', 
+                    'symbol': symbol, 
+                    'rate': funding_info[inst_id]['rate'],
+                    'next_funding_time': funding_info[inst_id]['next_funding_time'],
+                    'volume_24h_usdt': ticker_info.get(inst_id, Decimal('0')),
+                    'open_interest_usdt': oi_info.get(inst_id, Decimal('0')),
+                    'trade_url': f'https://www.okx.com/trade-swap/{trade_symbol}'
+                })
 
             print(f"[DEBUG] OKX: Успешно сформировано {len(results)} инструментов.")
 
