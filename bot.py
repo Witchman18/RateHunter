@@ -588,6 +588,100 @@ async def get_binance_data():
     
     return results
 
+async def get_okx_data():
+    """Получает данные по ставкам финансирования и ОИ с OKX."""
+    results = []
+    base_url = "https://www.okx.com"
+    
+    try:
+        print("[DEBUG] OKX: Запрашиваем данные...")
+        async with aiohttp.ClientSession() as session:
+            
+            # 1. Получаем список всех perpetual-свопов, торгуемых к USDT
+            instruments_url = f"{base_url}/api/v5/public/instruments?instType=SWAP"
+            async with session.get(instruments_url, timeout=15) as response:
+                if response.status != 200:
+                    print(f"[API_ERROR] OKX Instruments: Статус {response.status}")
+                    return []
+                instruments_data = (await response.json()).get('data', [])
+            
+            # Отбираем только те, что к USDT, и формируем список instId
+            usdt_swaps = [inst['instId'] for inst in instruments_data if inst['ctValCcy'] == 'USDT']
+            if not usdt_swaps:
+                print("[API_ERROR] OKX: Не найдено USDT-свопов.")
+                return []
+            
+            print(f"[DEBUG] OKX: Найдено {len(usdt_swaps)} USDT-свопов.")
+            
+            # 2. Делаем запросы для получения данных по этим инструментам
+            # OKX позволяет запрашивать много инструментов за раз, но есть лимит. Будем делать по 100.
+            chunk_size = 100
+            
+            funding_tasks = []
+            ticker_tasks = []
+            oi_tasks = []
+
+            for i in range(0, len(usdt_swaps), chunk_size):
+                chunk = usdt_swaps[i:i + chunk_size]
+                inst_ids = ",".join(chunk)
+                
+                funding_tasks.append(session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_ids}", timeout=20))
+                ticker_tasks.append(session.get(f"{base_url}/api/v5/public/tickers?instType=SWAP&instId={inst_ids}", timeout=20))
+                oi_tasks.append(session.get(f"{base_url}/api/v5/public/open-interest?instType=SWAP&instId={inst_ids}", timeout=20))
+
+            # Собираем все ответы
+            funding_responses = await asyncio.gather(*funding_tasks)
+            ticker_responses = await asyncio.gather(*ticker_tasks)
+            oi_responses = await asyncio.gather(*oi_tasks)
+
+            # 3. Обрабатываем и объединяем данные
+            all_data = {}
+            
+            # Фандинг
+            for resp in funding_responses:
+                if resp.status == 200:
+                    for item in (await resp.json()).get('data', []):
+                        all_data[item['instId']] = {'rate': Decimal(str(item['fundingRate'])), 'next_funding_time': int(item['nextFundingTime'])}
+
+            # Тикеры (объем)
+            for resp in ticker_responses:
+                 if resp.status == 200:
+                    for item in (await resp.json()).get('data', []):
+                        if item['instId'] in all_data:
+                            all_data[item['instId']]['volume_24h_usdt'] = Decimal(str(item.get('volCcy24h', '0')))
+            
+            # Открытый интерес
+            for resp in oi_responses:
+                if resp.status == 200:
+                    for item in (await resp.json()).get('data', []):
+                        if item['instId'] in all_data:
+                            all_data[item['instId']]['open_interest_usdt'] = Decimal(str(item.get('oiCcy', '0')))
+
+            # 4. Формируем финальный результат
+            for instId, data in all_data.items():
+                if all(k in data for k in ['rate', 'next_funding_time', 'volume_24h_usdt']):
+                    symbol = instId.replace("-SWAP", "").replace("-", "")
+                    trade_symbol = instId.replace("-SWAP", "") # Для URL
+                    results.append({
+                        'exchange': 'OKX',
+                        'symbol': symbol,
+                        'rate': data['rate'],
+                        'next_funding_time': data['next_funding_time'],
+                        'volume_24h_usdt': data['volume_24h_usdt'],
+                        'open_interest_usdt': data.get('open_interest_usdt', Decimal('0')),
+                        'trade_url': f'https://www.okx.com/trade-swap/{trade_symbol}'
+                    })
+
+            print(f"[DEBUG] OKX: Успешно сформировано {len(results)} инструментов.")
+
+    except asyncio.TimeoutError:
+        print("[API_ERROR] OKX: Timeout при запросе к API")
+    except Exception as e:
+        print(f"[API_ERROR] OKX: Глобальное исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] OKX: Traceback: {traceback.format_exc()}")
+        
+    return results
+
 async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
@@ -604,13 +698,14 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
     tasks = [
         get_bybit_data(api_key=bybit_api_key, secret_key=bybit_secret_key), 
         get_mexc_data(api_key=mexc_api_key, secret_key=mexc_secret_key),
-        get_binance_data()
+        get_binance_data(),
+        get_okx_data()
     ]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
     for i, res in enumerate(results_from_tasks):
-        exchange_name = ['Bybit', 'MEXC', 'Binance'][i]
+        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX'][i]
         if isinstance(res, list): 
             all_data.extend(res)
             print(f"[DEBUG] {exchange_name}: Добавлено {len(res)} инструментов")
