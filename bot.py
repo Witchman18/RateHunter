@@ -793,6 +793,58 @@ async def get_kucoin_data():
         print(f"[API_ERROR] KuCoin: Traceback: {traceback.format_exc()}")
     
     return results
+
+async def get_bitget_data():
+    """Получает данные по ставкам финансирования с Bitget."""
+    results = []
+    # Эндпоинт API Bitget для получения тикеров по USDT-M контрактам
+    tickers_url = "https://api.bitget.com/api/v2/mix/market/tickers?productType=USDT-FUTURES"
+
+    try:
+        print("[DEBUG] Bitget: Запрашиваем данные по тикерам...")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(tickers_url, timeout=15) as response:
+                if response.status != 200:
+                    print(f"[API_ERROR] Bitget: Статус {response.status}")
+                    return []
+                
+                response_json = await response.json()
+                if response_json.get('code') != '00000':
+                    print(f"[API_ERROR] Bitget: API вернул ошибку: {response_json.get('msg')}")
+                    return []
+                
+                tickers_data = response_json.get('data', [])
+                print(f"[DEBUG] Bitget: Получено {len(tickers_data)} инструментов.")
+                
+                for item in tickers_data:
+                    try:
+                        # Bitget отдает время в секундах, а нам нужны миллисекунды
+                        next_funding_time_ms = int(item.get('nextFundingTime', 0))
+
+                        # Собираем все данные в стандартный формат
+                        results.append({
+                            'exchange': 'Bitget', 
+                            'symbol': item.get('symbol'), # Символ уже в формате BTCUSDT
+                            'rate': Decimal(str(item.get('fundingRate', '0'))), 
+                            'next_funding_time': next_funding_time_ms, 
+                            'volume_24h_usdt': Decimal(str(item.get('volume24h', '0'))), # Объем в USDT
+                            # У Bitget нет простого способа получить ОИ в USDT, оставляем 0
+                            'open_interest_usdt': Decimal('0'),
+                            'trade_url': f'https://www.bitget.com/futures/usdt/{item.get("symbol")}'
+                        })
+                    except (TypeError, ValueError, decimal.InvalidOperation, KeyError) as e:
+                        print(f"[DEBUG] Bitget: Ошибка обработки инструмента {item.get('symbol')}: {e}")
+                        continue
+                
+                print(f"[DEBUG] Bitget: Успешно сформировано {len(results)} инструментов.")
+
+    except asyncio.TimeoutError:
+        print("[API_ERROR] Bitget: Timeout при запросе к API")
+    except Exception as e:
+        print(f"[API_ERROR] Bitget: Глобальное исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] Bitget: Traceback: {traceback.format_exc()}")
+    
+    return results
 async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
@@ -811,13 +863,14 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
         get_mexc_data(api_key=mexc_api_key, secret_key=mexc_secret_key),
         get_binance_data(),
         get_okx_data(),
-        get_kucoin_data()
+        get_kucoin_data(),
+        get_bitget_data()
     ]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
     for i, res in enumerate(results_from_tasks):
-        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin'][i]
+        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Bitget'][i]
         if isinstance(res, list): 
             all_data.extend(res)
             print(f"[DEBUG] {exchange_name}: Добавлено {len(res)} инструментов")
