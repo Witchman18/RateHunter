@@ -907,7 +907,7 @@ async def get_htx_data():
         
         async with aiohttp.ClientSession(headers=headers) as session:
             
-            # Сначала получаем список всех контрактов
+            # Получаем список всех контрактов
             contracts_url = "https://api.hbdm.com/linear-swap-api/v1/swap_contract_info"
             
             async with session.get(contracts_url, timeout=15) as response:
@@ -930,46 +930,59 @@ async def get_htx_data():
                 ]
                 
                 print(f"[DEBUG] HTX: Найдено {len(usdt_contracts)} USDT контрактов")
-                
-                if not usdt_contracts:
-                    print("[API_ERROR] HTX: Не найдено USDT контрактов")
-                    return []
             
-            # Тестируем один контракт с подробным логированием
-            test_contract = usdt_contracts[0] if usdt_contracts else None
-            if test_contract:
-                print(f"[DEBUG] HTX: Тестируем контракт {test_contract}")
-                funding_url = f"https://api.hbdm.com/linear-swap-api/v1/swap_funding_rate?contract_code={test_contract}"
-                print(f"[DEBUG] HTX: URL запроса: {funding_url}")
-                
-                async with session.get(funding_url, timeout=10) as fr_response:
-                    print(f"[DEBUG] HTX: Статус ответа: {fr_response.status}")
-                    print(f"[DEBUG] HTX: Content-Type: {fr_response.headers.get('content-type')}")
+            # Получаем фандинг для каждого контракта
+            successful_count = 0
+            for contract_code in usdt_contracts:
+                try:
+                    funding_url = f"https://api.hbdm.com/linear-swap-api/v1/swap_funding_rate?contract_code={contract_code}"
                     
-                    if fr_response.status == 200:
-                        fr_text = await fr_response.text()
-                        print(f"[DEBUG] HTX: Размер ответа: {len(fr_text)} символов")
-                        print(f"[DEBUG] HTX: Ответ: {fr_text[:500]}")
-                        
-                        try:
+                    async with session.get(funding_url, timeout=10) as fr_response:
+                        if fr_response.status == 200:
+                            fr_text = await fr_response.text()
                             fr_data = json.loads(fr_text)
-                            print(f"[DEBUG] HTX: JSON статус: {fr_data.get('status')}")
-                            print(f"[DEBUG] HTX: JSON данные: {fr_data.get('data', 'нет данных')}")
                             
                             if fr_data.get('status') == 'ok' and fr_data.get('data'):
-                                print("[DEBUG] HTX: Данные получены успешно!")
-                            else:
-                                print(f"[DEBUG] HTX: Проблема с данными: {fr_data}")
+                                item = fr_data['data']
                                 
-                        except json.JSONDecodeError as e:
-                            print(f"[DEBUG] HTX: Ошибка JSON: {e}")
-                    else:
-                        error_text = await fr_response.text()
-                        print(f"[DEBUG] HTX: Ошибка HTTP: {error_text}")
+                                # Получаем время следующего фандинга
+                                next_funding_time = item.get('next_funding_time')
+                                funding_time = item.get('funding_time')
+                                
+                                # Если next_funding_time null, используем funding_time + 8 часов (стандартный интервал)
+                                if next_funding_time is None and funding_time:
+                                    next_funding_time = int(funding_time) + (8 * 60 * 60 * 1000)  # +8 часов в мс
+                                elif next_funding_time is None:
+                                    # Если оба null, пропускаем
+                                    continue
+                                else:
+                                    next_funding_time = int(next_funding_time)
+                                
+                                symbol = contract_code.replace('-', '')  # BTC-USDT -> BTCUSDT
+                                
+                                results.append({
+                                    'exchange': 'HTX',
+                                    'symbol': symbol,
+                                    'rate': Decimal(str(item.get('funding_rate', '0'))),
+                                    'next_funding_time': next_funding_time,
+                                    'volume_24h_usdt': Decimal('0'),
+                                    'open_interest_usdt': Decimal('0'),
+                                    'trade_url': f'https://www.htx.com/en-us/futures/usdt/{contract_code.lower()}'
+                                })
+                                successful_count += 1
+                        
+                        # Задержка между запросами
+                        await asyncio.sleep(0.05)
+                        
+                except Exception as e:
+                    print(f"[DEBUG] HTX: Ошибка для {contract_code}: {e}")
+                    continue
+                
+            print(f"[DEBUG] HTX: Успешно обработано {successful_count} из {len(usdt_contracts)} контрактов")
+            print(f"[DEBUG] HTX: Успешно сформировано {len(results)} инструментов.")
 
     except Exception as e:
-        print(f"[API_ERROR] HTX: Исключение {type(e).__name__}: {e}")
-        print(f"[API_ERROR] HTX: Traceback: {traceback.format_exc()}")
+        print(f"[API_ERROR] HTX: Глобальное исключение {type(e).__name__}: {e}")
     
     return results
 async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
