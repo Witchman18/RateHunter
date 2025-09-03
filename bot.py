@@ -519,6 +519,75 @@ async def get_mexc_data(api_key: str, secret_key: str):
     
     return results
 
+async def get_binance_data():
+    """Получает данные по ставкам финансирования с Binance Futures."""
+    results = []
+    # Эндпоинты API Binance
+    funding_rate_url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+    ticker_url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+
+    try:
+        print("[DEBUG] Binance: Запрашиваем данные по ставкам и тикерам...")
+        async with aiohttp.ClientSession() as session:
+            # Асинхронно запрашиваем оба эндпоинта
+            async with session.get(funding_rate_url, timeout=15) as funding_response, \
+                       session.get(ticker_url, timeout=15) as ticker_response:
+                
+                if funding_response.status != 200:
+                    print(f"[API_ERROR] Binance Funding: Статус {funding_response.status}")
+                    return []
+                if ticker_response.status != 200:
+                    print(f"[API_ERROR] Binance Ticker: Статус {ticker_response.status}")
+                    return []
+
+                funding_data = await funding_response.json()
+                ticker_data = await ticker_response.json()
+
+                # 1. Создаем словарь для быстрого доступа к данным по фандингу
+                funding_info = {}
+                for item in funding_data:
+                    symbol = item.get("symbol")
+                    if symbol and item.get("lastFundingRate"):
+                        try:
+                            funding_info[symbol] = {
+                                'rate': Decimal(str(item["lastFundingRate"])),
+                                'next_funding_time': int(item["nextFundingTime"])
+                            }
+                        except (TypeError, ValueError, decimal.InvalidOperation):
+                            continue # Пропускаем, если данные некорректны
+                
+                print(f"[DEBUG] Binance: Обработано {len(funding_info)} ставок фандинга.")
+
+                # 2. Проходим по данным тикеров и объединяем их с данными фандинга
+                print(f"[DEBUG] Binance: Получено {len(ticker_data)} тикеров.")
+                for ticker in ticker_data:
+                    symbol = ticker.get("symbol")
+                    # Проверяем, что для этого тикера есть данные по фандингу
+                    if symbol in funding_info:
+                        try:
+                            # Собираем все данные в стандартный формат
+                            results.append({
+                                'exchange': 'Binance', 
+                                'symbol': symbol, 
+                                'rate': funding_info[symbol]['rate'], 
+                                'next_funding_time': funding_info[symbol]['next_funding_time'], 
+                                'volume_24h_usdt': Decimal(str(ticker.get("quoteVolume", "0"))), # quoteVolume - это объем в USDT
+                                'trade_url': f'https://www.binance.com/en/futures/{symbol}'
+                            })
+                        except (TypeError, ValueError, decimal.InvalidOperation, KeyError) as e:
+                            print(f"[DEBUG] Binance: Ошибка обработки тикера {symbol}: {e}")
+                            continue
+                
+                print(f"[DEBUG] Binance: Успешно сформировано {len(results)} инструментов.")
+
+    except asyncio.TimeoutError:
+        print("[API_ERROR] Binance: Timeout при запросе к API")
+    except Exception as e:
+        print(f"[API_ERROR] Binance: Глобальное исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] Binance: Traceback: {traceback.format_exc()}")
+    
+    return results
+
 async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
@@ -534,13 +603,14 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
     
     tasks = [
         get_bybit_data(api_key=bybit_api_key, secret_key=bybit_secret_key), 
-        get_mexc_data(api_key=mexc_api_key, secret_key=mexc_secret_key)
+        get_mexc_data(api_key=mexc_api_key, secret_key=mexc_secret_key),
+        get_binance_data()
     ]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
     for i, res in enumerate(results_from_tasks):
-        exchange_name = ['Bybit', 'MEXC'][i]
+        exchange_name = ['Bybit', 'MEXC', 'Binance'][i]
         if isinstance(res, list): 
             all_data.extend(res)
             print(f"[DEBUG] {exchange_name}: Добавлено {len(res)} инструментов")
