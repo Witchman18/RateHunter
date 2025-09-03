@@ -729,6 +729,59 @@ async def get_okx_data():
         print(f"[API_ERROR] OKX: Traceback: {traceback.format_exc()}")
         
     return results
+
+# Вставьте этот код после функции get_okx_data
+
+async def get_kucoin_data():
+    """Получает данные по ставкам финансирования с KuCoin Futures."""
+    results = []
+    # Эндпоинт API KuCoin для получения данных по всем контрактам
+    contracts_url = "https://api-futures.kucoin.com/api/v1/contracts/active"
+
+    try:
+        print("[DEBUG] KuCoin: Запрашиваем данные по активным контрактам...")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(contracts_url, timeout=15) as response:
+                if response.status != 200:
+                    print(f"[API_ERROR] KuCoin: Статус {response.status}")
+                    return []
+                
+                response_json = await response.json()
+                if response_json.get('code') != '200000':
+                    print(f"[API_ERROR] KuCoin: API вернул ошибку: {response_json.get('msg')}")
+                    return []
+                
+                contracts_data = response_json.get('data', [])
+                print(f"[DEBUG] KuCoin: Получено {len(contracts_data)} инструментов.")
+                
+                for item in contracts_data:
+                    # Нас интересуют только USDT-margin perpetual контракты
+                    if item.get('quoteCurrency') == 'USDT' and item.get('isInverse') is False:
+                        try:
+                            # Собираем все данные в стандартный формат
+                            results.append({
+                                'exchange': 'KuCoin', 
+                                'symbol': item.get('symbol'), 
+                                'rate': Decimal(str(item.get('fundingRate', '0'))), 
+                                'next_funding_time': int(item.get('nextFundingRateTime', 0)), 
+                                'volume_24h_usdt': Decimal(str(item.get('turnoverOf24h', '0'))),
+                                # У KuCoin нет простого способа получить ОИ в USDT, оставляем 0
+                                'open_interest_usdt': Decimal('0'),
+                                'trade_url': f'https://www.kucoin.com/futures/{item.get("symbol")}'
+                            })
+                        except (TypeError, ValueError, decimal.InvalidOperation, KeyError) as e:
+                            print(f"[DEBUG] KuCoin: Ошибка обработки инструмента {item.get('symbol')}: {e}")
+                            continue
+                
+                print(f"[DEBUG] KuCoin: Успешно сформировано {len(results)} инструментов.")
+
+    except asyncio.TimeoutError:
+        print("[API_ERROR] KuCoin: Timeout при запросе к API")
+    except Exception as e:
+        print(f"[API_ERROR] KuCoin: Глобальное исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] KuCoin: Traceback: {traceback.format_exc()}")
+    
+    return results
 async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
@@ -746,13 +799,14 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
         get_bybit_data(api_key=bybit_api_key, secret_key=bybit_secret_key), 
         get_mexc_data(api_key=mexc_api_key, secret_key=mexc_secret_key),
         get_binance_data(),
-        get_okx_data()
+        get_okx_data(),
+        get_kucoin_data()
     ]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
     for i, res in enumerate(results_from_tasks):
-        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX'][i]
+        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin'][i]
         if isinstance(res, list): 
             all_data.extend(res)
             print(f"[DEBUG] {exchange_name}: Добавлено {len(res)} инструментов")
