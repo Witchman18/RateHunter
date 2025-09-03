@@ -845,6 +845,53 @@ async def get_bitget_data():
         print(f"[API_ERROR] Bitget: Traceback: {traceback.format_exc()}")
     
     return results
+
+async def get_gateio_data():
+    """Получает данные по ставкам финансирования с Gate.io."""
+    results = []
+    # Эндпоинт API Gate.io для получения информации по USDT контрактам
+    tickers_url = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
+
+    try:
+        print("[DEBUG] Gate.io: Запрашиваем данные по тикерам...")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(tickers_url, timeout=15) as response:
+                if response.status != 200:
+                    print(f"[API_ERROR] Gate.io: Статус {response.status}")
+                    return []
+                
+                tickers_data = await response.json()
+                print(f"[DEBUG] Gate.io: Получено {len(tickers_data)} инструментов.")
+                
+                for item in tickers_data:
+                    try:
+                        # Gate.io отдает время следующей выплаты в секундах, переводим в миллисекунды
+                        next_funding_time_ms = int(item.get('funding_next_apply', 0)) * 1000
+
+                        # Собираем все данные в стандартный формат
+                        results.append({
+                            'exchange': 'Gate.io', 
+                            'symbol': item.get('contract').replace('_', ''), # Символ в формате BTC_USDT
+                            'rate': Decimal(str(item.get('funding_rate', '0'))), 
+                            'next_funding_time': next_funding_time_ms, 
+                            'volume_24h_usdt': Decimal(str(item.get('volume_24h_usdt', '0'))),
+                            # ОИ у Gate.io доступен, но в контрактах, а не в USDT. Для простоты пока ставим 0.
+                            'open_interest_usdt': Decimal('0'),
+                            'trade_url': f'https://www.gate.io/futures_trade/USDT/{item.get("contract")}'
+                        })
+                    except (TypeError, ValueError, decimal.InvalidOperation, KeyError) as e:
+                        print(f"[DEBUG] Gate.io: Ошибка обработки инструмента {item.get('contract')}: {e}")
+                        continue
+                
+                print(f"[DEBUG] Gate.io: Успешно сформировано {len(results)} инструментов.")
+
+    except asyncio.TimeoutError:
+        print("[API_ERROR] Gate.io: Timeout при запросе к API")
+    except Exception as e:
+        print(f"[API_ERROR] Gate.io: Глобальное исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] Gate.io: Traceback: {traceback.format_exc()}")
+    
+    return results
 async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
@@ -864,13 +911,14 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
         get_binance_data(),
         get_okx_data(),
         get_kucoin_data(),
-        get_bitget_data()
+        get_bitget_data(),
+        get_gateio_data()
     ]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
     for i, res in enumerate(results_from_tasks):
-        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Bitget'][i]
+        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Bitget', 'Gate.io'][i]
         if isinstance(res, list): 
             all_data.extend(res)
             print(f"[DEBUG] {exchange_name}: Добавлено {len(res)} инструментов")
