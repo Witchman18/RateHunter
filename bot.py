@@ -892,6 +892,73 @@ async def get_gateio_data():
         print(f"[API_ERROR] Gate.io: Traceback: {traceback.format_exc()}")
     
     return results
+
+async def get_htx_data():
+    """Получает данные по ставкам финансирования с HTX (Huobi)."""
+    results = []
+    # Эндпоинт API HTX для получения данных по всем фьючерсным контрактам
+    overview_url = "https://api.hbdm.com/api/v1/contract_overview"
+
+    try:
+        print("[DEBUG] HTX: Запрашиваем данные по контрактам...")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(overview_url, timeout=15) as response:
+                if response.status != 200:
+                    print(f"[API_ERROR] HTX: Статус {response.status}")
+                    return []
+                
+                response_json = await response.json()
+                if response_json.get('status') != 'ok':
+                    print(f"[API_ERROR] HTX: API вернул ошибку: {response_json.get('err-msg')}")
+                    return []
+                
+                overview_data = response_json.get('data', [])
+                print(f"[DEBUG] HTX: Получено {len(overview_data)} инструментов.")
+                
+                # HTX отдает данные по фандингу в другом месте, соберем их
+                funding_url = "https://api.hbdm.com/api/v1/contract_funding_rate"
+                funding_info = {}
+                async with session.get(funding_url) as fr_response:
+                    if fr_response.status == 200:
+                        fr_data = (await fr_response.json()).get('data', [])
+                        for item in fr_data:
+                            # Нас интересуют только USDT контракты
+                            if item.get('contract_code', '').endswith('-USDT'):
+                                funding_info[item['contract_code']] = {
+                                    'rate': Decimal(str(item.get('funding_rate', '0'))),
+                                    'next_funding_time': int(item.get('next_funding_time', 0))
+                                }
+                
+                print(f"[DEBUG] HTX: Получено {len(funding_info)} ставок фандинга.")
+
+                for item in overview_data:
+                    contract_code = item.get('contract_code')
+                    # Отбираем только USDT-margin perpetual контракты
+                    if contract_code in funding_info:
+                        try:
+                            # Собираем все данные в стандартный формат
+                            results.append({
+                                'exchange': 'HTX', 
+                                'symbol': contract_code.replace('-USDT', 'USDT'), # Символ BTC-USDT -> BTCUSDT
+                                'rate': funding_info[contract_code]['rate'], 
+                                'next_funding_time': funding_info[contract_code]['next_funding_time'], 
+                                'volume_24h_usdt': Decimal(str(item.get('amount', '0'))), # 'amount' у них это объем в USDT
+                                'open_interest_usdt': Decimal('0'), # Данных по ОИ в USDT нет
+                                'trade_url': f'https://www.htx.com/futures/usdt_swap/exchange/{contract_code.lower()}'
+                            })
+                        except (TypeError, ValueError, decimal.InvalidOperation, KeyError) as e:
+                            print(f"[DEBUG] HTX: Ошибка обработки инструмента {contract_code}: {e}")
+                            continue
+                
+                print(f"[DEBUG] HTX: Успешно сформировано {len(results)} инструментов.")
+
+    except asyncio.TimeoutError:
+        print("[API_ERROR] HTX: Timeout при запросе к API")
+    except Exception as e:
+        print(f"[API_ERROR] HTX: Глобальное исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] HTX: Traceback: {traceback.format_exc()}")
+    
+    return results
 async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
@@ -912,13 +979,14 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
         get_okx_data(),
         get_kucoin_data(),
         get_bitget_data(),
-        get_gateio_data()
+        get_gateio_data(),
+        get_htx_data()
     ]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
     for i, res in enumerate(results_from_tasks):
-        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Bitget', 'Gate.io'][i]
+        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Bitget', 'Gate.io', 'HTX'][i]
         if isinstance(res, list): 
             all_data.extend(res)
             print(f"[DEBUG] {exchange_name}: Добавлено {len(res)} инструментов")
