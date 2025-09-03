@@ -606,7 +606,7 @@ async def get_okx_data():
                 instruments_data = (await response.json()).get('data', [])
             
             # Отбираем только те, что к USDT, и формируем список instId
-            usdt_swaps = [inst['instId'] for inst in instruments_data if inst['ctValCcy'] == 'USDT']
+            usdt_swaps = [inst['instId'] for inst in instruments_data if inst.get('settleCcy') == 'USDT']
             if not usdt_swaps:
                 print("[API_ERROR] OKX: Не найдено USDT-свопов.")
                 return []
