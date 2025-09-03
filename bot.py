@@ -902,8 +902,7 @@ async def get_htx_data():
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
+            'Accept': 'application/json'
         }
         
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -936,42 +935,41 @@ async def get_htx_data():
                     print("[API_ERROR] HTX: Не найдено USDT контрактов")
                     return []
             
-            # Теперь получаем фандинг для каждого контракта
-            for contract_code in usdt_contracts[:10]:  # Ограничиваем первыми 10 для теста
-                try:
-                    funding_url = f"https://api.hbdm.com/linear-swap-api/v1/swap_funding_rate?contract_code={contract_code}"
+            # Тестируем один контракт с подробным логированием
+            test_contract = usdt_contracts[0] if usdt_contracts else None
+            if test_contract:
+                print(f"[DEBUG] HTX: Тестируем контракт {test_contract}")
+                funding_url = f"https://api.hbdm.com/linear-swap-api/v1/swap_funding_rate?contract_code={test_contract}"
+                print(f"[DEBUG] HTX: URL запроса: {funding_url}")
+                
+                async with session.get(funding_url, timeout=10) as fr_response:
+                    print(f"[DEBUG] HTX: Статус ответа: {fr_response.status}")
+                    print(f"[DEBUG] HTX: Content-Type: {fr_response.headers.get('content-type')}")
                     
-                    async with session.get(funding_url, timeout=10) as fr_response:
-                        if fr_response.status == 200:
-                            fr_text = await fr_response.text()
+                    if fr_response.status == 200:
+                        fr_text = await fr_response.text()
+                        print(f"[DEBUG] HTX: Размер ответа: {len(fr_text)} символов")
+                        print(f"[DEBUG] HTX: Ответ: {fr_text[:500]}")
+                        
+                        try:
                             fr_data = json.loads(fr_text)
+                            print(f"[DEBUG] HTX: JSON статус: {fr_data.get('status')}")
+                            print(f"[DEBUG] HTX: JSON данные: {fr_data.get('data', 'нет данных')}")
                             
                             if fr_data.get('status') == 'ok' and fr_data.get('data'):
-                                item = fr_data['data'][0]  # Берем первую запись
+                                print("[DEBUG] HTX: Данные получены успешно!")
+                            else:
+                                print(f"[DEBUG] HTX: Проблема с данными: {fr_data}")
                                 
-                                symbol = contract_code.replace('-', '')  # BTC-USDT -> BTCUSDT
-                                
-                                results.append({
-                                    'exchange': 'HTX',
-                                    'symbol': symbol,
-                                    'rate': Decimal(str(item.get('funding_rate', '0'))),
-                                    'next_funding_time': int(item.get('next_funding_time', 0)),
-                                    'volume_24h_usdt': Decimal('0'),
-                                    'open_interest_usdt': Decimal('0'),
-                                    'trade_url': f'https://www.htx.com/en-us/futures/usdt/{contract_code.lower()}'
-                                })
-                        
-                        # Небольшая задержка между запросами
-                        await asyncio.sleep(0.1)
-                        
-                except Exception as e:
-                    print(f"[DEBUG] HTX: Ошибка для {contract_code}: {e}")
-                    continue
-                
-            print(f"[DEBUG] HTX: Успешно сформировано {len(results)} инструментов.")
+                        except json.JSONDecodeError as e:
+                            print(f"[DEBUG] HTX: Ошибка JSON: {e}")
+                    else:
+                        error_text = await fr_response.text()
+                        print(f"[DEBUG] HTX: Ошибка HTTP: {error_text}")
 
     except Exception as e:
-        print(f"[API_ERROR] HTX: Глобальное исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] HTX: Исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] HTX: Traceback: {traceback.format_exc()}")
     
     return results
 async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
