@@ -957,7 +957,12 @@ async def show_top_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     exchange_filtered = [item for item in all_data if item['exchange'] in settings['exchanges']]
     rate_filtered = [item for item in exchange_filtered if abs(item['rate']) >= settings['funding_threshold']]
-    filtered_data = [item for item in rate_filtered if item.get('volume_24h_usdt', Decimal('0')) >= settings['volume_threshold_usdt']]
+    filtered_data = []
+    for item in rate_filtered:
+        volume = item.get('volume_24h_usdt', Decimal('0'))
+        # Если объем есть - проверяем фильтр, если нет - пропускаем
+        if volume == Decimal('0') or volume >= settings['volume_threshold_usdt']:
+           filtered_data.append(item)
     
     if not filtered_data:
         stats_msg = f"😞 Не найдено пар, соответствующих всем фильтрам.\n\n"
