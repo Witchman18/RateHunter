@@ -597,7 +597,7 @@ async def get_okx_data():
         print("[DEBUG] OKX: Запрашиваем данные...")
         async with aiohttp.ClientSession() as session:
             
-            # 1. Получаем список инструментов
+            # 1. Получаем список всех perpetual-свопов
             instruments_url = f"{base_url}/api/v5/public/instruments?instType=SWAP"
             async with session.get(instruments_url, timeout=15) as response:
                 if response.status != 200:
@@ -605,68 +605,62 @@ async def get_okx_data():
                     return []
                 instruments_data = (await response.json()).get('data', [])
             
-            usdt_swaps = {inst['instId']: inst for inst in instruments_data if inst.get('settleCcy') == 'USDT'}
+            usdt_swaps = [inst['instId'] for inst in instruments_data if inst.get('settleCcy') == 'USDT']
             if not usdt_swaps:
                 print("[API_ERROR] OKX: Не найдено USDT-свопов.")
                 return []
             
             print(f"[DEBUG] OKX: Найдено {len(usdt_swaps)} USDT-свопов.")
-
-            # 2. Запрашиваем все нужные данные
-            funding_url = f"{base_url}/api/v5/public/funding-rate?instType=SWAP"
-            tickers_url = f"{base_url}/api/v5/public/tickers?instType=SWAP"
-            oi_url = f"{base_url}/api/v5/public/open-interest?instType=SWAP"
             
-            async with session.get(funding_url, timeout=20) as fr_resp, \
-                       session.get(tickers_url, timeout=20) as tk_resp, \
-                       session.get(oi_url, timeout=20) as oi_resp:
+            instrument_info = {inst_id: {} for inst_id in usdt_swaps}
+            
+            # 2. Делаем запросы по частям (чанками), т.к. URL имеет ограничение по длине
+            chunk_size = 100
+            for i in range(0, len(usdt_swaps), chunk_size):
+                chunk = usdt_swaps[i:i + chunk_size]
+                inst_ids_str = ",".join(chunk)
+
+                # Запрашиваем данные для текущего чанка
+                tasks = {
+                    'funding': session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_ids_str}", timeout=20),
+                    'tickers': session.get(f"{base_url}/api/v5/public/tickers?instId={inst_ids_str}", timeout=20),
+                    'oi': session.get(f"{base_url}/api/v5/public/open-interest?instId={inst_ids_str}", timeout=20)
+                }
                 
-                # --- ОТЛАДОЧНЫЙ БЛОК ---
-                print(f"[DEBUG_OKX] Статус Funding: {fr_resp.status}, Статус Tickers: {tk_resp.status}, Статус OI: {oi_resp.status}")
+                responses = await asyncio.gather(*tasks.values(), return_exceptions=True)
+                funding_resp, ticker_resp, oi_resp = responses
 
-                funding_list = (await fr_resp.json()).get('data', []) if fr_resp.status == 200 else []
-                ticker_list = (await tk_resp.json()).get('data', []) if tk_resp.status == 200 else []
-                oi_list = (await oi_resp.json()).get('data', []) if oi_resp.status == 200 else []
+                # Обрабатываем ответы для текущего чанка
+                if not isinstance(funding_resp, Exception) and funding_resp.status == 200:
+                    for item in (await funding_resp.json()).get('data', []):
+                        if item['instId'] in instrument_info:
+                            instrument_info[item['instId']]['rate'] = Decimal(str(item['fundingRate']))
+                            instrument_info[item['instId']]['next_funding_time'] = int(item['nextFundingTime'])
+
+                if not isinstance(ticker_resp, Exception) and ticker_resp.status == 200:
+                    for item in (await ticker_resp.json()).get('data', []):
+                        if item['instId'] in instrument_info:
+                            instrument_info[item['instId']]['volume_24h_usdt'] = Decimal(str(item.get('volCcy24h', '0')))
                 
-                print(f"[DEBUG_OKX] Получено Funding: {len(funding_list)} шт, Tickers: {len(ticker_list)} шт, OI: {len(oi_list)} шт.")
-                # Выведем по одному элементу из каждого списка, чтобы посмотреть на их структуру
-                if funding_list: print(f"[DEBUG_OKX_DATA] Пример Funding: {funding_list[0]}")
-                if ticker_list: print(f"[DEBUG_OKX_DATA] Пример Ticker: {ticker_list[0]}")
-                if oi_list: print(f"[DEBUG_OKX_DATA] Пример OI: {oi_list[0]}")
-                # --- КОНЕЦ ОТЛАДОЧНОГО БЛОКА ---
+                if not isinstance(oi_resp, Exception) and oi_resp.status == 200:
+                    for item in (await oi_resp.json()).get('data', []):
+                        if item['instId'] in instrument_info:
+                            instrument_info[item['instId']]['open_interest_usdt'] = Decimal(str(item.get('oiCcy', '0')))
 
-                instrument_data = {}
-
-                # Объединяем данные
-                for item in funding_list:
-                    if item['instId'] in usdt_swaps:
-                        instrument_data[item['instId']] = {
-                            'rate': Decimal(str(item['fundingRate'])),
-                            'next_funding_time': int(item['nextFundingTime'])
-                        }
-                
-                for item in ticker_list:
-                    if item['instId'] in instrument_data:
-                        instrument_data[item['instId']]['volume_24h_usdt'] = Decimal(str(item.get('volCcy24h', '0')))
-
-                for item in oi_list:
-                    if item['instId'] in instrument_data:
-                        instrument_data[item['instId']]['open_interest_usdt'] = Decimal(str(item.get('oiCcy', '0')))
-
-                # 4. Формируем финальный результат
-                for instId, data in instrument_data.items():
-                    if all(k in data for k in ['rate', 'next_funding_time', 'volume_24h_usdt']):
-                        symbol = instId.replace("-SWAP", "").replace("-", "")
-                        trade_symbol = instId.replace("-SWAP", "")
-                        results.append({
-                            'exchange': 'OKX',
-                            'symbol': symbol,
-                            'rate': data['rate'],
-                            'next_funding_time': data['next_funding_time'],
-                            'volume_24h_usdt': data['volume_24h_usdt'],
-                            'open_interest_usdt': data.get('open_interest_usdt', Decimal('0')),
-                            'trade_url': f'https://www.okx.com/trade-swap/{trade_symbol}'
-                        })
+            # 3. Формируем финальный результат
+            for instId, data in instrument_info.items():
+                if all(k in data for k in ['rate', 'next_funding_time', 'volume_24h_usdt']):
+                    symbol = instId.replace("-SWAP", "").replace("-", "")
+                    trade_symbol = instId.replace("-SWAP", "")
+                    results.append({
+                        'exchange': 'OKX',
+                        'symbol': symbol,
+                        'rate': data['rate'],
+                        'next_funding_time': data['next_funding_time'],
+                        'volume_24h_usdt': data['volume_24h_usdt'],
+                        'open_interest_usdt': data.get('open_interest_usdt', Decimal('0')),
+                        'trade_url': f'https://www.okx.com/trade-swap/{trade_symbol}'
+                    })
 
             print(f"[DEBUG] OKX: Успешно сформировано {len(results)} инструментов.")
 
