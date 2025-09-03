@@ -603,7 +603,11 @@ async def get_okx_data():
                 if response.status != 200:
                     print(f"[API_ERROR] OKX Instruments: Статус {response.status}")
                     return []
-                instruments_data = (await response.json()).get('data', [])
+                inst_json = await response.json()
+                if inst_json.get('code') != '0':
+                     print(f"[API_ERROR] OKX Instruments: API вернул ошибку: {inst_json.get('msg')}")
+                     return []
+                instruments_data = inst_json.get('data', [])
             
             usdt_swaps = [inst['instId'] for inst in instruments_data if inst.get('settleCcy') == 'USDT']
             if not usdt_swaps:
@@ -614,38 +618,54 @@ async def get_okx_data():
             
             instrument_info = {inst_id: {} for inst_id in usdt_swaps}
             
-            # 2. Делаем запросы по частям (чанками), т.к. URL имеет ограничение по длине
+            # 2. Делаем запросы по частям (чанками)
             chunk_size = 100
             for i in range(0, len(usdt_swaps), chunk_size):
                 chunk = usdt_swaps[i:i + chunk_size]
                 inst_ids_str = ",".join(chunk)
-
-                # Запрашиваем данные для текущего чанка
-                tasks = {
-                    'funding': session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_ids_str}", timeout=20),
-                    'tickers': session.get(f"{base_url}/api/v5/public/tickers?instId={inst_ids_str}", timeout=20),
-                    'oi': session.get(f"{base_url}/api/v5/public/open-interest?instId={inst_ids_str}", timeout=20)
-                }
                 
-                responses = await asyncio.gather(*tasks.values(), return_exceptions=True)
-                funding_resp, ticker_resp, oi_resp = responses
+                # --- ПОСЛЕДОВАТЕЛЬНАЯ ОБРАБОТКА ДЛЯ МАКСИМАЛЬНОЙ НАДЕЖНОСТИ ---
 
-                # Обрабатываем ответы для текущего чанка
-                if not isinstance(funding_resp, Exception) and funding_resp.status == 200:
-                    for item in (await funding_resp.json()).get('data', []):
-                        if item['instId'] in instrument_info:
-                            instrument_info[item['instId']]['rate'] = Decimal(str(item['fundingRate']))
-                            instrument_info[item['instId']]['next_funding_time'] = int(item['nextFundingTime'])
-
-                if not isinstance(ticker_resp, Exception) and ticker_resp.status == 200:
-                    for item in (await ticker_resp.json()).get('data', []):
-                        if item['instId'] in instrument_info:
-                            instrument_info[item['instId']]['volume_24h_usdt'] = Decimal(str(item.get('volCcy24h', '0')))
+                # ШАГ 2.1: Получаем ФАНДИНГ
+                async with session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_ids_str}", timeout=20) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get('code') == '0':
+                            count = 0
+                            for item in data.get('data', []):
+                                if item['instId'] in instrument_info:
+                                    instrument_info[item['instId']]['rate'] = Decimal(str(item['fundingRate']))
+                                    instrument_info[item['instId']]['next_funding_time'] = int(item['nextFundingTime'])
+                                    count += 1
+                            print(f"[DEBUG_OKX_CHUNK_{i//chunk_size}] Фандинг: обработано {count} из {len(chunk)}.")
+                        else:
+                            print(f"[API_ERROR_OKX_CHUNK_{i//chunk_size}] Фандинг: {data.get('msg')}")
                 
-                if not isinstance(oi_resp, Exception) and oi_resp.status == 200:
-                    for item in (await oi_resp.json()).get('data', []):
-                        if item['instId'] in instrument_info:
-                            instrument_info[item['instId']]['open_interest_usdt'] = Decimal(str(item.get('oiCcy', '0')))
+                # ШАГ 2.2: Получаем ТИКЕРЫ (ОБЪЕМ)
+                async with session.get(f"{base_url}/api/v5/public/tickers?instId={inst_ids_str}", timeout=20) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get('code') == '0':
+                            count = 0
+                            for item in data.get('data', []):
+                                if item['instId'] in instrument_info:
+                                    instrument_info[item['instId']]['volume_24h_usdt'] = Decimal(str(item.get('volCcy24h', '0')))
+                                    count += 1
+                            print(f"[DEBUG_OKX_CHUNK_{i//chunk_size}] Тикеры: обработано {count} из {len(chunk)}.")
+                        else:
+                            print(f"[API_ERROR_OKX_CHUNK_{i//chunk_size}] Тикеры: {data.get('msg')}")
+
+                # ШАГ 2.3: Получаем ОТКРЫТЫЙ ИНТЕРЕС
+                async with session.get(f"{base_url}/api/v5/public/open-interest?instId={inst_ids_str}", timeout=20) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get('code') == '0':
+                            count = 0
+                            for item in data.get('data', []):
+                                if item['instId'] in instrument_info:
+                                    instrument_info[item['instId']]['open_interest_usdt'] = Decimal(str(item.get('oiCcy', '0')))
+                                    count += 1
+                            # print(f"[DEBUG_OKX_CHUNK_{i//chunk_size}] ОИ: обработано {count} из {len(chunk)}.") # Можно раскомментировать для доп. отладки
 
             # 3. Формируем финальный результат
             for instId, data in instrument_info.items():
@@ -653,9 +673,7 @@ async def get_okx_data():
                     symbol = instId.replace("-SWAP", "").replace("-", "")
                     trade_symbol = instId.replace("-SWAP", "")
                     results.append({
-                        'exchange': 'OKX',
-                        'symbol': symbol,
-                        'rate': data['rate'],
+                        'exchange': 'OKX', 'symbol': symbol, 'rate': data['rate'],
                         'next_funding_time': data['next_funding_time'],
                         'volume_24h_usdt': data['volume_24h_usdt'],
                         'open_interest_usdt': data.get('open_interest_usdt', Decimal('0')),
