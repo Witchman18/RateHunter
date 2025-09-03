@@ -661,13 +661,10 @@ async def get_okx_data():
             successful_requests = 0
             failed_requests = 0
             
-            # Ограничиваем количество запросов для тестирования
-            max_instruments = 50  # Берем только первые 50 для теста
-            test_instruments = usdt_swaps[:max_instruments]
+            print(f"[DEBUG] OKX: Начинаем опрос {len(usdt_swaps)} инструментов...")
             
-            print(f"[DEBUG] OKX: Тестируем на {len(test_instruments)} инструментах...")
+            for i, inst_id in enumerate(usdt_swaps):
             
-            for i, inst_id in enumerate(test_instruments):
                 try:
                     async with session.get(f"{base_url}/api/v5/public/funding-rate?instId={inst_id}", timeout=10) as resp:
                         if resp.status == 200:
@@ -701,9 +698,9 @@ async def get_okx_data():
                 
                 # Прогресс каждые 10 запросов
                 if (i + 1) % 10 == 0:
-                    print(f"[DEBUG] OKX: Обработано {i + 1}/{len(test_instruments)}, успешно: {successful_requests}, ошибок: {failed_requests}")
+                    print(f"[DEBUG] OKX: Обработано {i + 1}/{len(usdt_swaps)}, успешно: {successful_requests}, ошибок: {failed_requests}")
 
-            print(f"[DEBUG] OKX: Итого получено {len(funding_info)} ставок фандинга из {len(test_instruments)} запросов")
+            print(f"[DEBUG] OKX: Итого получено {len(funding_info)} ставок фандинга из {len(usdt_swaps)} запросов")
 
             # 4. Формируем финальный результат
             for inst_id in funding_info.keys():
