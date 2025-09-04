@@ -1004,13 +1004,13 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
         get_kucoin_data(),
         get_bitget_data(),
         get_gateio_data(),
-        get_htx_data()
+       # get_htx_data()
     ]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
     for i, res in enumerate(results_from_tasks):
-        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Bitget', 'Gate.io', 'HTX'][i]
+        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Bitget', 'Gate.io'][i]
         if isinstance(res, list): 
             all_data.extend(res)
             print(f"[DEBUG] {exchange_name}: Добавлено {len(res)} инструментов")
