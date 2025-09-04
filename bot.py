@@ -313,7 +313,7 @@ def require_access():
 user_settings = {}  # Ключ: chat_id, значение: {'user_id': int, 'settings': dict}
 api_data_cache = {"last_update": None, "data": []}
 CACHE_LIFETIME_SECONDS = 100
-ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io', 'HTX', 'Bitget']
+ALL_AVAILABLE_EXCHANGES = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Gate.io', 'Bitget', 'Hyperliquid']
 
 # Функция форматирования объема
 def format_volume(volume_usdt: Decimal) -> str:
@@ -983,6 +983,82 @@ async def get_htx_data():
         print(f"[API_ERROR] HTX: Глобальное исключение {type(e).__name__}: {e}")
     
     return results
+
+# Вставьте этот код после других функций get_..._data
+
+async def get_hyperliquid_data():
+    """Получает данные по ставкам финансирования с Hyperliquid."""
+    results = []
+    # Эндпоинт API Hyperliquid для получения метаданных и состояния рынка
+    info_url = "https://api.hyperliquid.xyz/info"
+    headers = {"Content-Type": "application/json"}
+    payload = {"type": "metaAndAssetCtxs"}
+
+    try:
+        print("[DEBUG] Hyperliquid: Запрашиваем данные...")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(info_url, json=payload, headers=headers, timeout=15) as response:
+                if response.status != 200:
+                    print(f"[API_ERROR] Hyperliquid: Статус {response.status}")
+                    return []
+                
+                data = await response.json()
+                
+                # Данные состоят из двух частей: метаданные (universe) и текущее состояние (assetContexts)
+                universe = data[0].get('universe', [])
+                asset_contexts = data[1]
+                
+                if not universe or not asset_contexts:
+                    print("[API_ERROR] Hyperliquid: Неполные данные в ответе API.")
+                    return []
+
+                # Создаем словарь для быстрого доступа к метаданным по индексу
+                meta_map = {meta['coin']: meta for meta in universe}
+                
+                print(f"[DEBUG] Hyperliquid: Получено {len(asset_contexts)} инструментов.")
+
+                for ctx in asset_contexts:
+                    try:
+                        symbol = ctx['name']
+                        if symbol not in meta_map:
+                            continue
+
+                        # Получаем метаданные для текущего символа
+                        meta = meta_map[symbol]
+                        
+                        # Hyperliquid отдает фандинг в формате "годовой процент", нам нужно перевести его в 8-часовую ставку
+                        # Формула: (годовой фандинг / 100) / (365.25 дней * 3 раза в день)
+                        funding_rate_hourly = Decimal(str(ctx.get('funding', '0'))) / (Decimal('365.25') * 24)
+                        funding_rate_8h = funding_rate_hourly * 8
+                        
+                        # Время следующей выплаты - каждый час, находим следующий ровный час
+                        now_utc = datetime.now(timezone.utc)
+                        next_funding_time = (now_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+                        next_funding_time_ms = int(next_funding_time.timestamp() * 1000)
+
+                        # Собираем все данные в стандартный формат
+                        results.append({
+                            'exchange': 'Hyperliquid', 
+                            'symbol': f"{symbol}USDT", # Приводим к стандартному виду
+                            'rate': funding_rate_8h, 
+                            'next_funding_time': next_funding_time_ms, 
+                            'volume_24h_usdt': Decimal(str(meta.get('dayNtlVlm', '0'))),
+                            'open_interest_usdt': Decimal(str(ctx.get('openInterest', '0'))),
+                            'trade_url': f'https://app.hyperliquid.xyz/trade/{symbol}'
+                        })
+                    except (TypeError, ValueError, decimal.InvalidOperation, KeyError) as e:
+                        print(f"[DEBUG] Hyperliquid: Ошибка обработки инструмента {ctx.get('name')}: {e}")
+                        continue
+                
+                print(f"[DEBUG] Hyperliquid: Успешно сформировано {len(results)} инструментов.")
+
+    except asyncio.TimeoutError:
+        print("[API_ERROR] Hyperliquid: Timeout при запросе к API")
+    except Exception as e:
+        print(f"[API_ERROR] Hyperliquid: Глобальное исключение {type(e).__name__}: {e}")
+        print(f"[API_ERROR] Hyperliquid: Traceback: {traceback.format_exc()}")
+    
+    return results
 async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force_update=False):
     now = datetime.now().timestamp()
     if not force_update and api_data_cache["last_update"] and (now - api_data_cache["last_update"] < CACHE_LIFETIME_SECONDS):
@@ -1004,13 +1080,14 @@ async def fetch_all_data(context: ContextTypes.DEFAULT_TYPE | Application, force
         get_kucoin_data(),
         get_bitget_data(),
         get_gateio_data(),
+        get_hyperliquid_data()
        # get_htx_data()
     ]
     results_from_tasks = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_data = []
     for i, res in enumerate(results_from_tasks):
-        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Bitget', 'Gate.io'][i]
+        exchange_name = ['Bybit', 'MEXC', 'Binance', 'OKX', 'KuCoin', 'Bitget', 'Gate.io', 'Hyperliquid'][i]
         if isinstance(res, list): 
             all_data.extend(res)
             print(f"[DEBUG] {exchange_name}: Добавлено {len(res)} инструментов")
