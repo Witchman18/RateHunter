@@ -1025,45 +1025,30 @@ async def get_hyperliquid_data():
                 
                 if not universe or not asset_contexts:
                     print(f"[API_ERROR] Hyperliquid: Неполные данные. Universe: {len(universe)}, AssetContexts: {len(asset_contexts)}")
-                    print(f"[DEBUG] Universe sample: {universe[:2] if universe else 'empty'}")
-                    print(f"[DEBUG] AssetContexts sample: {asset_contexts[:2] if asset_contexts else 'empty'}")
                     return []
 
-                # Создаем словарь для быстрого доступа к метаданным
-                # Проверяем разные возможные ключи для символа
-                meta_map = {}
-                for meta in universe:
-                    # Пробуем разные возможные ключи
-                    symbol_key = None
-                    for key in ['coin', 'symbol', 'name', 'asset']:
-                        if key in meta:
-                            symbol_key = key
-                            break
-                    
-                    if symbol_key:
-                        meta_map[meta[symbol_key]] = meta
+                # В Hyperliquid данные связаны по индексу: universe[i] соответствует asset_contexts[i]
+                print(f"[DEBUG] Hyperliquid: Universe: {len(universe)} элементов, AssetContexts: {len(asset_contexts)} элементов")
                 
-                print(f"[DEBUG] Hyperliquid: Создан meta_map с {len(meta_map)} элементами")
-                if meta_map:
-                    print(f"[DEBUG] Hyperliquid: Примеры ключей meta_map: {list(meta_map.keys())[:5]}")
-                
-                print(f"[DEBUG] Hyperliquid: Получено {len(asset_contexts)} инструментов.")
+                # Убеждаемся, что количества совпадают
+                min_length = min(len(universe), len(asset_contexts))
+                print(f"[DEBUG] Hyperliquid: Обрабатываем {min_length} инструментов.")
 
-                for ctx in asset_contexts:
+                for i in range(min_length):
                     try:
-                        # Пробуем разные возможные ключи для имени символа
+                        meta = universe[i]
+                        ctx = asset_contexts[i]
+                        
+                        # Получаем символ из метаданных
                         symbol = None
-                        for key in ['name', 'symbol', 'coin', 'asset']:
-                            if key in ctx:
-                                symbol = ctx[key]
+                        for key in ['coin', 'symbol', 'name', 'asset']:
+                            if key in meta:
+                                symbol = meta[key]
                                 break
                         
                         if not symbol:
-                            print(f"[DEBUG] Hyperliquid: Не найден символ в контексте: {list(ctx.keys())}")
+                            print(f"[DEBUG] Hyperliquid: Не найден символ в meta[{i}]: {list(meta.keys())}")
                             continue
-
-                        # Ищем метаданные для текущего символа
-                        meta = meta_map.get(symbol, {})
                         
                         # Hyperliquid отдает фандинг в разных форматах, пробуем найти правильный
                         funding_rate_raw = None
@@ -1095,7 +1080,7 @@ async def get_hyperliquid_data():
                         next_funding_time = (now_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
                         next_funding_time_ms = int(next_funding_time.timestamp() * 1000)
 
-                        # Получаем объем торгов
+                        # Получаем объем торгов из метаданных (universe)
                         volume_24h = Decimal('0')
                         for key in ['dayNtlVlm', 'volume24h', 'volume_24h', 'turnover24h']:
                             if key in meta:
@@ -1105,7 +1090,7 @@ async def get_hyperliquid_data():
                                 except (ValueError, decimal.InvalidOperation):
                                     continue
                         
-                        # Получаем открытый интерес
+                        # Получаем открытый интерес из контекста (asset_contexts)
                         open_interest = Decimal('0')
                         for key in ['openInterest', 'open_interest', 'oi']:
                             if key in ctx:
