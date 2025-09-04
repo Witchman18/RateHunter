@@ -984,8 +984,6 @@ async def get_htx_data():
     
     return results
 
-# Вставьте этот код после других функций get_..._data
-
 async def get_hyperliquid_data():
     """Получает данные по ставкам финансирования с Hyperliquid."""
     results = []
@@ -1003,38 +1001,119 @@ async def get_hyperliquid_data():
                     return []
                 
                 data = await response.json()
+                print(f"[DEBUG] Hyperliquid: Получен ответ: {type(data)}, длина: {len(data) if isinstance(data, list) else 'N/A'}")
+                
+                # Проверяем структуру ответа
+                if not isinstance(data, list) or len(data) < 2:
+                    print(f"[API_ERROR] Hyperliquid: Неожиданная структура ответа: {data}")
+                    return []
                 
                 # Данные состоят из двух частей: метаданные (universe) и текущее состояние (assetContexts)
-                universe = data[0].get('universe', [])
-                asset_contexts = data[1]
+                universe_data = data[0]
+                asset_contexts_data = data[1]
+                
+                # Проверяем наличие universe в первом элементе
+                universe = universe_data.get('universe', []) if isinstance(universe_data, dict) else []
+                
+                # Проверяем формат asset_contexts
+                if isinstance(asset_contexts_data, list):
+                    asset_contexts = asset_contexts_data
+                elif isinstance(asset_contexts_data, dict):
+                    asset_contexts = asset_contexts_data.get('assetContexts', [])
+                else:
+                    asset_contexts = []
                 
                 if not universe or not asset_contexts:
-                    print("[API_ERROR] Hyperliquid: Неполные данные в ответе API.")
+                    print(f"[API_ERROR] Hyperliquid: Неполные данные. Universe: {len(universe)}, AssetContexts: {len(asset_contexts)}")
+                    print(f"[DEBUG] Universe sample: {universe[:2] if universe else 'empty'}")
+                    print(f"[DEBUG] AssetContexts sample: {asset_contexts[:2] if asset_contexts else 'empty'}")
                     return []
 
-                # Создаем словарь для быстрого доступа к метаданным по индексу
-                meta_map = {meta['coin']: meta for meta in universe}
+                # Создаем словарь для быстрого доступа к метаданным
+                # Проверяем разные возможные ключи для символа
+                meta_map = {}
+                for meta in universe:
+                    # Пробуем разные возможные ключи
+                    symbol_key = None
+                    for key in ['coin', 'symbol', 'name', 'asset']:
+                        if key in meta:
+                            symbol_key = key
+                            break
+                    
+                    if symbol_key:
+                        meta_map[meta[symbol_key]] = meta
+                
+                print(f"[DEBUG] Hyperliquid: Создан meta_map с {len(meta_map)} элементами")
+                if meta_map:
+                    print(f"[DEBUG] Hyperliquid: Примеры ключей meta_map: {list(meta_map.keys())[:5]}")
                 
                 print(f"[DEBUG] Hyperliquid: Получено {len(asset_contexts)} инструментов.")
 
                 for ctx in asset_contexts:
                     try:
-                        symbol = ctx['name']
-                        if symbol not in meta_map:
+                        # Пробуем разные возможные ключи для имени символа
+                        symbol = None
+                        for key in ['name', 'symbol', 'coin', 'asset']:
+                            if key in ctx:
+                                symbol = ctx[key]
+                                break
+                        
+                        if not symbol:
+                            print(f"[DEBUG] Hyperliquid: Не найден символ в контексте: {list(ctx.keys())}")
                             continue
 
-                        # Получаем метаданные для текущего символа
-                        meta = meta_map[symbol]
+                        # Ищем метаданные для текущего символа
+                        meta = meta_map.get(symbol, {})
                         
-                        # Hyperliquid отдает фандинг в формате "годовой процент", нам нужно перевести его в 8-часовую ставку
-                        # Формула: (годовой фандинг / 100) / (365.25 дней * 3 раза в день)
-                        funding_rate_hourly = Decimal(str(ctx.get('funding', '0'))) / (Decimal('365.25') * 24)
-                        funding_rate_8h = funding_rate_hourly * 8
+                        # Hyperliquid отдает фандинг в разных форматах, пробуем найти правильный
+                        funding_rate_raw = None
+                        for key in ['funding', 'fundingRate', 'funding_rate']:
+                            if key in ctx:
+                                funding_rate_raw = ctx[key]
+                                break
+                        
+                        if funding_rate_raw is None:
+                            print(f"[DEBUG] Hyperliquid: Не найден funding rate для {symbol}")
+                            continue
+                        
+                        # Преобразуем funding rate (может быть в разных форматах)
+                        try:
+                            funding_rate_decimal = Decimal(str(funding_rate_raw))
+                            # Если значение очень большое, это может быть годовой процент
+                            if abs(funding_rate_decimal) > 1:
+                                # Преобразуем в 8-часовую ставку
+                                funding_rate_8h = funding_rate_decimal / (Decimal('365.25') * 3)
+                            else:
+                                # Уже в правильном формате
+                                funding_rate_8h = funding_rate_decimal
+                        except (ValueError, decimal.InvalidOperation):
+                            print(f"[DEBUG] Hyperliquid: Ошибка преобразования funding rate: {funding_rate_raw}")
+                            continue
                         
                         # Время следующей выплаты - каждый час, находим следующий ровный час
                         now_utc = datetime.now(timezone.utc)
                         next_funding_time = (now_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
                         next_funding_time_ms = int(next_funding_time.timestamp() * 1000)
+
+                        # Получаем объем торгов
+                        volume_24h = Decimal('0')
+                        for key in ['dayNtlVlm', 'volume24h', 'volume_24h', 'turnover24h']:
+                            if key in meta:
+                                try:
+                                    volume_24h = Decimal(str(meta[key]))
+                                    break
+                                except (ValueError, decimal.InvalidOperation):
+                                    continue
+                        
+                        # Получаем открытый интерес
+                        open_interest = Decimal('0')
+                        for key in ['openInterest', 'open_interest', 'oi']:
+                            if key in ctx:
+                                try:
+                                    open_interest = Decimal(str(ctx[key]))
+                                    break
+                                except (ValueError, decimal.InvalidOperation):
+                                    continue
 
                         # Собираем все данные в стандартный формат
                         results.append({
@@ -1042,12 +1121,12 @@ async def get_hyperliquid_data():
                             'symbol': f"{symbol}USDT", # Приводим к стандартному виду
                             'rate': funding_rate_8h, 
                             'next_funding_time': next_funding_time_ms, 
-                            'volume_24h_usdt': Decimal(str(meta.get('dayNtlVlm', '0'))),
-                            'open_interest_usdt': Decimal(str(ctx.get('openInterest', '0'))),
+                            'volume_24h_usdt': volume_24h,
+                            'open_interest_usdt': open_interest,
                             'trade_url': f'https://app.hyperliquid.xyz/trade/{symbol}'
                         })
                     except (TypeError, ValueError, decimal.InvalidOperation, KeyError) as e:
-                        print(f"[DEBUG] Hyperliquid: Ошибка обработки инструмента {ctx.get('name')}: {e}")
+                        print(f"[DEBUG] Hyperliquid: Ошибка обработки инструмента {ctx}: {e}")
                         continue
                 
                 print(f"[DEBUG] Hyperliquid: Успешно сформировано {len(results)} инструментов.")
