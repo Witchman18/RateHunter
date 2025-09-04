@@ -1126,7 +1126,7 @@ async def get_hyperliquid_data():
                             'trade_url': f'https://app.hyperliquid.xyz/trade/{symbol}'
                         })
                     except (TypeError, ValueError, decimal.InvalidOperation, KeyError) as e:
-                        print(f"[DEBUG] Hyperliquid: Ошибка обработки инструмента {ctx}: {e}")
+                        print(f"[DEBUG] Hyperliquid: Ошибка обработки инструмента [{i}]: {e}")
                         continue
                 
                 print(f"[DEBUG] Hyperliquid: Успешно сформировано {len(results)} инструментов.")
